@@ -1,10 +1,10 @@
 # pacsnode
 
-A minimal Electron PACS Viewer application. It is basically an electron version of the dicomweb-pacs node based server.
+A minimal Electron PACS Viewer application. It is basically an electron version of the [dicomweb-pacs](https://github.com/knopkem/dicomweb-pacs) node based server.
 
 Web DICOM Viewer: [OHIF Viewer](https://github.com/OHIF/Viewers) V3.7.0
 
-Store-SCP: DCMTK + sqlite
+Store-SCP: [Node-Native-Addon using DCMTK + Sqlite](https://github.com/knopkem/dicom-dimse-native) 
 
 Params:
 

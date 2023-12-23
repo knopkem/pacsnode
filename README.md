@@ -1,6 +1,16 @@
 # pacsnode
 
-A minimal Electron application
+A minimal Electron PACS Viewer application. It is basically an electron version of the dicomweb-pacs node based server.
+Web DICOM Viewer: [OHIF Viewer](https://github.com/OHIF/Viewers) V3.7.0
+Store-SCP: DCMTK + sqlite
+Params: 
+      * AET: "DICOMWEB_PACS",
+      * IP: "127.0.0.1",
+      * Port: "8888"
+
+Roadmap:
+* admin panel to manage stored data and configuration
+* better logging
 
 ## Recommended IDE Setup
 

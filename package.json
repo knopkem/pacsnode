@@ -1,0 +1,43 @@
+{
+  "name": "pacsnode",
+  "version": "1.0.0",
+  "description": "A minimal Electron application",
+  "main": "./src/main.js",
+  "author": "example.com",
+  "homepage": "https://www.electronjs.org",
+  "scripts": {
+    "format": "prettier --write .",
+    "lint": "eslint --ext .js .",
+    "dev": "electron .",
+    "postinstall": "electron-builder install-app-deps",
+    "build:win": "electron-builder --win --config",
+    "build:mac": "electron-builder --mac --config",
+    "build:linux": "electron-builder --linux --config"
+  },
+  "dependencies": {
+    "@electron-toolkit/preload": "^2.0.0",
+    "@electron-toolkit/utils": "^2.0.0",
+    "@fastify/autoload": "^5.8.0",
+    "@fastify/cors": "^8.4.1",
+    "@fastify/helmet": "^11.1.1",
+    "@fastify/sensible": "^5.5.0",
+    "@fastify/static": "^6.12.0",
+    "@iwharris/dicom-data-dictionary": "^1.26.0",
+    "dicom-data-dictionary": "^0.3.1",
+    "dicom-dimse-native": "^2.4.2",
+    "dicom-parser": "^1.8.21",
+    "electron-log": "^5.0.1",
+    "electron-server": "^0.2.0",
+    "fastify": "^4.25.1",
+    "fs-walk": "^0.0.2",
+    "shelljs": "^0.8.5"
+  },
+  "devDependencies": {
+    "@electron-toolkit/eslint-config": "^1.0.1",
+    "@electron-toolkit/eslint-config-prettier": "^1.0.1",
+    "electron": "^25.6.0",
+    "electron-builder": "^24.6.3",
+    "eslint": "^8.47.0",
+    "prettier": "^3.0.2"
+  }
+}

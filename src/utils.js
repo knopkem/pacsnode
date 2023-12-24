@@ -1,13 +1,11 @@
 const dict = require('dicom-data-dictionary')
 const dimse = require('dicom-dimse-native')
 const dict2 = require('@iwharris/dicom-data-dictionary')
-const fs = require('fs')
 const shell = require('shelljs')
+const fs = require('fs')
 const logger = require('electron-log/main')
 
-// make sure default directories exist
-shell.mkdir('-p', './data')
-
+let storagePath = ''
 
 const source = {
   aet: 'DICOMWEB_PACS',
@@ -46,6 +44,11 @@ const findVR = (name) => {
 //------------------------------------------------------------------
 
 const utils = {
+  setStorageLocation: (path) => {
+    storagePath = path;
+    shell.mkdir('-p', storagePath);
+  },
+  getStorageLocation: () => storagePath,
   getLogger: () => logger,
   startScp: () => {
     const ts = '1.2.840.10008.1.2';
@@ -54,7 +57,7 @@ const utils = {
       target: source,
       peers,
       verbose: false,
-      storagePath: './data',
+      storagePath,
       permissive: true,
       netTransferPrefer: ts,
       netTransferPropose: ts,

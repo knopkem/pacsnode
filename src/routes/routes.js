@@ -126,7 +126,7 @@ module.exports = function routes(server, opts, done) {
     async (req, reply) => {
       const { studyInstanceUid, seriesInstanceUid, sopInstanceUid } = req.params
 
-      const storagePath = './data'
+      const storagePath = utils.getStorageLocation()
       const studyPath = path.join(storagePath, studyInstanceUid)
       const pathname = path.join(studyPath, sopInstanceUid)
 
@@ -207,7 +207,7 @@ module.exports = function routes(server, opts, done) {
       reply.code(500)
       return msg
     }
-    const storagePath = './data'
+    const storagePath = utils.getStorageLocation()
     const studyPath = path.join(storagePath, studyUid)
     const pathname = path.join(studyPath, imageUid)
 

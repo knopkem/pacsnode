@@ -73,8 +73,6 @@ server.listen({ port: 9876, host: '127.0.0.1' }, async (err, address) => {
     await logger.error(err, address)
     process.exit(1)
   }
-  utils.startScp()
-  utils.sendEcho()
 })
 
 //------------------------------------------------------------------
@@ -115,6 +113,11 @@ function createWindow() {
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(() => {
+
+  const dataStorage = path.join(app.getPath('appData'), 'data')
+  utils.setStorageLocation(dataStorage)
+  utils.startScp()
+
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
 

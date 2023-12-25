@@ -16,6 +16,8 @@ Roadmap:
 * admin panel to manage stored data and configuration
 * better logging
 
+![image](https://github.com/knopkem/pacsnode/assets/994526/91b74462-30f7-4673-b330-86f9c2cdedc9)
+
 ## Recommended IDE Setup
 
 - [VSCode](https://code.visualstudio.com/) + [ESLint](https://marketplace.visualstudio.com/items?itemName=dbaeumer.vscode-eslint) + [Prettier](https://marketplace.visualstudio.com/items?itemName=esbenp.prettier-vscode)

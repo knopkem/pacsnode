@@ -7,7 +7,7 @@
 #   4. C-STORE via DIMSE   (storescu  — uploads testfiles\*.dcm)
 #   5. Statistics check    (REST API  — confirms files were stored)
 #   6. QIDO-RS query       (DICOMweb  — lists uploaded studies)
-#   7. C-FIND  via DIMSE   (findscu   — queries by Study Root)
+#   7. C-FIND  via DIMSE   (findscu   — validates patient/study/series/image levels)
 #   8. WADO-RS retrieve    (DICOMweb  — retrieves a single instance;
 #                           equivalent to C-GET without a dedicated getscu
 #                           binary, which dicom-toolkit-rs does not provide)
@@ -120,6 +120,20 @@ function Test-QidoContainsUid {
     }
 
     return $false
+}
+
+function Test-CFindHasResults {
+    param([Parameter(Mandatory = $true)][string]$Output)
+    return $Output -match 'Found [1-9][0-9]* result\(s\):'
+}
+
+function Test-CFindContainsValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Output,
+        [Parameter(Mandatory = $true)][string]$ExpectedValue
+    )
+
+    return $Output.Contains($ExpectedValue)
 }
 
 # ── Banner ────────────────────────────────────────────────────────────────────
@@ -249,6 +263,7 @@ if ($stats -and $stats.studies -gt 0) {
 Write-Step 6 "QIDO-RS  GET /wado/studies"
 
 $studyUid = ""
+$patientId = ""
 $seriesUid = ""
 $instanceUid = ""
 
@@ -258,6 +273,16 @@ if ($studyList -and @($studyList).Count -gt 0) {
     Write-Ok "StudyInstanceUID resolved via REST: $studyUid"
 } else {
     Write-Fail "Could not resolve a study UID — was C-STORE successful?"
+}
+
+if ($studyUid -ne "") {
+    $studyDetails = Invoke-Api "$HttpBase/api/studies/$studyUid"
+    if ($studyDetails -and $studyDetails.patient_id) {
+        $patientId = [string]$studyDetails.patient_id
+        Write-Ok "PatientID resolved via REST: $patientId"
+    } else {
+        Write-Fail "Could not resolve a patient ID for C-FIND validation"
+    }
 }
 
 $qidoCode = Get-HttpStatus "$HttpBase/wado/studies"
@@ -316,18 +341,69 @@ if ($studyUid -ne "") {
 
 # ── Step 7: C-FIND (DIMSE) ────────────────────────────────────────────────────
 
-Write-Step 7 "C-FIND  (DIMSE Study Root)"
+Write-Step 7 "C-FIND  (DIMSE patient/study/series/image)"
 
-$findOut = & findscu $PacsHost $DicomPort `
-    --aetitle $ClientAe --called-ae $PacsAe `
-    --level STUDY `
-    --key "0008,0052=STUDY" `
-    --verbose 2>&1
-
-if ($LASTEXITCODE -eq 0) {
-    Write-Ok "C-FIND completed (exit 0)"
+if ($patientId -ne "") {
+    $findPatientOut = (& findscu $PacsHost $DicomPort `
+        --aetitle $ClientAe --called-ae $PacsAe `
+        --level PATIENT `
+        --key "0010,0020=$patientId" `
+        --verbose 2>&1 | Out-String)
+    if ($LASTEXITCODE -eq 0 -and (Test-CFindHasResults $findPatientOut) -and (Test-CFindContainsValue $findPatientOut $patientId)) {
+        Write-Ok "C-FIND PATIENT returned PatientID $patientId"
+    } else {
+        Write-Fail "C-FIND PATIENT failed or did not contain PatientID $patientId"
+    }
 } else {
-    Write-Fail "C-FIND failed or returned no results"
+    Write-Fail "Skipping C-FIND PATIENT validation — no patient ID available"
+}
+
+if ($studyUid -ne "") {
+    $findStudyOut = (& findscu $PacsHost $DicomPort `
+        --aetitle $ClientAe --called-ae $PacsAe `
+        --level STUDY `
+        --key "0020,000D=$studyUid" `
+        --verbose 2>&1 | Out-String)
+    if ($LASTEXITCODE -eq 0 -and (Test-CFindHasResults $findStudyOut) -and (Test-CFindContainsValue $findStudyOut $studyUid)) {
+        Write-Ok "C-FIND STUDY returned StudyInstanceUID $studyUid"
+    } else {
+        Write-Fail "C-FIND STUDY failed or did not contain StudyInstanceUID $studyUid"
+    }
+} else {
+    Write-Fail "Skipping C-FIND STUDY validation — no study UID available"
+}
+
+if ($studyUid -ne "" -and $seriesUid -ne "") {
+    $findSeriesOut = (& findscu $PacsHost $DicomPort `
+        --aetitle $ClientAe --called-ae $PacsAe `
+        --level SERIES `
+        --key "0020,000D=$studyUid" `
+        --key "0020,000E=" `
+        --verbose 2>&1 | Out-String)
+    if ($LASTEXITCODE -eq 0 -and (Test-CFindHasResults $findSeriesOut) -and (Test-CFindContainsValue $findSeriesOut $seriesUid)) {
+        Write-Ok "C-FIND SERIES returned SeriesInstanceUID $seriesUid"
+    } else {
+        Write-Fail "C-FIND SERIES failed or did not contain SeriesInstanceUID $seriesUid"
+    }
+} else {
+    Write-Fail "Skipping C-FIND SERIES validation — no series UID available"
+}
+
+if ($studyUid -ne "" -and $seriesUid -ne "" -and $instanceUid -ne "") {
+    $findImageOut = (& findscu $PacsHost $DicomPort `
+        --aetitle $ClientAe --called-ae $PacsAe `
+        --level IMAGE `
+        --key "0020,000D=$studyUid" `
+        --key "0020,000E=$seriesUid" `
+        --key "0008,0018=" `
+        --verbose 2>&1 | Out-String)
+    if ($LASTEXITCODE -eq 0 -and (Test-CFindHasResults $findImageOut) -and (Test-CFindContainsValue $findImageOut $instanceUid)) {
+        Write-Ok "C-FIND IMAGE returned SOPInstanceUID $instanceUid"
+    } else {
+        Write-Fail "C-FIND IMAGE failed or did not contain SOPInstanceUID $instanceUid"
+    }
+} else {
+    Write-Fail "Skipping C-FIND IMAGE validation — no instance UID available"
 }
 
 # ── Step 8: WADO-RS retrieve (C-GET equivalent) ───────────────────────────────

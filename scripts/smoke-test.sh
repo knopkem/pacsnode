@@ -8,7 +8,7 @@
 #   4. C-STORE via DIMSE   (storescu  — uploads testfiles/*.dcm)
 #   5. Statistics check    (REST API  — confirms files were stored)
 #   6. QIDO-RS query       (DICOMweb  — lists uploaded studies)
-#   7. C-FIND  via DIMSE   (findscu   — queries by Study Root)
+#   7. C-FIND  via DIMSE   (findscu   — validates patient/study/series/image levels)
 #   8. WADO-RS retrieve    (DICOMweb  — retrieves a single instance;
 #                           equivalent to C-GET without a dedicated getscu
 #                           binary, which dicom-toolkit-rs does not provide)
@@ -39,6 +39,7 @@ TESTFILES_DIR="$(cd "$(dirname "$0")/.." && pwd)/testfiles"
 
 PASS=0
 FAIL=0
+PATIENT_ID=""
 STUDY_UID=""
 SERIES_UID=""
 INSTANCE_UID=""
@@ -65,6 +66,13 @@ require_cmd() {
 extract_study_uid_rest() {
     curl -sf "${HTTP_BASE}/api/studies" 2>/dev/null | python3 -c \
         "import sys,json; d=json.load(sys.stdin); print(d[0]['study_uid']) if d else print('')" 2>/dev/null
+}
+
+# Resolve patient_id for a study via REST API.
+extract_patient_id_for_study() {
+    # $1 = study_uid
+    curl -sf "${HTTP_BASE}/api/studies/$1" 2>/dev/null | python3 -c \
+        "import sys,json; d=json.load(sys.stdin); print(d.get('patient_id',''))" 2>/dev/null
 }
 
 # Resolve series_uid and instance_uid for a study via REST API.
@@ -106,6 +114,22 @@ for item in payload:
 
 raise SystemExit(1)
 PY
+}
+
+cfind_has_results() {
+    printf '%s' "$1" | grep -Eq 'Found [1-9][0-9]* result\(s\):'
+}
+
+cfind_contains_value() {
+    printf '%s' "$1" | grep -Fq "$2"
+}
+
+run_cfind() {
+    level=$1
+    shift
+    findscu "$PACS_HOST" "$DICOM_PORT" \
+        --aetitle "$CLIENT_AE" --called-ae "$PACS_AE" \
+        --level "$level" "$@" --verbose 2>&1
 }
 
 # ── Tool installation ──────────────────────────────────────────────────────────
@@ -257,6 +281,15 @@ else
     STUDY_UID=""
 fi
 
+if [ -n "$STUDY_UID" ]; then
+    PATIENT_ID=$(extract_patient_id_for_study "$STUDY_UID")
+    if [ -n "$PATIENT_ID" ]; then
+        ok "PatientID resolved via REST: ${PATIENT_ID}"
+    else
+        fail "Could not resolve a patient ID for C-FIND validation"
+    fi
+fi
+
 QIDO_STUDIES_BODY=$(mktemp)
 QIDO_CODE=$(curl -s -o "$QIDO_STUDIES_BODY" -w "%{http_code}" "${HTTP_BASE}/wado/studies" 2>/dev/null) || QIDO_CODE=0
 if [ "$QIDO_CODE" = "200" ]; then
@@ -306,21 +339,62 @@ fi
 
 # ── Step 7: C-FIND (DIMSE) ────────────────────────────────────────────────────
 
-step 7 "C-FIND  (DIMSE Study Root)"
+step 7 "C-FIND  (DIMSE patient/study/series/image)"
 
-CFIND_OUT=$(findscu "$PACS_HOST" "$DICOM_PORT" \
-    --aetitle "$CLIENT_AE" --called-ae "$PACS_AE" \
-    --level STUDY \
-    --key "0008,0052=STUDY" \
-    --verbose 2>&1) || CFIND_OUT=""
-
-# findscu exits 0 on success; result count may be in output
-if printf '%s' "$CFIND_OUT" | grep -qiE "response|result|match|study|0020,000d"; then
-    ok "C-FIND returned responses"
-elif echo "$?" | grep -q "^0$"; then
-    ok "C-FIND completed (exit 0)"
+if [ -n "$PATIENT_ID" ]; then
+    if CFIND_PATIENT_OUT=$(run_cfind PATIENT --key "0010,0020=${PATIENT_ID}"); then
+        if cfind_has_results "$CFIND_PATIENT_OUT" && cfind_contains_value "$CFIND_PATIENT_OUT" "$PATIENT_ID"; then
+            ok "C-FIND PATIENT returned PatientID ${PATIENT_ID}"
+        else
+            fail "C-FIND PATIENT output did not contain PatientID ${PATIENT_ID}"
+        fi
+    else
+        fail "C-FIND PATIENT failed"
+    fi
 else
-    fail "C-FIND failed or returned no results"
+    fail "Skipping C-FIND PATIENT validation — no patient ID available"
+fi
+
+if [ -n "$STUDY_UID" ]; then
+    if CFIND_STUDY_OUT=$(run_cfind STUDY --key "0020,000D=${STUDY_UID}"); then
+        if cfind_has_results "$CFIND_STUDY_OUT" && cfind_contains_value "$CFIND_STUDY_OUT" "$STUDY_UID"; then
+            ok "C-FIND STUDY returned StudyInstanceUID ${STUDY_UID}"
+        else
+            fail "C-FIND STUDY output did not contain StudyInstanceUID ${STUDY_UID}"
+        fi
+    else
+        fail "C-FIND STUDY failed"
+    fi
+else
+    fail "Skipping C-FIND STUDY validation — no study UID available"
+fi
+
+if [ -n "$STUDY_UID" ] && [ -n "$SERIES_UID" ]; then
+    if CFIND_SERIES_OUT=$(run_cfind SERIES --key "0020,000D=${STUDY_UID}" --key "0020,000E="); then
+        if cfind_has_results "$CFIND_SERIES_OUT" && cfind_contains_value "$CFIND_SERIES_OUT" "$SERIES_UID"; then
+            ok "C-FIND SERIES returned SeriesInstanceUID ${SERIES_UID}"
+        else
+            fail "C-FIND SERIES output did not contain SeriesInstanceUID ${SERIES_UID}"
+        fi
+    else
+        fail "C-FIND SERIES failed"
+    fi
+else
+    fail "Skipping C-FIND SERIES validation — no series UID available"
+fi
+
+if [ -n "$STUDY_UID" ] && [ -n "$SERIES_UID" ] && [ -n "$INSTANCE_UID" ]; then
+    if CFIND_IMAGE_OUT=$(run_cfind IMAGE --key "0020,000D=${STUDY_UID}" --key "0020,000E=${SERIES_UID}" --key "0008,0018="); then
+        if cfind_has_results "$CFIND_IMAGE_OUT" && cfind_contains_value "$CFIND_IMAGE_OUT" "$INSTANCE_UID"; then
+            ok "C-FIND IMAGE returned SOPInstanceUID ${INSTANCE_UID}"
+        else
+            fail "C-FIND IMAGE output did not contain SOPInstanceUID ${INSTANCE_UID}"
+        fi
+    else
+        fail "C-FIND IMAGE failed"
+    fi
+else
+    fail "Skipping C-FIND IMAGE validation — no instance UID available"
 fi
 
 # ── Step 8: WADO-RS retrieve (equivalent to C-GET) ───────────────────────────

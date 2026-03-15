@@ -12,9 +12,15 @@
 pacsnode is a modern, high-performance Picture Archiving and Communication System (PACS) built entirely in Rust. It targets radiology departments and healthcare institutions requiring on-premise deployments with full data sovereignty, HIPAA compliance, and Orthanc-class feature parity — with superior performance.
 
 **Key architectural decisions (vs. prior plans):**
-- **dicom-toolkit-rs replaces dicom-rs** — a clean-room Rust port of DCMTK providing complete DIMSE protocol support (C-STORE, C-FIND, C-GET, C-MOVE SCU+SCP), image codecs (JPEG, JPEG-LS, RLE), DICOM JSON/XML, TLS, character sets, and async networking. Far more mature DIMSE support than dicom-rs's dicom-ul crate.
+- **dicom-toolkit-rs replaces dicom-rs** — a clean-room Rust port of DCMTK providing complete DIMSE protocol support (SCU plus generic SCP server/provider APIs for C-STORE, C-FIND, C-GET, and C-MOVE), image codecs (JPEG, JPEG-LS, JPEG 2000, RLE), DICOM JSON/XML, TLS, character sets, and async networking. Far more mature DIMSE support than dicom-rs's dicom-ul crate.
 - **PostgreSQL is the sole database** — no SurrealDB, no SQLite. Eliminates dual-backend complexity, simplifies the codebase, and leverages PostgreSQL's mature JSONB + GIN indexing for the hybrid relational/document schema that DICOM metadata demands. One backend, one test suite, one deployment target.
 - **RustFS retained** for S3-compatible object storage of pixel data.
+
+### 1.1 Current Implementation Status
+- Implemented and validated: STOW-RS ingest, QIDO-RS study/series/instance queries, WADO-RS single-instance retrieval, REST health/statistics/system endpoints, and DIMSE C-ECHO/C-STORE/C-FIND.
+- Implemented in source and wired through `pacs-dimse`: DIMSE C-GET SCP and C-MOVE SCP using the toolkit server/provider interfaces and destination lookup.
+- Verification status: `cargo test --workspace --all-targets` passes locally, and the rebuilt Docker deployment passes the strengthened end-to-end smoke test.
+- Remaining major roadmap items are mostly product/platform concerns rather than protocol primitives: auth/RBAC, audit logging, advanced operational workflows, job queueing, modality worklist/MPPS, plugins/hooks, and web UI integration.
 
 **NOT FOR CLINICAL USE** — This software is not a certified medical device. It has not been validated for diagnostic or therapeutic use.
 
@@ -56,14 +62,16 @@ All code dependencies are MIT or Apache-2.0 compatible. The project itself is MI
 | C-ECHO SCU/SCP | Basic | ✅ Full |
 | C-STORE SCU/SCP | Basic | ✅ Full |
 | C-FIND SCU | Partial | ✅ Full |
-| C-FIND SCP | ❌ | ❌ (to build) |
+| C-FIND SCP | ❌ | ✅ Provider API + generic server |
 | C-GET SCU | ❌ | ✅ Full |
 | C-MOVE SCU | Partial | ✅ Full |
-| C-MOVE SCP | ❌ | ❌ (to build) |
-| C-GET SCP | ❌ | ❌ (to build) |
+| C-MOVE SCP | ❌ | ✅ Provider API + generic server |
+| C-GET SCP | ❌ | ✅ Provider API + generic server |
+| Generic DicomServer | ❌ | ✅ Builder + routing + graceful shutdown |
 | JPEG baseline codec | ❌ | ✅ Encode + Decode |
 | JPEG-LS codec | ❌ | ✅ Pure Rust, lossless + near-lossless |
 | RLE codec | ❌ | ✅ PackBits lossless |
+| JPEG 2000 codec | ❌ | ✅ Pure Rust encode + decode |
 | Image pipeline | Basic | ✅ W/L, LUT, VOI, overlays |
 | TLS (rustls) | ❌ | ✅ Client + Server |
 | Async networking | ❌ | ✅ tokio-based |
@@ -135,7 +143,7 @@ pacsnode/
 │   ├── pacs-dicom/             # dicom-toolkit-rs integration, DICOM object handling
 │   ├── pacs-store/             # PostgreSQL MetadataStore impl (sqlx)
 │   ├── pacs-storage/           # RustFS/S3 BlobStore (object_store)
-│   ├── pacs-dimse/             # DICOM SCP server framework (built on toolkit-net)
+│   ├── pacs-dimse/             # PACS-specific DIMSE providers/integration (built on toolkit-net)
 │   ├── pacs-api/               # Axum REST + DICOMweb HTTP handlers
 │   └── pacs-server/            # binary, config, startup wiring
 ├── migrations/
@@ -324,20 +332,20 @@ CREATE INDEX idx_audit_resource ON audit_log(resource_uid);
 
 ---
 
-## 6. Gap Analysis: What dicom-toolkit-rs Needs for PACS
+## 6. Toolkit Integration Status: What pacsnode Adds on Top of dicom-toolkit-rs
 
-dicom-toolkit-rs provides protocol-level implementations but lacks a server framework. The following must be built in the `pacs-dimse` crate:
+dicom-toolkit-rs now provides the generic async DIMSE server, SCP provider traits, DIMSE request handlers, and JPEG 2000 codec support. The `pacs-dimse` crate therefore focuses on PACS-specific storage/query integration, destination lookup wiring, and interoperability validation rather than rebuilding the protocol stack from scratch.
 
-| Component | Status in toolkit | Action |
+| Component | Status in toolkit | pacsnode action |
 |---|---|---|
-| C-STORE SCP | SCU only | Build SCP handler (receive from modalities) |
-| C-FIND SCP | SCU only | Build SCP handler (query database, return matches) |
-| C-GET SCP | SCU only | Build SCP handler (retrieve from storage, send sub-ops) |
-| C-MOVE SCP | SCU only | Build SCP handler (open association to dest, forward) |
-| Generic DicomServer | Not present | Build: concurrent associations, request routing, graceful shutdown |
-| JPEG 2000 codec | Transfer syntax defined, no codec | FFI bridge to OpenJPEG (optional feature) or pure-Rust later |
+| C-STORE SCP | `StoreServiceProvider` + `DicomServer` available | Implement PACS ingest provider and keep validating with real senders |
+| C-FIND SCP | `FindServiceProvider` + `DicomServer` available | Implement database-backed query provider and expand interoperability coverage |
+| C-GET SCP | `GetServiceProvider` + C-STORE sub-op handler available | Implement storage-backed retrieve provider and add broader end-to-end validation |
+| C-MOVE SCP | `MoveServiceProvider` + sub-association handler available | Implement node lookup/forwarding policy and validate against remote destinations |
+| Generic DicomServer | Present (`DicomServerBuilder`, routing, graceful shutdown, max-association limiting) | Reuse toolkit server and keep pacsnode-specific wrapper thin |
+| JPEG 2000 codec | Present (pure-Rust encode + decode) | Add PACS workflow fixtures, interoperability testing, and performance validation |
 
-Everything else (file I/O, JSON/XML, character sets, TLS, image pipeline, codecs) is ready to use.
+Most of the remaining project-specific value lies in PACS business logic, storage/query integration, operational policy, and production hardening.
 
 ---
 
@@ -359,7 +367,7 @@ Patient/Study/Series/Instance CRUD, upload, download (DICOM/PNG/JPEG), search wi
 
 ## 8. DIMSE Protocol
 
-Built on dicom-toolkit-rs's async networking and protocol-level implementations. The `pacs-dimse` crate adds the SCP server framework.
+Built on dicom-toolkit-rs's async networking, generic `DicomServer`, and DIMSE provider interfaces. The `pacs-dimse` crate adds PACS-specific providers, storage/blob integration, destination lookup wiring, and project-level tests.
 
 - **C-STORE SCP** — receive DICOM files pushed from modalities (highest priority)
 - **C-ECHO SCP** — verification (already supported by toolkit, wire into server)
@@ -400,6 +408,16 @@ Built on dicom-toolkit-rs's async networking and protocol-level implementations.
 ---
 
 ## 10. Development Phases
+
+### Current Validated Progress (2026-03-15)
+- `cargo test --workspace --all-targets` passes locally.
+- `pacs-store` integration tests run against a real PostgreSQL container, defaulting to `postgres:16-alpine` (override with `PACSNODE_TEST_POSTGRES_TAG` when needed).
+- `scripts/smoke-test.sh` passes end to end against the rebuilt Docker deployment (`20/20` checks).
+- Phase 1 capabilities validated: STOW-RS ingest, C-STORE SCP ingest, C-ECHO SCP, configuration loading, migrations, and health/statistics endpoints.
+- Phase 2 capabilities validated: QIDO-RS study/series/instance queries and C-FIND SCP.
+- Phase 3 capabilities validated: WADO-RS single-instance retrieval.
+- QIDO-RS smoke coverage now verifies matching Study Instance UID, Series Instance UID, and SOP Instance UID values in returned DICOM JSON payloads, not only HTTP `200`.
+- The previously observed empty QIDO-RS payload was traced to a stale Docker container image and resolved by rebuilding the deployment.
 
 ### Phase 1 — Skeleton & Core Pipeline
 - Workspace setup with all crates
@@ -445,7 +463,7 @@ Built on dicom-toolkit-rs's async networking and protocol-level implementations.
 - Plugin/hook system (on-receive, on-store, on-stable-study)
 - Lua/Rhai scripting for lightweight automation
 - Modality Worklist SCP + MPPS
-- JPEG 2000 codec (FFI bridge to OpenJPEG, optional feature)
+- JPEG 2000 interoperability, fixture coverage, and performance hardening
 - Web UI integration (OHIF viewer via DICOMweb)
 
 ---
@@ -455,9 +473,9 @@ Built on dicom-toolkit-rs's async networking and protocol-level implementations.
 | Risk | Severity | Mitigation |
 |---|---|---|
 | **DICOM edge cases** — real-world files from different vendors are frequently non-conformant | High | Budget significant testing time with real imaging data from multiple modalities/vendors. Use TCIA public datasets. |
-| **SCP framework complexity** — dicom-toolkit-rs has protocol-level SCU support but SCP server framework must be built | High | Build generic DicomServer early in Phase 1. Start with C-STORE SCP (simplest) and iterate. |
+| **DIMSE integration complexity** — toolkit primitives exist, but PACS-specific provider behavior and interoperability still need validation | Medium | Keep `pacs-dimse` thin over toolkit-net, and validate C-STORE/C-FIND/C-GET/C-MOVE behavior early with real peers and smoke tests. |
 | **PostgreSQL JSONB performance at scale** — GIN indexes on large JSONB columns | Medium | Benchmark with 1M+ instances early. The hybrid approach (relational columns for common queries) mitigates this — JSONB GIN is only for uncommon tag queries. |
-| **JPEG 2000** — no pure-Rust codec exists, FFI bridge adds build complexity | Low | Defer to Phase 5. Most modern modalities use JPEG-LS or uncompressed. |
+| **JPEG 2000** — codec support exists, but interoperability and performance across vendor datasets still need proof | Medium | Add real JPEG 2000 fixtures, benchmark decode/encode paths, and validate against public/vendor sample data before relying on it operationally. |
 | **dicom-toolkit-rs upstream changes** — port may not be on crates.io yet | Low | Pin to git commit hash. Contribute fixes upstream. |
 
 ---
@@ -473,4 +491,4 @@ Before writing production code, validate the core pipeline:
 5. Retrieve both and verify roundtrip integrity
 6. Test C-STORE SCP: send a DICOM file with `storescu` CLI tool → verify it arrives and is stored
 
-This validates the full pipeline before any DICOMweb HTTP layer is written, and surfaces integration issues early when they are cheap to fix.
+This prototype validation has now been exercised successfully against both the current source build and the rebuilt Docker deployment. It validated the full pipeline and surfaced a stale-container regression in QIDO-RS behavior early, before it could be mistaken for a source-level defect.

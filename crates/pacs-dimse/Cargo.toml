@@ -15,6 +15,7 @@ dicom-toolkit-data = { workspace = true }
 dicom-toolkit-net  = { workspace = true }
 async-trait        = { workspace = true }
 bytes              = { workspace = true }
+chrono             = { workspace = true }
 thiserror          = { workspace = true }
 tokio              = { workspace = true }
 tokio-util         = { workspace = true }

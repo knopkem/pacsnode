@@ -1,8 +1,9 @@
 //! SCP service provider implementations backed by the pacsnode storage layer.
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use bytes::Bytes;
+use chrono::NaiveDate;
 use dicom_toolkit_data::{DataSet, DicomWriter};
 use dicom_toolkit_dict::{tags, Vr};
 use dicom_toolkit_net::services::provider::{
@@ -220,58 +221,38 @@ impl PacsQueryProvider {
     }
 }
 
+const DIMSE_FIND_RESULT_LIMIT: u32 = 10_000;
+
 impl FindServiceProvider for PacsQueryProvider {
     #[instrument(skip(self, event), fields(
         sop_class = %event.sop_class_uid,
         calling_ae = %event.calling_ae,
     ))]
     async fn on_find(&self, event: FindEvent) -> Vec<DataSet> {
-        debug!("C-FIND received");
-        let patient_id = event
-            .identifier
-            .get_string(tags::PATIENT_ID)
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-
-        let patient_name = event
-            .identifier
-            .get_string(tags::PATIENT_NAME)
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-
-        let study_uid = event
-            .identifier
-            .get_string(tags::STUDY_INSTANCE_UID)
-            .map(|s| s.trim().trim_end_matches('\0'))
-            .filter(|s| !s.is_empty())
-            .map(StudyUid::from);
-
-        let accession_number = event
-            .identifier
-            .get_string(tags::ACCESSION_NUMBER)
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-
-        let modality = event
-            .identifier
-            .get_string(tags::MODALITY)
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-
-        let query = StudyQuery {
-            patient_id,
-            patient_name,
-            study_uid,
-            accession_number,
-            modality,
-            ..StudyQuery::default()
+        let Some(level) = QueryRetrieveLevel::from_identifier(&event.identifier) else {
+            warn!("C-FIND request missing or using unsupported QueryRetrieveLevel");
+            return Vec::new();
         };
 
-        match self.store.query_studies(&query).await {
-            Ok(studies) => studies.iter().map(build_study_response).collect(),
+        debug!(query_level = level.as_str(), "C-FIND received");
+        let keys = FindQueryKeys::from_identifier(&event.identifier);
+
+        let studies = match self.store.query_studies(&keys.study_query()).await {
+            Ok(studies) => studies,
             Err(e) => {
-                error!(error = %e, "C-FIND study query failed");
-                Vec::new()
+                error!(error = %e, query_level = level.as_str(), "C-FIND study query failed");
+                return Vec::new();
+            }
+        };
+
+        match level {
+            QueryRetrieveLevel::Patient => build_patient_responses(&studies),
+            QueryRetrieveLevel::Study => studies.iter().map(build_study_response).collect(),
+            QueryRetrieveLevel::Series => {
+                query_series_matches(self.store.as_ref(), &studies, &keys).await
+            }
+            QueryRetrieveLevel::Image => {
+                query_instance_matches(self.store.as_ref(), &studies, &keys).await
             }
         }
     }
@@ -301,6 +282,272 @@ impl MoveServiceProvider for PacsQueryProvider {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueryRetrieveLevel {
+    Patient,
+    Study,
+    Series,
+    Image,
+}
+
+impl QueryRetrieveLevel {
+    fn from_identifier(identifier: &DataSet) -> Option<Self> {
+        let level = normalized_identifier_string(identifier, tags::QUERY_RETRIEVE_LEVEL)?
+            .to_ascii_uppercase();
+
+        match level.as_str() {
+            "PATIENT" => Some(Self::Patient),
+            "STUDY" => Some(Self::Study),
+            "SERIES" => Some(Self::Series),
+            "IMAGE" | "INSTANCE" => Some(Self::Image),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Patient => "PATIENT",
+            Self::Study => "STUDY",
+            Self::Series => "SERIES",
+            Self::Image => "IMAGE",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FindQueryKeys {
+    patient_id: Option<String>,
+    patient_name: Option<String>,
+    study_date_from: Option<NaiveDate>,
+    study_date_to: Option<NaiveDate>,
+    accession_number: Option<String>,
+    study_uid: Option<StudyUid>,
+    modality: Option<String>,
+    series_uid: Option<SeriesUid>,
+    series_number: Option<i32>,
+    instance_uid: Option<SopInstanceUid>,
+    sop_class_uid: Option<String>,
+    instance_number: Option<i32>,
+}
+
+impl FindQueryKeys {
+    fn from_identifier(identifier: &DataSet) -> Self {
+        let (study_date_from, study_date_to) =
+            parse_dicom_date_range(normalized_identifier_string(identifier, tags::STUDY_DATE));
+
+        Self {
+            patient_id: normalized_identifier_string(identifier, tags::PATIENT_ID),
+            patient_name: normalized_identifier_string(identifier, tags::PATIENT_NAME),
+            study_date_from,
+            study_date_to,
+            accession_number: normalized_identifier_string(identifier, tags::ACCESSION_NUMBER),
+            study_uid: normalized_identifier_string(identifier, tags::STUDY_INSTANCE_UID)
+                .map(StudyUid::from),
+            modality: normalized_identifier_string(identifier, MODALITIES_IN_STUDY)
+                .or_else(|| normalized_identifier_string(identifier, tags::MODALITY)),
+            series_uid: normalized_identifier_string(identifier, tags::SERIES_INSTANCE_UID)
+                .map(SeriesUid::from),
+            series_number: normalized_identifier_i32(identifier, tags::SERIES_NUMBER),
+            instance_uid: normalized_identifier_string(identifier, tags::SOP_INSTANCE_UID)
+                .map(SopInstanceUid::from),
+            sop_class_uid: normalized_identifier_string(identifier, tags::SOP_CLASS_UID),
+            instance_number: normalized_identifier_i32(identifier, tags::INSTANCE_NUMBER),
+        }
+    }
+
+    fn study_query(&self) -> StudyQuery {
+        StudyQuery {
+            patient_id: self.patient_id.clone(),
+            patient_name: self.patient_name.clone().map(|name| name.replace('?', "_")),
+            study_date_from: self.study_date_from,
+            study_date_to: self.study_date_to,
+            accession_number: self.accession_number.clone(),
+            study_uid: self.study_uid.clone(),
+            modality: self.modality.clone(),
+            limit: Some(DIMSE_FIND_RESULT_LIMIT),
+            offset: Some(0),
+            include_fields: vec![],
+            fuzzy_matching: self
+                .patient_name
+                .as_deref()
+                .is_some_and(contains_dicom_wildcards),
+        }
+    }
+
+    fn series_query(&self, study_uid: StudyUid) -> SeriesQuery {
+        SeriesQuery {
+            study_uid,
+            series_uid: self.series_uid.clone(),
+            modality: self.modality.clone(),
+            series_number: self.series_number,
+            limit: Some(DIMSE_FIND_RESULT_LIMIT),
+            offset: Some(0),
+        }
+    }
+
+    fn instance_query(&self, series_uid: SeriesUid) -> InstanceQuery {
+        InstanceQuery {
+            series_uid,
+            instance_uid: self.instance_uid.clone(),
+            sop_class_uid: self.sop_class_uid.clone(),
+            instance_number: self.instance_number,
+            limit: Some(DIMSE_FIND_RESULT_LIMIT),
+            offset: Some(0),
+        }
+    }
+}
+
+fn contains_dicom_wildcards(value: &str) -> bool {
+    value.contains('*') || value.contains('?')
+}
+
+fn normalized_identifier_string(
+    identifier: &DataSet,
+    tag: dicom_toolkit_dict::Tag,
+) -> Option<String> {
+    identifier
+        .get_string(tag)
+        .map(|s| s.trim().trim_end_matches('\0').to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn normalized_identifier_i32(identifier: &DataSet, tag: dicom_toolkit_dict::Tag) -> Option<i32> {
+    identifier
+        .get_i32(tag)
+        .or_else(|| identifier.get_u16(tag).map(i32::from))
+}
+
+fn parse_dicom_date_range(value: Option<String>) -> (Option<NaiveDate>, Option<NaiveDate>) {
+    match value {
+        None => (None, None),
+        Some(value) => {
+            if let Some((from, to)) = value.split_once('-') {
+                let from = if from.trim().is_empty() {
+                    None
+                } else {
+                    parse_dicom_date(from.trim()).ok()
+                };
+                let to = if to.trim().is_empty() {
+                    None
+                } else {
+                    parse_dicom_date(to.trim()).ok()
+                };
+                (from, to)
+            } else {
+                let date = parse_dicom_date(value.trim()).ok();
+                (date, date)
+            }
+        }
+    }
+}
+
+async fn query_series_matches(
+    store: &dyn MetadataStore,
+    studies: &[Study],
+    keys: &FindQueryKeys,
+) -> Vec<DataSet> {
+    let mut responses = Vec::new();
+
+    for study in studies {
+        match store
+            .query_series(&keys.series_query(study.study_uid.clone()))
+            .await
+        {
+            Ok(series_list) => responses.extend(
+                series_list
+                    .iter()
+                    .map(|series| build_series_response(study, series)),
+            ),
+            Err(e) => {
+                error!(
+                    error = %e,
+                    study_uid = %study.study_uid,
+                    "C-FIND series query failed"
+                );
+            }
+        }
+    }
+
+    responses
+}
+
+async fn query_instance_matches(
+    store: &dyn MetadataStore,
+    studies: &[Study],
+    keys: &FindQueryKeys,
+) -> Vec<DataSet> {
+    let mut responses = Vec::new();
+
+    for study in studies {
+        let series_list = match store
+            .query_series(&keys.series_query(study.study_uid.clone()))
+            .await
+        {
+            Ok(series_list) => series_list,
+            Err(e) => {
+                error!(
+                    error = %e,
+                    study_uid = %study.study_uid,
+                    "C-FIND series query failed while resolving image matches"
+                );
+                continue;
+            }
+        };
+
+        for series in &series_list {
+            match store
+                .query_instances(&keys.instance_query(series.series_uid.clone()))
+                .await
+            {
+                Ok(instances) => responses.extend(
+                    instances
+                        .iter()
+                        .map(|instance| build_instance_response(study, series, instance)),
+                ),
+                Err(e) => {
+                    error!(
+                        error = %e,
+                        study_uid = %study.study_uid,
+                        series_uid = %series.series_uid,
+                        "C-FIND instance query failed"
+                    );
+                }
+            }
+        }
+    }
+
+    responses
+}
+
+fn build_patient_responses(studies: &[Study]) -> Vec<DataSet> {
+    let mut seen = HashSet::new();
+    let mut responses = Vec::new();
+
+    for study in studies {
+        let Some(key) = patient_response_key(study) else {
+            continue;
+        };
+
+        if seen.insert(key) {
+            responses.push(build_patient_response(study));
+        }
+    }
+
+    responses
+}
+
+fn patient_response_key(study: &Study) -> Option<String> {
+    if study.patient_id.is_none() && study.patient_name.is_none() {
+        return None;
+    }
+
+    Some(format!(
+        "{}\0{}",
+        study.patient_id.as_deref().unwrap_or(""),
+        study.patient_name.as_deref().unwrap_or("")
+    ))
+}
 
 /// Retrieves all instances matching the query identifier dataset.
 async fn retrieve_items_for(
@@ -394,16 +641,65 @@ async fn retrieve_items_for(
     items
 }
 
+fn build_patient_response(study: &Study) -> DataSet {
+    let mut ds = DataSet::new();
+    ds.set_string(
+        tags::QUERY_RETRIEVE_LEVEL,
+        Vr::CS,
+        QueryRetrieveLevel::Patient.as_str(),
+    );
+    add_patient_fields(&mut ds, study);
+    ds
+}
+
 /// Builds a C-FIND result [`DataSet`] from a [`Study`].
 fn build_study_response(study: &Study) -> DataSet {
     let mut ds = DataSet::new();
+    ds.set_string(
+        tags::QUERY_RETRIEVE_LEVEL,
+        Vr::CS,
+        QueryRetrieveLevel::Study.as_str(),
+    );
+    add_study_fields(&mut ds, study);
+    ds
+}
 
+fn build_series_response(study: &Study, series: &Series) -> DataSet {
+    let mut ds = DataSet::new();
+    ds.set_string(
+        tags::QUERY_RETRIEVE_LEVEL,
+        Vr::CS,
+        QueryRetrieveLevel::Series.as_str(),
+    );
+    add_study_fields(&mut ds, study);
+    add_series_fields(&mut ds, series);
+    ds
+}
+
+fn build_instance_response(study: &Study, series: &Series, instance: &Instance) -> DataSet {
+    let mut ds = DataSet::new();
+    ds.set_string(
+        tags::QUERY_RETRIEVE_LEVEL,
+        Vr::CS,
+        QueryRetrieveLevel::Image.as_str(),
+    );
+    add_study_fields(&mut ds, study);
+    add_series_fields(&mut ds, series);
+    add_instance_fields(&mut ds, instance);
+    ds
+}
+
+fn add_patient_fields(ds: &mut DataSet, study: &Study) {
     if let Some(pid) = &study.patient_id {
         ds.set_string(tags::PATIENT_ID, Vr::LO, pid);
     }
     if let Some(name) = &study.patient_name {
         ds.set_string(tags::PATIENT_NAME, Vr::PN, name);
     }
+}
+
+fn add_study_fields(ds: &mut DataSet, study: &Study) {
+    add_patient_fields(ds, study);
     ds.set_uid(tags::STUDY_INSTANCE_UID, study.study_uid.as_ref());
     if let Some(acc) = &study.accession_number {
         ds.set_string(tags::ACCESSION_NUMBER, Vr::SH, acc);
@@ -414,15 +710,41 @@ fn build_study_response(study: &Study) -> DataSet {
     if let Some(ref_phys) = &study.referring_physician {
         ds.set_string(tags::REFERRING_PHYSICIAN_NAME, Vr::PN, ref_phys);
     }
+    if let Some(date) = study.study_date {
+        ds.set_string(tags::STUDY_DATE, Vr::DA, &date.format("%Y%m%d").to_string());
+    }
     if let Some(time) = &study.study_time {
         ds.set_string(tags::STUDY_TIME, Vr::TM, time);
     }
     if !study.modalities.is_empty() {
-        // Multiple modalities are backslash-separated in DICOM CS.
-        ds.set_string(tags::MODALITY, Vr::CS, &study.modalities.join("\\"));
+        ds.set_strings(MODALITIES_IN_STUDY, Vr::CS, study.modalities.clone());
     }
+}
 
-    ds
+fn add_series_fields(ds: &mut DataSet, series: &Series) {
+    ds.set_uid(tags::SERIES_INSTANCE_UID, series.series_uid.as_ref());
+    if let Some(modality) = &series.modality {
+        ds.set_string(tags::MODALITY, Vr::CS, modality);
+    }
+    if let Some(series_number) = series.series_number {
+        ds.set_string(tags::SERIES_NUMBER, Vr::IS, &series_number.to_string());
+    }
+    if let Some(description) = &series.description {
+        ds.set_string(tags::SERIES_DESCRIPTION, Vr::LO, description);
+    }
+    if let Some(body_part) = &series.body_part {
+        ds.set_string(BODY_PART_EXAMINED, Vr::CS, body_part);
+    }
+}
+
+fn add_instance_fields(ds: &mut DataSet, instance: &Instance) {
+    ds.set_uid(tags::SOP_INSTANCE_UID, instance.instance_uid.as_ref());
+    if let Some(sop_class_uid) = &instance.sop_class_uid {
+        ds.set_uid(tags::SOP_CLASS_UID, sop_class_uid);
+    }
+    if let Some(instance_number) = instance.instance_number {
+        ds.set_string(tags::INSTANCE_NUMBER, Vr::IS, &instance_number.to_string());
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -489,6 +811,65 @@ mod tests {
             sop_class_uid: "1.2.840.10008.5.1.4.1.1.2".into(),
             sop_instance_uid: "1.2.3.4.1.1".into(),
             dataset: ds,
+        }
+    }
+
+    fn sample_study(uid: &str) -> Study {
+        Study {
+            study_uid: StudyUid::from(uid),
+            patient_id: Some("P001".into()),
+            patient_name: Some("Test^Patient".into()),
+            study_date: NaiveDate::from_ymd_opt(2024, 1, 2),
+            study_time: Some("101112".into()),
+            accession_number: Some("ACC001".into()),
+            modalities: vec!["CT".into(), "MR".into()],
+            referring_physician: Some("Ref^Doctor".into()),
+            description: Some("Test Study".into()),
+            num_series: 1,
+            num_instances: 1,
+            metadata: DicomJson::empty(),
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    fn sample_series(study_uid: &str, series_uid: &str) -> Series {
+        Series {
+            study_uid: StudyUid::from(study_uid),
+            series_uid: SeriesUid::from(series_uid),
+            modality: Some("CT".into()),
+            series_number: Some(7),
+            description: Some("Axial".into()),
+            body_part: Some("CHEST".into()),
+            num_instances: 1,
+            metadata: DicomJson::empty(),
+            created_at: None,
+        }
+    }
+
+    fn sample_instance(study_uid: &str, series_uid: &str, instance_uid: &str) -> Instance {
+        Instance {
+            instance_uid: SopInstanceUid::from(instance_uid),
+            series_uid: SeriesUid::from(series_uid),
+            study_uid: StudyUid::from(study_uid),
+            sop_class_uid: Some("1.2.840.10008.5.1.4.1.1.2".into()),
+            instance_number: Some(3),
+            transfer_syntax: Some("1.2.840.10008.1.2.1".into()),
+            rows: Some(512),
+            columns: Some(512),
+            blob_key: format!("{study_uid}/{series_uid}/{instance_uid}"),
+            metadata: DicomJson::empty(),
+            created_at: None,
+        }
+    }
+
+    fn find_event(level: &str) -> FindEvent {
+        let mut identifier = DataSet::new();
+        identifier.set_string(tags::QUERY_RETRIEVE_LEVEL, Vr::CS, level);
+        FindEvent {
+            calling_ae: "TESTSCU".into(),
+            sop_class_uid: "1.2.840.10008.5.1.4.1.2.2.1".into(),
+            identifier,
         }
     }
 
@@ -572,7 +953,182 @@ mod tests {
         );
     }
 
-    // ── build_study_response tests ────────────────────────────────────────────
+    // ── PacsQueryProvider tests ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn on_find_patient_level_deduplicates_patients() {
+        let first = sample_study("1.2.3.4");
+        let second = Study {
+            study_uid: StudyUid::from("1.2.3.5"),
+            ..first.clone()
+        };
+
+        let mut mock_store = MockTestStore::new();
+        mock_store
+            .expect_query_studies()
+            .once()
+            .returning(move |_| Ok(vec![first.clone(), second.clone()]));
+
+        let provider = PacsQueryProvider::new(Arc::new(mock_store), Arc::new(MockTestBlobs::new()));
+
+        let results = provider.on_find(find_event("PATIENT")).await;
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].get_string(tags::QUERY_RETRIEVE_LEVEL),
+            Some("PATIENT")
+        );
+        assert_eq!(results[0].get_string(tags::PATIENT_ID), Some("P001"));
+        assert_eq!(
+            results[0].get_string(tags::PATIENT_NAME),
+            Some("Test^Patient")
+        );
+    }
+
+    #[tokio::test]
+    async fn on_find_study_level_parses_wildcards_and_date_ranges() {
+        let expected_from = NaiveDate::from_ymd_opt(2024, 1, 2);
+        let expected_to = NaiveDate::from_ymd_opt(2024, 1, 31);
+
+        let mut mock_store = MockTestStore::new();
+        mock_store
+            .expect_query_studies()
+            .once()
+            .withf(move |q| {
+                q.patient_name.as_deref() == Some("Doe*")
+                    && q.fuzzy_matching
+                    && q.study_date_from == expected_from
+                    && q.study_date_to == expected_to
+                    && q.limit == Some(DIMSE_FIND_RESULT_LIMIT)
+                    && q.offset == Some(0)
+            })
+            .returning(|_| Ok(vec![]));
+
+        let provider = PacsQueryProvider::new(Arc::new(mock_store), Arc::new(MockTestBlobs::new()));
+
+        let mut event = find_event("STUDY");
+        event
+            .identifier
+            .set_string(tags::PATIENT_NAME, Vr::PN, "Doe*");
+        event
+            .identifier
+            .set_string(tags::STUDY_DATE, Vr::DA, "20240102-20240131");
+
+        let results = provider.on_find(event).await;
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn on_find_series_level_returns_series_matches() {
+        let study = sample_study("1.2.3.4");
+        let series = sample_series("1.2.3.4", "1.2.3.4.1");
+
+        let mut mock_store = MockTestStore::new();
+        mock_store
+            .expect_query_studies()
+            .once()
+            .withf(|q| q.study_uid.as_ref().map(|uid| uid.as_ref()) == Some("1.2.3.4"))
+            .returning(move |_| Ok(vec![study.clone()]));
+        mock_store
+            .expect_query_series()
+            .once()
+            .withf(|q| {
+                q.study_uid.as_ref() == "1.2.3.4"
+                    && q.series_number == Some(7)
+                    && q.limit == Some(DIMSE_FIND_RESULT_LIMIT)
+            })
+            .returning(move |_| Ok(vec![series.clone()]));
+
+        let provider = PacsQueryProvider::new(Arc::new(mock_store), Arc::new(MockTestBlobs::new()));
+
+        let mut event = find_event("SERIES");
+        event
+            .identifier
+            .set_uid(tags::STUDY_INSTANCE_UID, "1.2.3.4");
+        event.identifier.set_i32(tags::SERIES_NUMBER, 7);
+
+        let results = provider.on_find(event).await;
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].get_string(tags::QUERY_RETRIEVE_LEVEL),
+            Some("SERIES")
+        );
+        assert_eq!(
+            results[0].get_string(tags::STUDY_INSTANCE_UID),
+            Some("1.2.3.4")
+        );
+        assert_eq!(
+            results[0].get_string(tags::SERIES_INSTANCE_UID),
+            Some("1.2.3.4.1")
+        );
+        assert_eq!(results[0].get_string(tags::MODALITY), Some("CT"));
+    }
+
+    #[tokio::test]
+    async fn on_find_image_level_returns_instance_matches() {
+        let study = sample_study("1.2.3.4");
+        let series = sample_series("1.2.3.4", "1.2.3.4.1");
+        let instance = sample_instance("1.2.3.4", "1.2.3.4.1", "1.2.3.4.1.1");
+
+        let mut mock_store = MockTestStore::new();
+        mock_store
+            .expect_query_studies()
+            .once()
+            .withf(|q| q.study_uid.as_ref().map(|uid| uid.as_ref()) == Some("1.2.3.4"))
+            .returning(move |_| Ok(vec![study.clone()]));
+        mock_store
+            .expect_query_series()
+            .once()
+            .withf(|q| {
+                q.study_uid.as_ref() == "1.2.3.4"
+                    && q.series_uid.as_ref().map(|uid| uid.as_ref()) == Some("1.2.3.4.1")
+            })
+            .returning(move |_| Ok(vec![series.clone()]));
+        mock_store
+            .expect_query_instances()
+            .once()
+            .withf(|q| {
+                q.series_uid.as_ref() == "1.2.3.4.1"
+                    && q.instance_number == Some(3)
+                    && q.limit == Some(DIMSE_FIND_RESULT_LIMIT)
+            })
+            .returning(move |_| Ok(vec![instance.clone()]));
+
+        let provider = PacsQueryProvider::new(Arc::new(mock_store), Arc::new(MockTestBlobs::new()));
+
+        let mut event = find_event("IMAGE");
+        event
+            .identifier
+            .set_uid(tags::STUDY_INSTANCE_UID, "1.2.3.4");
+        event
+            .identifier
+            .set_uid(tags::SERIES_INSTANCE_UID, "1.2.3.4.1");
+        event.identifier.set_i32(tags::INSTANCE_NUMBER, 3);
+
+        let results = provider.on_find(event).await;
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].get_string(tags::QUERY_RETRIEVE_LEVEL),
+            Some("IMAGE")
+        );
+        assert_eq!(
+            results[0].get_string(tags::STUDY_INSTANCE_UID),
+            Some("1.2.3.4")
+        );
+        assert_eq!(
+            results[0].get_string(tags::SERIES_INSTANCE_UID),
+            Some("1.2.3.4.1")
+        );
+        assert_eq!(
+            results[0].get_string(tags::SOP_INSTANCE_UID),
+            Some("1.2.3.4.1.1")
+        );
+        assert_eq!(
+            results[0].get_string(tags::SOP_CLASS_UID),
+            Some("1.2.840.10008.5.1.4.1.1.2")
+        );
+    }
+
+    // ── C-FIND response builder tests ─────────────────────────────────────────
 
     #[test]
     fn build_study_response_sets_study_uid() {
@@ -595,6 +1151,7 @@ mod tests {
 
         let ds = build_study_response(&study);
         assert_eq!(ds.get_string(tags::STUDY_INSTANCE_UID), Some("1.2.3.4"),);
+        assert_eq!(ds.get_string(tags::QUERY_RETRIEVE_LEVEL), Some("STUDY"));
     }
 
     #[test]
@@ -620,5 +1177,11 @@ mod tests {
         assert_eq!(ds.get_string(tags::PATIENT_ID), Some("P002"));
         assert_eq!(ds.get_string(tags::PATIENT_NAME), Some("Doe^Jane"));
         assert_eq!(ds.get_string(tags::ACCESSION_NUMBER), Some("ACC001"));
+        assert_eq!(
+            ds.get_strings(MODALITIES_IN_STUDY)
+                .and_then(|values| values.first())
+                .map(String::as_str),
+            Some("MR")
+        );
     }
 }

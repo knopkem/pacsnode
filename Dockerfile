@@ -1,5 +1,5 @@
 # ── Builder stage ─────────────────────────────────────────────────────────────
-FROM rust:1.80-slim-bookworm AS builder
+FROM rust:1.88-slim-bookworm AS builder
 
 # Install build deps (OpenSSL for reqwest/rustls, pkg-config, git for cargo git deps)
 RUN apt-get update && apt-get install -y --no-install-recommends \

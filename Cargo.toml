@@ -13,7 +13,7 @@ members = [
 [workspace.package]
 version     = "0.1.0"
 edition     = "2021"
-rust-version = "1.80"
+rust-version = "1.88"
 license     = "MIT"
 repository  = "https://github.com/your-org/pacsnode"
 authors     = ["pacsnode Contributors"]

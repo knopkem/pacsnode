@@ -89,7 +89,7 @@ curl http://localhost:8042/health
 
 ### Prerequisites
 
-- **Rust 1.80+** (see `rust-toolchain.toml`)
+- **Rust 1.88+** (see `rust-toolchain.toml`)
 - **PostgreSQL 14+** — running instance with a database created
 - **S3-compatible storage** — MinIO, RustFS, or AWS S3
 - **sqlx-cli** (optional, for managing migrations manually):

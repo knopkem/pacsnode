@@ -61,26 +61,56 @@ A modern, high-performance **Picture Archiving and Communication System (PACS)**
 
 ## Quick Start (Docker Compose)
 
-The fastest way to get pacsnode running with PostgreSQL and MinIO:
+> **Prerequisites:** Docker and Docker Compose installed.
+
+**Step 1 — Copy the environment file**
 
 ```bash
 cd docker
 cp .env.example .env
-# Edit .env — change passwords for production use
+```
 
+The defaults in `.env` work as-is for local testing — no editing required. For production, change the passwords before proceeding.
+
+**Step 2 — Build and start the stack**
+
+```bash
 docker compose up -d
 ```
 
-This starts:
-- **PostgreSQL 16** on port `5432`
-- **MinIO** on port `9000` (S3 API) and `9001` (web console)
-- **pacsnode** on port `8042` (HTTP/DICOMweb) and `4242` (DIMSE)
+This starts four services in dependency order:
+1. **PostgreSQL 16** — waits until healthy
+2. **MinIO** — waits until healthy
+3. **minio-init** — creates the `dicom` bucket, then exits
+4. **pacsnode** — starts only after the bucket exists and postgres is ready
 
-Verify it's running:
+The first run compiles the Rust binary inside Docker; this takes a few minutes. Subsequent starts use the image cache and are instant.
+
+**Step 3 — Verify**
 
 ```bash
 curl http://localhost:8042/health
 # {"status":"ok"}
+
+curl http://localhost:8042/statistics
+# {"studies":0,"series":0,"instances":0,"disk_usage_bytes":0}
+```
+
+**Services at a glance:**
+
+| Service | Port | Description |
+|---------|------|-------------|
+| pacsnode REST/DICOMweb | `8042` | STOW-RS, QIDO-RS, WADO-RS, REST API |
+| pacsnode DIMSE | `4242` | C-STORE, C-FIND, C-MOVE, C-GET, C-ECHO |
+| MinIO S3 API | `9000` | Pixel data object storage |
+| MinIO web console | `9001` | Browse stored DICOM files (login: see `.env`) |
+| PostgreSQL | `5432` | Metadata database |
+
+**Tear down:**
+
+```bash
+docker compose down          # stop, keep data volumes
+docker compose down -v       # stop and delete all data
 ```
 
 ---

@@ -145,9 +145,14 @@ impl AppConfig {
         Config::builder()
             // Optional TOML config file
             .add_source(File::with_name(file_stem).required(false))
-            // Environment variable overrides: PACS_DATABASE__URL → database.url
+            // Environment variable overrides:
+            //   PACS_DATABASE__URL   → database.url
+            //   PACS_SERVER__HTTP_PORT → server.http_port
+            // prefix_separator("_") separates the "PACS" prefix from the key;
+            // separator("__") separates nested key segments.
             .add_source(
                 Environment::with_prefix("PACS")
+                    .prefix_separator("_")
                     .separator("__")
                     .try_parsing(true),
             )

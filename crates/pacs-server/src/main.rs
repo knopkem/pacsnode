@@ -65,6 +65,12 @@ async fn main() -> Result<()> {
 
     // ── HTTP server ───────────────────────────────────────────────────────────
     let app_state = pacs_api::AppState {
+        server_info: pacs_api::ServerInfo {
+            ae_title: cfg.server.ae_title.clone(),
+            http_port: cfg.server.http_port,
+            dicom_port: cfg.server.dicom_port,
+            version: env!("CARGO_PKG_VERSION"),
+        },
         store: meta_store.clone(),
         blobs: blob_store.clone(),
         nodes: Arc::new(tokio::sync::RwLock::new(vec![])),

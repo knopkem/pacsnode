@@ -14,7 +14,7 @@ pub mod routes;
 pub mod state;
 
 pub use router::build_router;
-pub use state::{AppState, DicomNode};
+pub use state::{AppState, DicomNode, ServerInfo};
 
 #[cfg(test)]
 pub(crate) mod test_support {
@@ -67,7 +67,14 @@ pub(crate) mod test_support {
 
     /// Build an [`AppState`] backed by the provided mock stores.
     pub fn make_test_state(store: MockMetaStore, blobs: MockBlobStr) -> AppState {
+        use crate::state::ServerInfo;
         AppState {
+            server_info: ServerInfo {
+                ae_title: "TESTPACS".into(),
+                http_port: 8042,
+                dicom_port: 4242,
+                version: env!("CARGO_PKG_VERSION"),
+            },
             store: Arc::new(store),
             blobs: Arc::new(blobs),
             nodes: Arc::new(tokio::sync::RwLock::new(vec![])),

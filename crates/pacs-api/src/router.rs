@@ -32,6 +32,7 @@ pub fn build_router(state: AppState) -> Router {
         // ── Health / Stats ────────────────────────────────────────────────────
         .route("/health", get(health::get_health))
         .route("/statistics", get(health::get_statistics))
+        .route("/system", get(health::get_system_info))
         // ── STOW-RS ───────────────────────────────────────────────────────────
         // POST /wado/studies shares the path with QIDO GET below
         .route(

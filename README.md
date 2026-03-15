@@ -300,6 +300,26 @@ Upload DICOM instances. Each multipart part contains one DICOM file. Returns a P
 |--------|----------|-------------|
 | `GET` | `/health` | Health check (`{"status":"ok"}`) |
 | `GET` | `/statistics` | Study/series/instance counts and disk usage |
+| `GET` | `/system` | Server identity, ports, and registered remote nodes |
+
+**`GET /system` response:**
+
+```json
+{
+  "ae_title":   "PACSNODE",
+  "http_port":  8042,
+  "dicom_port": 4242,
+  "version":    "0.1.0",
+  "nodes": [
+    {
+      "ae_title":    "MODALITY1",
+      "host":        "192.168.1.10",
+      "port":        104,
+      "description": "CT Scanner"
+    }
+  ]
+}
+```
 
 ---
 

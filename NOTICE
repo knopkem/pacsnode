@@ -1,0 +1,21 @@
+FerritePACS
+Copyright 2026 FerritePACS Contributors
+
+This project is licensed under the MIT License.
+
+---
+
+This software is a PACS (Picture Archiving and Communication System) built on
+dicom-toolkit-rs, a clean-room Rust port inspired by DCMTK.
+
+DCMTK (DICOM Toolkit) is Copyright (C) 1994-2024 OFFIS e.V., Oldenburg, Germany.
+DCMTK is licensed under the BSD 3-Clause License.
+This software is NOT affiliated with or endorsed by OFFIS.
+The DICOM algorithms in dicom-toolkit-rs were independently implemented in Rust,
+inspired by DCMTK's design.
+
+CharLS (used as algorithmic reference for JPEG-LS) is Copyright (C) 2007-2024
+Team CharLS. CharLS is licensed under the BSD 3-Clause License.
+
+⚠️  NOT FOR CLINICAL USE — This software has not been validated for diagnostic
+    or therapeutic purposes. It is not a certified medical device.

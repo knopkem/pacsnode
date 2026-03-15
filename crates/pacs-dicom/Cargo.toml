@@ -1,0 +1,22 @@
+[package]
+name        = "pacs-dicom"
+description = "pacsnode — DICOM parsing bridge (dicom-toolkit-rs adapter)"
+version.workspace     = true
+edition.workspace     = true
+rust-version.workspace = true
+license.workspace     = true
+
+[dependencies]
+pacs-core            = { workspace = true }
+dicom-toolkit-core   = { workspace = true }
+dicom-toolkit-dict   = { workspace = true }
+dicom-toolkit-data   = { workspace = true }
+bytes                = { workspace = true }
+chrono               = { workspace = true }
+serde_json           = { workspace = true }
+thiserror            = { workspace = true }
+tracing              = { workspace = true }
+
+[dev-dependencies]
+rstest     = { workspace = true }
+tokio      = { workspace = true }

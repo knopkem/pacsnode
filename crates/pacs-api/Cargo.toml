@@ -1,0 +1,32 @@
+[package]
+name        = "pacs-api"
+description = "pacsnode — Axum HTTP server (DICOMweb + REST)"
+version.workspace     = true
+edition.workspace     = true
+rust-version.workspace = true
+license.workspace     = true
+
+[dependencies]
+pacs-core    = { workspace = true }
+pacs-dicom   = { workspace = true }
+async-trait  = { workspace = true }
+axum         = { workspace = true }
+bytes        = { workspace = true }
+chrono       = { workspace = true }
+http         = { workspace = true }
+mime         = { workspace = true }
+multer       = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+tokio        = { workspace = true }
+tower        = { workspace = true }
+tower-http   = { workspace = true }
+tracing      = { workspace = true }
+uuid         = { workspace = true }
+
+[dev-dependencies]
+http-body-util = "0.1"
+mockall        = { workspace = true }
+rstest         = { workspace = true }
+tokio-test     = { workspace = true }

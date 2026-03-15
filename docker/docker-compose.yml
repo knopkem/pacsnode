@@ -1,0 +1,77 @@
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB}
+      POSTGRES_USER:     ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── MinIO (S3-compatible object store, stand-in for RustFS) ─────────────────
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER:     ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ── pacsnode ─────────────────────────────────────────────────────────────
+  pacsnode:
+    build:
+      context: ../
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    ports:
+      - "${HTTP_PORT:-8042}:8042"    # DICOMweb / REST API
+      - "${DICOM_PORT:-4242}:4242"   # DIMSE / C-STORE / C-FIND
+    environment:
+      # Database
+      PACS_DATABASE__URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+
+      # Object storage
+      PACS_STORAGE__ENDPOINT:   http://minio:9000
+      PACS_STORAGE__ACCESS_KEY: ${MINIO_ROOT_USER}
+      PACS_STORAGE__SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      PACS_STORAGE__BUCKET:     ${STORAGE_BUCKET}
+      PACS_STORAGE__REGION:     ${STORAGE_REGION:-us-east-1}
+
+      # Server
+      PACS_SERVER__AE_TITLE:    ${PACS_SERVER__AE_TITLE:-PACSNODE}
+      PACS_SERVER__HTTP_PORT:   "8042"
+      PACS_SERVER__DICOM_PORT:  "4242"
+
+      # Logging
+      PACS_LOGGING__LEVEL:      ${PACS_LOGGING__LEVEL:-info,pacs_server=debug}
+
+volumes:
+  postgres_data:
+  minio_data:

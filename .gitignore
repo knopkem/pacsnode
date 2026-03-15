@@ -1,0 +1,53 @@
+# ── Rust ─────────────────────────────────────────────────────────────────────
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# ── Secrets & config overrides ───────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+config.toml
+config.*.toml
+!config.toml.example
+
+# ── TLS / certificates ───────────────────────────────────────────────────────
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# ── sqlx offline query cache ─────────────────────────────────────────────────
+# Commit .sqlx/ only if you want offline compile-time query checking in CI
+# without a live database. Uncomment the next line to ignore it instead.
+# .sqlx/
+
+# ── IDE & editor ─────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.DS_Store
+Thumbs.db
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Docker local volumes ─────────────────────────────────────────────────────
+docker/postgres_data/
+docker/minio_data/
+
+# ── Test artifacts ───────────────────────────────────────────────────────────
+tests/fixtures/scratch/
+

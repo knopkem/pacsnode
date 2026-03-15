@@ -1,0 +1,26 @@
+[package]
+name        = "pacs-dimse"
+description = "pacsnode — DIMSE SCU client and SCP stubs"
+version.workspace     = true
+edition.workspace     = true
+rust-version.workspace = true
+license.workspace     = true
+
+[dependencies]
+pacs-core          = { workspace = true }
+pacs-dicom         = { workspace = true }
+dicom-toolkit-core = { workspace = true }
+dicom-toolkit-dict = { workspace = true }
+dicom-toolkit-data = { workspace = true }
+dicom-toolkit-net  = { workspace = true }
+async-trait        = { workspace = true }
+bytes              = { workspace = true }
+thiserror          = { workspace = true }
+tokio              = { workspace = true }
+tokio-util         = { workspace = true }
+tracing            = { workspace = true }
+
+[dev-dependencies]
+rstest   = { workspace = true }
+mockall  = { workspace = true }
+tokio    = { workspace = true }

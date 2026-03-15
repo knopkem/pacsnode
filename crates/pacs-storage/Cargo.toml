@@ -1,0 +1,24 @@
+[package]
+name        = "pacs-storage"
+description = "pacsnode — S3/RustFS BlobStore implementation"
+version.workspace     = true
+edition.workspace     = true
+rust-version.workspace = true
+license.workspace     = true
+
+[dependencies]
+pacs-core    = { workspace = true }
+async-trait  = { workspace = true }
+bytes        = { workspace = true }
+http         = { workspace = true }
+object_store = { workspace = true }
+serde        = { workspace = true }
+thiserror    = { workspace = true }
+tracing      = { workspace = true }
+url          = { workspace = true }
+
+[dev-dependencies]
+rstest           = { workspace = true }
+serde_json       = { workspace = true }
+testcontainers   = { workspace = true }
+tokio            = { workspace = true }

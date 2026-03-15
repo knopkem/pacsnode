@@ -1,0 +1,99 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pacs-core",
+    "crates/pacs-dicom",
+    "crates/pacs-store",
+    "crates/pacs-storage",
+    "crates/pacs-dimse",
+    "crates/pacs-api",
+    "crates/pacs-server",
+]
+
+[workspace.package]
+version     = "0.1.0"
+edition     = "2021"
+rust-version = "1.80"
+license     = "MIT"
+repository  = "https://github.com/your-org/pacsnode"
+authors     = ["pacsnode Contributors"]
+
+[workspace.dependencies]
+# ── Internal crates ───────────────────────────────────────────────────────────
+pacs-core    = { path = "crates/pacs-core" }
+pacs-dicom   = { path = "crates/pacs-dicom" }
+pacs-store   = { path = "crates/pacs-store" }
+pacs-storage = { path = "crates/pacs-storage" }
+pacs-dimse   = { path = "crates/pacs-dimse" }
+pacs-api     = { path = "crates/pacs-api" }
+
+# ── dicom-toolkit-rs (git dep — not yet published to crates.io) ───────────────
+dicom-toolkit-core  = { git = "https://github.com/knopkem/dicom-toolkit-rs", branch = "main" }
+dicom-toolkit-dict  = { git = "https://github.com/knopkem/dicom-toolkit-rs", branch = "main" }
+dicom-toolkit-data  = { git = "https://github.com/knopkem/dicom-toolkit-rs", branch = "main" }
+dicom-toolkit-net   = { git = "https://github.com/knopkem/dicom-toolkit-rs", branch = "main" }
+dicom-toolkit-image = { git = "https://github.com/knopkem/dicom-toolkit-rs", branch = "main" }
+dicom-toolkit-codec = { git = "https://github.com/knopkem/dicom-toolkit-rs", branch = "main" }
+
+# ── Async runtime ─────────────────────────────────────────────────────────────
+tokio        = { version = "1", features = ["full"] }
+tokio-util   = { version = "0.7", features = ["rt"] }
+
+# ── HTTP ──────────────────────────────────────────────────────────────────────
+axum         = { version = "0.8", features = ["multipart", "macros"] }
+tower        = { version = "0.5", features = ["full"] }
+tower-http   = { version = "0.6", features = ["trace", "cors", "timeout", "limit", "request-id", "compression-full"] }
+http         = "1"
+mime         = "0.3"
+multer       = "3"
+
+# ── Serialization ─────────────────────────────────────────────────────────────
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+
+# ── Database ──────────────────────────────────────────────────────────────────
+sqlx         = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "migrate"] }
+
+# ── Object storage ────────────────────────────────────────────────────────────
+object_store = { version = "0.11", features = ["aws"] }
+
+# ── Error handling ────────────────────────────────────────────────────────────
+thiserror    = "2"
+anyhow       = "1"
+
+# ── Types ─────────────────────────────────────────────────────────────────────
+uuid         = { version = "1", features = ["v4", "serde"] }
+chrono       = { version = "0.4", features = ["serde"] }
+bytes        = "1"
+url          = { version = "2", features = ["serde"] }
+
+# ── Observability ─────────────────────────────────────────────────────────────
+tracing             = "0.1"
+tracing-subscriber  = { version = "0.3", features = ["env-filter", "json"] }
+
+# ── Config ────────────────────────────────────────────────────────────────────
+config       = "0.14"
+
+# ── Async trait ───────────────────────────────────────────────────────────────
+async-trait  = "0.1"
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+jsonwebtoken = "9"
+argon2       = "0.5"
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+tokio-test          = "0.4"
+mockall             = "0.13"
+rstest              = "0.23"
+testcontainers      = "0.23"
+testcontainers-modules = { version = "0.11", features = ["postgres"] }
+
+[profile.release]
+opt-level = 3
+lto       = "thin"
+codegen-units = 1
+strip     = "debuginfo"
+
+[profile.dev]
+opt-level = 0
+debug     = true

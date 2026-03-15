@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use crate::domain::{
-    DicomJson, Instance, InstanceQuery, PacsStatistics, Series, SeriesQuery, SeriesUid,
+    DicomJson, DicomNode, Instance, InstanceQuery, PacsStatistics, Series, SeriesQuery, SeriesUid,
     SopInstanceUid, Study, StudyQuery, StudyUid,
 };
 use crate::error::PacsResult;
@@ -73,6 +73,19 @@ pub trait MetadataStore: Send + Sync {
 
     /// Returns aggregate statistics for the PACS system.
     async fn get_statistics(&self) -> PacsResult<PacsStatistics>;
+
+    /// Lists all registered remote DICOM nodes (AE whitelist).
+    async fn list_nodes(&self) -> PacsResult<Vec<DicomNode>>;
+
+    /// Inserts or updates a remote DICOM node (upsert keyed on AE title).
+    async fn upsert_node(&self, node: &DicomNode) -> PacsResult<()>;
+
+    /// Removes a remote DICOM node by AE title.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::PacsError::NotFound`] if no node with the given AE title exists.
+    async fn delete_node(&self, ae_title: &str) -> PacsResult<()>;
 }
 
 #[cfg(test)]
@@ -132,5 +145,38 @@ mod tests {
         let q = crate::domain::StudyQuery::default();
         let results: Vec<crate::domain::Study> = mock.query_studies(&q).await.unwrap();
         assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_mock_list_nodes_empty() {
+        let mut mock = MockMetadataStore::new();
+        mock.expect_list_nodes().once().returning(|| Ok(vec![]));
+        let nodes = mock.list_nodes().await.unwrap();
+        assert!(nodes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_mock_upsert_node_ok() {
+        let mut mock = MockMetadataStore::new();
+        mock.expect_upsert_node().once().returning(|_| Ok(()));
+        let node = crate::domain::DicomNode {
+            ae_title: "MOD1".into(),
+            host: "192.168.1.1".into(),
+            port: 104,
+            description: None,
+            tls_enabled: false,
+        };
+        assert!(mock.upsert_node(&node).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_mock_delete_node_not_found() {
+        use crate::error::PacsError;
+        let mut mock = MockMetadataStore::new();
+        mock.expect_delete_node()
+            .once()
+            .returning(|ae| Err(PacsError::NotFound { resource: "node", uid: ae.to_string() }));
+        let result = mock.delete_node("MISSING").await;
+        assert!(matches!(result, Err(PacsError::NotFound { .. })));
     }
 }

@@ -73,7 +73,6 @@ async fn main() -> Result<()> {
         },
         store: meta_store.clone(),
         blobs: blob_store.clone(),
-        nodes: Arc::new(tokio::sync::RwLock::new(vec![])),
     };
     let router = pacs_api::build_router(app_state);
 

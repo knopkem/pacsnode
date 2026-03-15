@@ -6,25 +6,26 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use pacs_core::PacsError;
 
 use crate::{error::ApiError, state::AppState, state::DicomNode};
 
 /// `GET /api/nodes` — list all registered DICOM nodes.
-pub async fn list_nodes(State(state): State<AppState>) -> impl IntoResponse {
-    let nodes = state.nodes.read().await.clone();
-    Json(nodes)
+pub async fn list_nodes(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let nodes = state.store.list_nodes().await?;
+    Ok(Json(nodes))
 }
 
-/// `POST /api/nodes` — register a new DICOM node.
+/// `POST /api/nodes` — register or update a DICOM node (upsert by AE title).
 ///
-/// Returns `201 Created` with the created [`DicomNode`] as JSON.
+/// Returns `201 Created` with the stored [`DicomNode`] as JSON.
 pub async fn add_node(
     State(state): State<AppState>,
     Json(node): Json<DicomNode>,
-) -> impl IntoResponse {
-    state.nodes.write().await.push(node.clone());
-    (StatusCode::CREATED, Json(node))
+) -> Result<impl IntoResponse, ApiError> {
+    state.store.upsert_node(&node).await?;
+    Ok((StatusCode::CREATED, Json(node)))
 }
 
 /// `DELETE /api/nodes/:ae_title` — remove a DICOM node by AE title.
@@ -34,15 +35,7 @@ pub async fn remove_node(
     State(state): State<AppState>,
     Path(ae_title): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let mut nodes = state.nodes.write().await;
-    let before = nodes.len();
-    nodes.retain(|n| n.ae_title != ae_title);
-    if nodes.len() == before {
-        return Err(ApiError(PacsError::NotFound {
-            resource: "node",
-            uid: ae_title,
-        }));
-    }
+    state.store.delete_node(&ae_title).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -53,6 +46,7 @@ mod tests {
         http::{Request, StatusCode},
     };
     use http_body_util::BodyExt;
+    use pacs_core::{DicomNode, PacsError};
     use tower::ServiceExt;
 
     use crate::{
@@ -62,7 +56,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_nodes_returns_empty_array() {
-        let app = build_router(make_test_state(MockMetaStore::new(), MockBlobStr::new()));
+        let mut store = MockMetaStore::new();
+        store.expect_list_nodes().once().returning(|| Ok(vec![]));
+        let app = build_router(make_test_state(store, MockBlobStr::new()));
         let resp = app
             .oneshot(
                 Request::builder()
@@ -80,7 +76,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_and_list_node() {
-        let app = build_router(make_test_state(MockMetaStore::new(), MockBlobStr::new()));
+        let mut store = MockMetaStore::new();
+        store.expect_upsert_node().once().returning(|_| Ok(()));
+        store.expect_list_nodes().once().returning(|| {
+            Ok(vec![DicomNode {
+                ae_title: "PACS1".into(),
+                host: "10.0.0.1".into(),
+                port: 104,
+                description: None,
+                tls_enabled: false,
+            }])
+        });
+
+        let app = build_router(make_test_state(store, MockBlobStr::new()));
         let node_json =
             r#"{"ae_title":"PACS1","host":"10.0.0.1","port":104,"description":null}"#;
 
@@ -99,7 +107,7 @@ mod tests {
             .unwrap();
         assert_eq!(add_resp.status(), StatusCode::CREATED);
 
-        // List nodes
+        // List nodes — mock returns the pre-programmed vec
         let list_resp = app
             .oneshot(
                 Request::builder()
@@ -117,7 +125,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_nonexistent_node_returns_404() {
-        let app = build_router(make_test_state(MockMetaStore::new(), MockBlobStr::new()));
+        let mut store = MockMetaStore::new();
+        store.expect_delete_node().once().returning(|ae| {
+            Err(PacsError::NotFound {
+                resource: "node",
+                uid: ae.to_string(),
+            })
+        });
+        let app = build_router(make_test_state(store, MockBlobStr::new()));
         let resp = app
             .oneshot(
                 Request::builder()
@@ -133,8 +148,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_add_then_delete_node() {
-        let state = make_test_state(MockMetaStore::new(), MockBlobStr::new());
-        let app = build_router(state);
+        let mut store = MockMetaStore::new();
+        store.expect_upsert_node().once().returning(|_| Ok(()));
+        store.expect_delete_node().once().returning(|_| Ok(()));
+
+        let app = build_router(make_test_state(store, MockBlobStr::new()));
         let node_json =
             r#"{"ae_title":"REMOTE","host":"192.168.1.2","port":11112,"description":null}"#;
 
@@ -165,3 +183,4 @@ mod tests {
         assert_eq!(del_resp.status(), StatusCode::NO_CONTENT);
     }
 }
+

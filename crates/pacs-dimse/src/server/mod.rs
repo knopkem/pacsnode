@@ -350,6 +350,9 @@ mod tests {
             async fn delete_series(&self, uid: &SeriesUid) -> PacsResult<()>;
             async fn delete_instance(&self, uid: &SopInstanceUid) -> PacsResult<()>;
             async fn get_statistics(&self) -> PacsResult<PacsStatistics>;
+            async fn list_nodes(&self) -> PacsResult<Vec<pacs_core::DicomNode>>;
+            async fn upsert_node(&self, node: &pacs_core::DicomNode) -> PacsResult<()>;
+            async fn delete_node(&self, ae_title: &str) -> PacsResult<()>;
         }
     }
     mock! {

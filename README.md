@@ -288,11 +288,43 @@ Upload DICOM instances. Each multipart part contains one DICOM file. Returns a P
 
 #### Remote DICOM Nodes
 
+Nodes are the **AE whitelist** — the list of trusted remote DICOM Application Entities that pacsnode will accept C-STORE associations from and push instances to. They are stored in the `dicom_nodes` PostgreSQL table and **persist across restarts**.
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/nodes` | List registered remote nodes |
-| `POST` | `/api/nodes` | Register a remote DICOM node |
+| `GET` | `/api/nodes` | List all registered remote nodes |
+| `POST` | `/api/nodes` | Register or update a remote node (upsert by AE title) |
 | `DELETE` | `/api/nodes/{ae_title}` | Remove a remote node |
+
+**Register a node:**
+
+```bash
+curl -s -X POST http://localhost:8042/api/nodes \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ae_title":    "MODALITY1",
+    "host":        "192.168.1.10",
+    "port":        104,
+    "description": "CT Scanner — Room 3",
+    "tls_enabled": false
+  }'
+```
+
+**List nodes:**
+
+```bash
+curl -s http://localhost:8042/api/nodes
+# [{"ae_title":"MODALITY1","host":"192.168.1.10","port":104,"description":"CT Scanner — Room 3","tls_enabled":false}]
+```
+
+**Remove a node:**
+
+```bash
+curl -s -X DELETE http://localhost:8042/api/nodes/MODALITY1
+# HTTP 204 No Content
+```
+
+> **Note:** The `ae_title` field is the unique key. POSTing a node with an existing AE title updates it in place.
 
 #### System
 
@@ -315,7 +347,8 @@ Upload DICOM instances. Each multipart part contains one DICOM file. Returns a P
       "ae_title":    "MODALITY1",
       "host":        "192.168.1.10",
       "port":        104,
-      "description": "CT Scanner"
+      "description": "CT Scanner",
+      "tls_enabled": false
     }
   ]
 }

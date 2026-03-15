@@ -13,8 +13,8 @@ pub mod store;
 
 pub use blob::BlobStore;
 pub use domain::{
-    blob_key_for, DicomJson, Instance, InstanceQuery, PacsStatistics, Series, SeriesQuery,
-    SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
+    blob_key_for, DicomJson, DicomNode, Instance, InstanceQuery, PacsStatistics, Series,
+    SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
 };
 pub use error::{PacsError, PacsResult};
 pub use store::MetadataStore;

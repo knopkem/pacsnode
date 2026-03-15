@@ -10,13 +10,13 @@
 
 use async_trait::async_trait;
 use pacs_core::{
-    DicomJson, Instance, InstanceQuery, MetadataStore, PacsError, PacsResult, PacsStatistics,
-    Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
+    DicomJson, DicomNode, Instance, InstanceQuery, MetadataStore, PacsError, PacsResult,
+    PacsStatistics, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
 };
 use sqlx::PgPool;
 use tracing::instrument;
 
-use crate::queries::{instance, series, study};
+use crate::queries::{instance, node, series, study};
 
 /// PostgreSQL-backed [`MetadataStore`] for pacsnode.
 ///
@@ -108,6 +108,21 @@ impl MetadataStore for PgMetadataStore {
     #[instrument(skip(self))]
     async fn get_statistics(&self) -> PacsResult<PacsStatistics> {
         get_stats(&self.pool).await
+    }
+
+    #[instrument(skip(self))]
+    async fn list_nodes(&self) -> PacsResult<Vec<DicomNode>> {
+        node::list(&self.pool).await
+    }
+
+    #[instrument(skip(self, n), fields(ae_title = %n.ae_title))]
+    async fn upsert_node(&self, n: &DicomNode) -> PacsResult<()> {
+        node::upsert(&self.pool, n).await
+    }
+
+    #[instrument(skip(self), fields(ae_title = %ae_title))]
+    async fn delete_node(&self, ae_title: &str) -> PacsResult<()> {
+        node::delete(&self.pool, ae_title).await
     }
 }
 

@@ -24,8 +24,8 @@ pub(crate) mod test_support {
     use bytes::Bytes;
     use mockall::mock;
     use pacs_core::{
-        BlobStore, DicomJson, Instance, InstanceQuery, MetadataStore, PacsResult, PacsStatistics,
-        Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
+        BlobStore, DicomJson, DicomNode, Instance, InstanceQuery, MetadataStore, PacsResult,
+        PacsStatistics, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
     };
 
     use crate::state::AppState;
@@ -49,6 +49,9 @@ pub(crate) mod test_support {
             async fn delete_series(&self, uid: &SeriesUid) -> PacsResult<()>;
             async fn delete_instance(&self, uid: &SopInstanceUid) -> PacsResult<()>;
             async fn get_statistics(&self) -> PacsResult<PacsStatistics>;
+            async fn list_nodes(&self) -> PacsResult<Vec<DicomNode>>;
+            async fn upsert_node(&self, node: &DicomNode) -> PacsResult<()>;
+            async fn delete_node(&self, ae_title: &str) -> PacsResult<()>;
         }
     }
 
@@ -77,7 +80,6 @@ pub(crate) mod test_support {
             },
             store: Arc::new(store),
             blobs: Arc::new(blobs),
-            nodes: Arc::new(tokio::sync::RwLock::new(vec![])),
         }
     }
 }

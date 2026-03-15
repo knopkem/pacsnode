@@ -47,7 +47,10 @@ mod tests {
     #[test]
     fn bind_error_message() {
         let io_err = std::io::Error::new(std::io::ErrorKind::AddrInUse, "address in use");
-        let err = DimseError::Bind { port: 4242, source: io_err };
+        let err = DimseError::Bind {
+            port: 4242,
+            source: io_err,
+        };
         assert!(err.to_string().contains("4242"));
     }
 

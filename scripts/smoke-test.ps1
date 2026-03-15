@@ -96,6 +96,32 @@ function Get-HttpStatus([string]$Uri, [string]$Method = "GET", $Body = $null) {
     }
 }
 
+function Test-QidoContainsUid {
+    param(
+        [Parameter(Mandatory = $true)]$Payload,
+        [Parameter(Mandatory = $true)][string]$Tag,
+        [Parameter(Mandatory = $true)][string]$ExpectedUid
+    )
+
+    foreach ($item in @($Payload)) {
+        if ($null -eq $item) { continue }
+
+        $tagProp = $item.PSObject.Properties[$Tag]
+        if ($null -eq $tagProp) { continue }
+
+        $valueProp = $tagProp.Value.PSObject.Properties["Value"]
+        if ($null -eq $valueProp) { continue }
+
+        foreach ($value in @($valueProp.Value)) {
+            if ([string]$value -eq $ExpectedUid) {
+                return $true
+            }
+        }
+    }
+
+    return $false
+}
+
 # ── Banner ────────────────────────────────────────────────────────────────────
 
 Write-Host ""
@@ -222,21 +248,70 @@ if ($stats -and $stats.studies -gt 0) {
 
 Write-Step 6 "QIDO-RS  GET /wado/studies"
 
-$qidoCode = Get-HttpStatus "$HttpBase/wado/studies"
-if ($qidoCode -eq 200) {
-    Write-Ok "QIDO-RS endpoint reachable (HTTP 200)"
-} else {
-    Write-Fail "QIDO-RS returned HTTP $qidoCode"
-}
-
-# Resolve study UID via REST API (reliable structured response)
 $studyUid = ""
+$seriesUid = ""
+$instanceUid = ""
+
 $studyList = Invoke-Api "$HttpBase/api/studies"
-if ($studyList -and $studyList.Count -gt 0) {
-    $studyUid = $studyList[0].study_uid
+if ($studyList -and @($studyList).Count -gt 0) {
+    $studyUid = @($studyList)[0].study_uid
     Write-Ok "StudyInstanceUID resolved via REST: $studyUid"
 } else {
     Write-Fail "Could not resolve a study UID — was C-STORE successful?"
+}
+
+$qidoCode = Get-HttpStatus "$HttpBase/wado/studies"
+if ($qidoCode -eq 200) {
+    $qidoStudies = Invoke-Api "$HttpBase/wado/studies"
+    if ($studyUid -ne "" -and (Test-QidoContainsUid $qidoStudies "0020000D" $studyUid)) {
+        Write-Ok "QIDO-RS studies response contains StudyInstanceUID $studyUid"
+    } else {
+        Write-Fail "QIDO-RS studies response missing StudyInstanceUID $studyUid"
+    }
+} else {
+    Write-Fail "QIDO-RS studies returned HTTP $qidoCode"
+}
+
+if ($studyUid -ne "") {
+    $seriesList = Invoke-Api "$HttpBase/api/studies/$studyUid/series"
+    if ($seriesList -and @($seriesList).Count -gt 0) {
+        $seriesUid = @($seriesList)[0].series_uid
+
+        $qidoSeriesCode = Get-HttpStatus "$HttpBase/wado/studies/$studyUid/series"
+        if ($qidoSeriesCode -eq 200) {
+            $qidoSeries = Invoke-Api "$HttpBase/wado/studies/$studyUid/series"
+            if (Test-QidoContainsUid $qidoSeries "0020000E" $seriesUid) {
+                Write-Ok "QIDO-RS series response contains SeriesInstanceUID $seriesUid"
+            } else {
+                Write-Fail "QIDO-RS series response missing SeriesInstanceUID $seriesUid"
+            }
+        } else {
+            Write-Fail "QIDO-RS series returned HTTP $qidoSeriesCode"
+        }
+    } else {
+        Write-Fail "Could not resolve a series UID for QIDO-RS series validation"
+    }
+
+    if ($seriesUid -ne "") {
+        $instanceList = Invoke-Api "$HttpBase/api/series/$seriesUid/instances"
+        if ($instanceList -and @($instanceList).Count -gt 0) {
+            $instanceUid = @($instanceList)[0].instance_uid
+
+            $qidoInstancesCode = Get-HttpStatus "$HttpBase/wado/studies/$studyUid/series/$seriesUid/instances"
+            if ($qidoInstancesCode -eq 200) {
+                $qidoInstances = Invoke-Api "$HttpBase/wado/studies/$studyUid/series/$seriesUid/instances"
+                if (Test-QidoContainsUid $qidoInstances "00080018" $instanceUid) {
+                    Write-Ok "QIDO-RS instances response contains SOPInstanceUID $instanceUid"
+                } else {
+                    Write-Fail "QIDO-RS instances response missing SOPInstanceUID $instanceUid"
+                }
+            } else {
+                Write-Fail "QIDO-RS instances returned HTTP $qidoInstancesCode"
+            }
+        } else {
+            Write-Fail "Could not resolve an instance UID for QIDO-RS instance validation"
+        }
+    }
 }
 
 # ── Step 7: C-FIND (DIMSE) ────────────────────────────────────────────────────
@@ -262,19 +337,18 @@ Write-Host "  (dicom-toolkit-rs has no getscu binary; WADO-RS is the" -Foregroun
 Write-Host "   standard DICOMweb equivalent for instance retrieval)" -ForegroundColor DarkGray
 
 if ($studyUid -ne "") {
-    # Resolve series and instance UIDs via REST API
-    $seriesUid = ""
-    $instanceUid = ""
-
-    $seriesList = Invoke-Api "$HttpBase/api/studies/$studyUid/series"
-    if ($seriesList -and $seriesList.Count -gt 0) {
-        $seriesUid = $seriesList[0].series_uid
+    # Resolve series and instance UIDs via REST API if step 6 did not already.
+    if ($seriesUid -eq "") {
+        $seriesList = Invoke-Api "$HttpBase/api/studies/$studyUid/series"
+        if ($seriesList -and @($seriesList).Count -gt 0) {
+            $seriesUid = @($seriesList)[0].series_uid
+        }
     }
 
-    if ($seriesUid -ne "") {
+    if ($seriesUid -ne "" -and $instanceUid -eq "") {
         $instanceList = Invoke-Api "$HttpBase/api/series/$seriesUid/instances"
-        if ($instanceList -and $instanceList.Count -gt 0) {
-            $instanceUid = $instanceList[0].instance_uid
+        if ($instanceList -and @($instanceList).Count -gt 0) {
+            $instanceUid = @($instanceList)[0].instance_uid
         }
     }
 

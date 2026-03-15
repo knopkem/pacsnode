@@ -34,6 +34,7 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
     /// HTTP server settings.
+    #[serde(default)]
     pub server: ServerConfig,
     /// PostgreSQL database settings.
     pub database: DatabaseConfig,
@@ -46,6 +47,7 @@ pub struct AppConfig {
 
 /// HTTP + DIMSE listener configuration.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct ServerConfig {
     /// TCP port for the DICOMweb / REST HTTP API.
     #[serde(default = "default_http_port")]
@@ -194,14 +196,28 @@ fn default_log_format() -> LogFormat {
     LogFormat::Json
 }
 
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            http_port: default_http_port(),
+            dicom_port: default_dicom_port(),
+            ae_title: default_ae_title(),
+            max_associations: default_max_associations(),
+            dimse_timeout_secs: default_dimse_timeout_secs(),
+        }
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     /// All defaults should be sensible without any file or env vars.
     #[test]
+    #[serial]
     fn defaults_are_sensible() {
         // Minimal env to satisfy required fields.
         std::env::set_var("PACS_DATABASE__URL", "postgres://u:p@localhost/pacs");
@@ -228,6 +244,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn env_var_overrides_default_http_port() {
         std::env::set_var("PACS_DATABASE__URL", "postgres://u:p@localhost/pacs");
         std::env::set_var("PACS_STORAGE__ENDPOINT", "http://localhost:9000");

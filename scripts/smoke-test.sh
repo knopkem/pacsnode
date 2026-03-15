@@ -39,6 +39,9 @@ TESTFILES_DIR="$(cd "$(dirname "$0")/.." && pwd)/testfiles"
 
 PASS=0
 FAIL=0
+STUDY_UID=""
+SERIES_UID=""
+INSTANCE_UID=""
 
 ok() {
     printf "  \033[32m✓\033[0m %s\n" "$1"
@@ -75,6 +78,34 @@ extract_instance_uids() {
         "import sys,json; d=json.load(sys.stdin); print(d[0]['instance_uid']) if d else print('')" 2>/dev/null) || return 1
 
     printf '%s %s' "$series_uid" "$instance_uid"
+}
+
+# Returns success if a QIDO-RS JSON array contains the expected UID in the given tag.
+qido_contains_uid() {
+    # $1 = JSON file path, $2 = DICOM tag, $3 = expected UID
+    python3 - "$1" "$2" "$3" <<'PY'
+import json
+import sys
+
+path, tag, expected = sys.argv[1:4]
+with open(path, encoding="utf-8") as f:
+    payload = json.load(f)
+
+if not isinstance(payload, list):
+    raise SystemExit(1)
+
+for item in payload:
+    if not isinstance(item, dict) or not item:
+        continue
+    tag_value = item.get(tag)
+    if not isinstance(tag_value, dict):
+        continue
+    values = tag_value.get("Value")
+    if isinstance(values, list) and expected in [str(v) for v in values]:
+        raise SystemExit(0)
+
+raise SystemExit(1)
+PY
 }
 
 # ── Tool installation ──────────────────────────────────────────────────────────
@@ -218,20 +249,59 @@ fi
 
 step 6 "QIDO-RS  GET /wado/studies"
 
-QIDO_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${HTTP_BASE}/wado/studies" 2>/dev/null) || QIDO_CODE=0
-if [ "$QIDO_CODE" = "200" ]; then
-    ok "QIDO-RS endpoint reachable (HTTP 200)"
-else
-    fail "QIDO-RS returned HTTP ${QIDO_CODE}"
-fi
-
-# Resolve study UID for WADO-RS via REST API (reliable structured response)
 STUDY_UID=$(extract_study_uid_rest)
 if [ -n "$STUDY_UID" ]; then
     ok "StudyInstanceUID resolved via REST: ${STUDY_UID}"
 else
     fail "Could not resolve a study UID — was C-STORE successful?"
     STUDY_UID=""
+fi
+
+QIDO_STUDIES_BODY=$(mktemp)
+QIDO_CODE=$(curl -s -o "$QIDO_STUDIES_BODY" -w "%{http_code}" "${HTTP_BASE}/wado/studies" 2>/dev/null) || QIDO_CODE=0
+if [ "$QIDO_CODE" = "200" ]; then
+    if [ -n "$STUDY_UID" ] && qido_contains_uid "$QIDO_STUDIES_BODY" "0020000D" "$STUDY_UID"; then
+        ok "QIDO-RS studies response contains StudyInstanceUID ${STUDY_UID}"
+    else
+        fail "QIDO-RS studies response missing StudyInstanceUID ${STUDY_UID:-<unknown>}"
+    fi
+else
+    fail "QIDO-RS studies returned HTTP ${QIDO_CODE}"
+fi
+rm -f "$QIDO_STUDIES_BODY"
+
+if [ -n "$STUDY_UID" ]; then
+    UIDS=$(extract_instance_uids "$STUDY_UID" 2>/dev/null) || UIDS=""
+    SERIES_UID=$(printf '%s' "$UIDS" | cut -d' ' -f1)
+    INSTANCE_UID=$(printf '%s' "$UIDS" | cut -d' ' -f2)
+
+    if [ -n "$SERIES_UID" ]; then
+        QIDO_SERIES_BODY=$(mktemp)
+        QIDO_SERIES_CODE=$(curl -s -o "$QIDO_SERIES_BODY" -w "%{http_code}" \
+            "${HTTP_BASE}/wado/studies/${STUDY_UID}/series" 2>/dev/null) || QIDO_SERIES_CODE=0
+        if [ "$QIDO_SERIES_CODE" = "200" ] && qido_contains_uid "$QIDO_SERIES_BODY" "0020000E" "$SERIES_UID"; then
+            ok "QIDO-RS series response contains SeriesInstanceUID ${SERIES_UID}"
+        else
+            fail "QIDO-RS series response missing SeriesInstanceUID ${SERIES_UID}"
+        fi
+        rm -f "$QIDO_SERIES_BODY"
+    else
+        fail "Could not resolve a series UID for QIDO-RS series validation"
+    fi
+
+    if [ -n "$SERIES_UID" ] && [ -n "$INSTANCE_UID" ]; then
+        QIDO_INSTANCES_BODY=$(mktemp)
+        QIDO_INSTANCES_CODE=$(curl -s -o "$QIDO_INSTANCES_BODY" -w "%{http_code}" \
+            "${HTTP_BASE}/wado/studies/${STUDY_UID}/series/${SERIES_UID}/instances" 2>/dev/null) || QIDO_INSTANCES_CODE=0
+        if [ "$QIDO_INSTANCES_CODE" = "200" ] && qido_contains_uid "$QIDO_INSTANCES_BODY" "00080018" "$INSTANCE_UID"; then
+            ok "QIDO-RS instances response contains SOPInstanceUID ${INSTANCE_UID}"
+        else
+            fail "QIDO-RS instances response missing SOPInstanceUID ${INSTANCE_UID}"
+        fi
+        rm -f "$QIDO_INSTANCES_BODY"
+    else
+        fail "Could not resolve an instance UID for QIDO-RS instance validation"
+    fi
 fi
 
 # ── Step 7: C-FIND (DIMSE) ────────────────────────────────────────────────────
@@ -260,10 +330,12 @@ printf "  \033[2m(dicom-toolkit-rs has no getscu binary; WADO-RS is the standard
 printf "  \033[2m DICOMweb equivalent for instance retrieval)\033[0m\n"
 
 if [ -n "$STUDY_UID" ]; then
-    # Resolve a series/instance UID within the study
-    UIDS=$(extract_instance_uids "$STUDY_UID" 2>/dev/null) || UIDS=""
-    SERIES_UID=$(printf '%s' "$UIDS" | cut -d' ' -f1)
-    INSTANCE_UID=$(printf '%s' "$UIDS" | cut -d' ' -f2)
+    # Resolve a series/instance UID within the study if step 6 did not already.
+    if [ -z "$SERIES_UID" ] || [ -z "$INSTANCE_UID" ]; then
+        UIDS=$(extract_instance_uids "$STUDY_UID" 2>/dev/null) || UIDS=""
+        SERIES_UID=$(printf '%s' "$UIDS" | cut -d' ' -f1)
+        INSTANCE_UID=$(printf '%s' "$UIDS" | cut -d' ' -f2)
+    fi
 
     if [ -n "$SERIES_UID" ] && [ -n "$INSTANCE_UID" ]; then
         HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \

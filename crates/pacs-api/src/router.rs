@@ -40,10 +40,7 @@ pub fn build_router(state: AppState) -> Router {
             get(qido::search_studies).post(stow::stow_store),
         )
         // ── QIDO-RS ───────────────────────────────────────────────────────────
-        .route(
-            "/wado/studies/{study_uid}/series",
-            get(qido::search_series),
-        )
+        .route("/wado/studies/{study_uid}/series", get(qido::search_series))
         .route(
             "/wado/studies/{study_uid}/series/{series_uid}/instances",
             get(qido::search_instances),

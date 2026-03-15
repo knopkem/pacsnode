@@ -25,7 +25,8 @@ pub(crate) mod test_support {
     use mockall::mock;
     use pacs_core::{
         BlobStore, DicomJson, DicomNode, Instance, InstanceQuery, MetadataStore, PacsResult,
-        PacsStatistics, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
+        PacsStatistics, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery,
+        StudyUid,
     };
 
     use crate::state::AppState;

@@ -21,10 +21,7 @@ pub async fn get_study(
     State(state): State<AppState>,
     Path(uid): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let study = state
-        .store
-        .get_study(&StudyUid::from(uid.as_str()))
-        .await?;
+    let study = state.store.get_study(&StudyUid::from(uid.as_str())).await?;
     Ok(Json(study))
 }
 

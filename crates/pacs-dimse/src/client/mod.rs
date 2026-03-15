@@ -52,8 +52,9 @@ impl DicomClient {
             accept_all_transfer_syntaxes: true,
             ..AssociationConfig::default()
         };
-        let assoc = Association::request(&addr, &node.ae_title, &self.calling_ae, contexts, &config)
-            .await?;
+        let assoc =
+            Association::request(&addr, &node.ae_title, &self.calling_ae, contexts, &config)
+                .await?;
         Ok(assoc)
     }
 }

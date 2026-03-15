@@ -141,6 +141,9 @@ mod tests {
             bytes::Bytes::from_static(b"DICOM"),
         )];
         let result = client.store(&node, instances).await;
-        assert!(result.is_err(), "store() must fail when connection is refused");
+        assert!(
+            result.is_err(),
+            "store() must fail when connection is refused"
+        );
     }
 }

@@ -56,9 +56,6 @@ mod tests {
 
         let mut reader = DicomReader::new(std::io::Cursor::new(encoded.as_slice()));
         let roundtripped = reader.read_dataset(ELE_TS).unwrap();
-        assert_eq!(
-            roundtripped.get_string(tags::PATIENT_ID),
-            Some("ROUNDTRIP")
-        );
+        assert_eq!(roundtripped.get_string(tags::PATIENT_ID), Some("ROUNDTRIP"));
     }
 }

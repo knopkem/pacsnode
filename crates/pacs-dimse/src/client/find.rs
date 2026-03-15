@@ -82,6 +82,9 @@ mod tests {
             port: 65532,
         };
         let result = client.find(&node, STUDY_ROOT_FIND, vec![]).await;
-        assert!(result.is_err(), "find() must fail when connection is refused");
+        assert!(
+            result.is_err(),
+            "find() must fail when connection is refused"
+        );
     }
 }

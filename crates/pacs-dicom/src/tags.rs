@@ -25,7 +25,8 @@ pub fn required_string<'a>(
     tag: Tag,
     name: &'static str,
 ) -> Result<&'a str, DicomError> {
-    ds.get_string(tag).ok_or(DicomError::MissingTag { tag: name })
+    ds.get_string(tag)
+        .ok_or(DicomError::MissingTag { tag: name })
 }
 
 /// Extracts an optional string tag, stripping DICOM padding (null bytes and
@@ -127,7 +128,7 @@ mod tests {
     #[case("2024-03-15")]
     #[case("abcdefgh")]
     #[case("")]
-    #[case("2024031")]  // 7 chars
+    #[case("2024031")] // 7 chars
     #[case("202403150")] // 9 chars
     #[case("20241399")] // invalid month 13
     #[case("20240132")] // invalid day 32
@@ -167,7 +168,10 @@ mod tests {
     fn test_optional_string_present() {
         let mut ds = DataSet::new();
         ds.set_string(tags::PATIENT_NAME, Vr::PN, "DOE^JOHN");
-        assert_eq!(optional_string(&ds, tags::PATIENT_NAME).as_deref(), Some("DOE^JOHN"));
+        assert_eq!(
+            optional_string(&ds, tags::PATIENT_NAME).as_deref(),
+            Some("DOE^JOHN")
+        );
     }
 
     #[test]

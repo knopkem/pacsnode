@@ -13,6 +13,10 @@ use pacs_core::{
     blob_key_for, BlobStore, DicomJson, Instance, InstanceQuery, MetadataStore, Series,
     SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
 };
+use pacs_dicom::tags::{
+    dataset_to_dicom_json, date_display_string, optional_i32, optional_i32_from_u16,
+    optional_string, parse_dicom_date, BODY_PART_EXAMINED, MODALITIES_IN_STUDY,
+};
 use tracing::{debug, error, instrument, warn};
 
 // ── C-STORE provider ──────────────────────────────────────────────────────────
@@ -92,42 +96,40 @@ impl StoreServiceProvider for PacsStoreProvider {
             return StoreResult::failure(STATUS_PROCESSING_FAILURE);
         }
 
+        // ── Generate DICOM JSON metadata from the received dataset ────────
+        let metadata = match dataset_to_dicom_json(&event.dataset) {
+            Ok(m) => m,
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    sop_instance_uid = %sop_instance_uid_str,
+                    "Failed to serialise received dataset to DICOM JSON; storing empty metadata"
+                );
+                DicomJson::empty()
+            }
+        };
+
         // ── Build domain objects from dataset attributes ───────────────────
-        let patient_id = event
-            .dataset
-            .get_string(tags::PATIENT_ID)
-            .map(|s| s.trim().trim_end_matches('\0').to_string());
-        let patient_name = event
-            .dataset
-            .get_string(tags::PATIENT_NAME)
-            .map(|s| s.trim().trim_end_matches('\0').to_string());
-        let accession_number = event
-            .dataset
-            .get_string(tags::ACCESSION_NUMBER)
-            .map(|s| s.trim().trim_end_matches('\0').to_string());
-        let study_time = event
-            .dataset
-            .get_string(tags::STUDY_TIME)
-            .map(|s| s.trim().to_string());
+        let patient_id = optional_string(&event.dataset, tags::PATIENT_ID);
+        let patient_name = optional_string(&event.dataset, tags::PATIENT_NAME);
+        let accession_number = optional_string(&event.dataset, tags::ACCESSION_NUMBER);
+        let study_time = optional_string(&event.dataset, tags::STUDY_TIME);
+        let study_date = date_display_string(&event.dataset, tags::STUDY_DATE)
+            .and_then(|s| parse_dicom_date(&s).ok());
         let modalities: Vec<String> = event
             .dataset
-            .get_string(tags::MODALITY)
-            .map(|m| vec![m.trim().to_string()])
+            .get_strings(MODALITIES_IN_STUDY)
+            .map(|v| v.to_vec())
+            .or_else(|| optional_string(&event.dataset, tags::MODALITY).map(|m| vec![m]))
             .unwrap_or_default();
-        let referring_physician = event
-            .dataset
-            .get_string(tags::REFERRING_PHYSICIAN_NAME)
-            .map(|s| s.trim().to_string());
-        let study_description = event
-            .dataset
-            .get_string(tags::STUDY_DESCRIPTION)
-            .map(|s| s.trim().to_string());
+        let referring_physician = optional_string(&event.dataset, tags::REFERRING_PHYSICIAN_NAME);
+        let study_description = optional_string(&event.dataset, tags::STUDY_DESCRIPTION);
 
         let study = Study {
             study_uid: study_uid.clone(),
             patient_id,
             patient_name,
-            study_date: None, // requires chrono parsing; left for metadata indexing
+            study_date,
             study_time,
             accession_number,
             modalities,
@@ -135,20 +137,15 @@ impl StoreServiceProvider for PacsStoreProvider {
             description: study_description,
             num_series: 1,
             num_instances: 1,
-            metadata: DicomJson::empty(),
+            metadata: metadata.clone(),
             created_at: None,
             updated_at: None,
         };
 
-        let modality = event
-            .dataset
-            .get_string(tags::MODALITY)
-            .map(|s| s.trim().to_string());
-        let series_number = event.dataset.get_i32(tags::SERIES_NUMBER);
-        let series_description = event
-            .dataset
-            .get_string(tags::SERIES_DESCRIPTION)
-            .map(|s| s.trim().to_string());
+        let modality = optional_string(&event.dataset, tags::MODALITY);
+        let series_number = optional_i32(&event.dataset, tags::SERIES_NUMBER);
+        let series_description = optional_string(&event.dataset, tags::SERIES_DESCRIPTION);
+        let body_part = optional_string(&event.dataset, BODY_PART_EXAMINED);
 
         let series = Series {
             series_uid: series_uid.clone(),
@@ -156,17 +153,22 @@ impl StoreServiceProvider for PacsStoreProvider {
             modality,
             series_number,
             description: series_description,
-            body_part: None,
+            body_part,
             num_instances: 1,
-            metadata: DicomJson::empty(),
+            metadata: metadata.clone(),
             created_at: None,
         };
 
-        let sop_class_uid =
-            Some(event.sop_class_uid.trim().trim_end_matches('\0').to_string());
-        let instance_number = event.dataset.get_i32(tags::INSTANCE_NUMBER);
-        let rows = event.dataset.get_u16(tags::ROWS).map(|v| v as i32);
-        let columns = event.dataset.get_u16(tags::COLUMNS).map(|v| v as i32);
+        let sop_class_uid = Some(
+            event
+                .sop_class_uid
+                .trim()
+                .trim_end_matches('\0')
+                .to_string(),
+        );
+        let instance_number = optional_i32(&event.dataset, tags::INSTANCE_NUMBER);
+        let rows = optional_i32_from_u16(&event.dataset, tags::ROWS);
+        let columns = optional_i32_from_u16(&event.dataset, tags::COLUMNS);
 
         let instance = Instance {
             instance_uid: instance_uid.clone(),
@@ -174,11 +176,11 @@ impl StoreServiceProvider for PacsStoreProvider {
             study_uid: study_uid.clone(),
             sop_class_uid,
             instance_number,
-            transfer_syntax: None,
+            transfer_syntax: Some("1.2.840.10008.1.2.1".to_string()),
             rows,
             columns,
             blob_key,
-            metadata: DicomJson::empty(),
+            metadata,
             created_at: None,
         };
 
@@ -282,12 +284,7 @@ impl GetServiceProvider for PacsQueryProvider {
     ))]
     async fn on_get(&self, event: GetEvent) -> Vec<RetrieveItem> {
         debug!("C-GET received");
-        retrieve_items_for(
-            self.store.as_ref(),
-            self.blobs.as_ref(),
-            &event.identifier,
-        )
-        .await
+        retrieve_items_for(self.store.as_ref(), self.blobs.as_ref(), &event.identifier).await
     }
 }
 
@@ -299,12 +296,7 @@ impl MoveServiceProvider for PacsQueryProvider {
     ))]
     async fn on_move(&self, event: MoveEvent) -> Vec<RetrieveItem> {
         debug!("C-MOVE received");
-        retrieve_items_for(
-            self.store.as_ref(),
-            self.blobs.as_ref(),
-            &event.identifier,
-        )
-        .await
+        retrieve_items_for(self.store.as_ref(), self.blobs.as_ref(), &event.identifier).await
     }
 }
 
@@ -506,20 +498,19 @@ mod tests {
     async fn on_store_success() {
         let mut mock_store = MockTestStore::new();
         mock_store.expect_store_study().once().returning(|_| Ok(()));
-        mock_store.expect_store_series().once().returning(|_| Ok(()));
+        mock_store
+            .expect_store_series()
+            .once()
+            .returning(|_| Ok(()));
         mock_store
             .expect_store_instance()
             .once()
             .returning(|_| Ok(()));
 
         let mut mock_blobs = MockTestBlobs::new();
-        mock_blobs
-            .expect_put()
-            .once()
-            .returning(|_, _| Ok(()));
+        mock_blobs.expect_put().once().returning(|_, _| Ok(()));
 
-        let provider =
-            PacsStoreProvider::new(Arc::new(mock_store), Arc::new(mock_blobs));
+        let provider = PacsStoreProvider::new(Arc::new(mock_store), Arc::new(mock_blobs));
 
         let result = provider.on_store(minimal_store_event()).await;
         assert_eq!(result.status, 0x0000, "Expected success status");
@@ -530,8 +521,7 @@ mod tests {
         let mock_store = MockTestStore::new();
         let mock_blobs = MockTestBlobs::new();
 
-        let provider =
-            PacsStoreProvider::new(Arc::new(mock_store), Arc::new(mock_blobs));
+        let provider = PacsStoreProvider::new(Arc::new(mock_store), Arc::new(mock_blobs));
 
         let event = StoreEvent {
             calling_ae: "TESTSCU".into(),
@@ -548,15 +538,18 @@ mod tests {
     async fn on_store_blob_failure_returns_failure() {
         let mock_store = MockTestStore::new();
         let mut mock_blobs = MockTestBlobs::new();
-        mock_blobs.expect_put().once().returning(|_, _| {
-            Err(pacs_core::PacsError::Internal("blob unavailable".into()))
-        });
+        mock_blobs
+            .expect_put()
+            .once()
+            .returning(|_, _| Err(pacs_core::PacsError::Internal("blob unavailable".into())));
 
-        let provider =
-            PacsStoreProvider::new(Arc::new(mock_store), Arc::new(mock_blobs));
+        let provider = PacsStoreProvider::new(Arc::new(mock_store), Arc::new(mock_blobs));
 
         let result = provider.on_store(minimal_store_event()).await;
-        assert_ne!(result.status, 0x0000, "Expected failure when blob store fails");
+        assert_ne!(
+            result.status, 0x0000,
+            "Expected failure when blob store fails"
+        );
     }
 
     #[tokio::test]
@@ -570,11 +563,13 @@ mod tests {
         let mut mock_blobs = MockTestBlobs::new();
         mock_blobs.expect_put().once().returning(|_, _| Ok(()));
 
-        let provider =
-            PacsStoreProvider::new(Arc::new(mock_store), Arc::new(mock_blobs));
+        let provider = PacsStoreProvider::new(Arc::new(mock_store), Arc::new(mock_blobs));
 
         let result = provider.on_store(minimal_store_event()).await;
-        assert_ne!(result.status, 0x0000, "Expected failure when metadata store fails");
+        assert_ne!(
+            result.status, 0x0000,
+            "Expected failure when metadata store fails"
+        );
     }
 
     // ── build_study_response tests ────────────────────────────────────────────
@@ -599,10 +594,7 @@ mod tests {
         };
 
         let ds = build_study_response(&study);
-        assert_eq!(
-            ds.get_string(tags::STUDY_INSTANCE_UID),
-            Some("1.2.3.4"),
-        );
+        assert_eq!(ds.get_string(tags::STUDY_INSTANCE_UID), Some("1.2.3.4"),);
     }
 
     #[test]

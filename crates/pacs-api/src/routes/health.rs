@@ -11,9 +11,7 @@ pub async fn get_health() -> impl IntoResponse {
 }
 
 /// `GET /statistics` — returns aggregate PACS counts and disk usage.
-pub async fn get_statistics(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse, ApiError> {
+pub async fn get_statistics(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let s = state.store.get_statistics().await?;
     Ok(Json(json!({
         "studies":          s.num_studies,
@@ -47,9 +45,7 @@ pub async fn get_statistics(
 ///   ]
 /// }
 /// ```
-pub async fn get_system_info(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse, ApiError> {
+pub async fn get_system_info(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let nodes = state.store.list_nodes().await?;
     Ok(Json(json!({
         "ae_title":   state.server_info.ae_title,
@@ -79,7 +75,12 @@ mod tests {
     async fn test_health_returns_200() {
         let app = build_router(make_test_state(MockMetaStore::new(), MockBlobStr::new()));
         let resp = app
-            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -170,4 +171,3 @@ mod tests {
         assert_eq!(json["nodes"][0]["tls_enabled"], false);
     }
 }
-

@@ -173,9 +173,12 @@ mod tests {
     async fn test_mock_delete_node_not_found() {
         use crate::error::PacsError;
         let mut mock = MockMetadataStore::new();
-        mock.expect_delete_node()
-            .once()
-            .returning(|ae| Err(PacsError::NotFound { resource: "node", uid: ae.to_string() }));
+        mock.expect_delete_node().once().returning(|ae| {
+            Err(PacsError::NotFound {
+                resource: "node",
+                uid: ae.to_string(),
+            })
+        });
         let result = mock.delete_node("MISSING").await;
         assert!(matches!(result, Err(PacsError::NotFound { .. })));
     }

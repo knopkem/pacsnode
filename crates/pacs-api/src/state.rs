@@ -82,4 +82,3 @@ mod tests {
         assert_eq!(json["dicom_port"], 4242);
     }
 }
-

@@ -74,7 +74,9 @@ mod tests {
     #[test]
     fn test_pacs_error_message_contains_original() {
         let original = "missing required tag: SOPInstanceUID";
-        let e = DicomError::MissingTag { tag: "SOPInstanceUID" };
+        let e = DicomError::MissingTag {
+            tag: "SOPInstanceUID",
+        };
         let pacs_err: PacsError = e.into();
         assert!(pacs_err.to_string().contains(original));
     }

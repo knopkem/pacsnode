@@ -18,10 +18,9 @@ pub struct ApiError(pub PacsError);
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match &self.0 {
-            PacsError::NotFound { resource, uid } => (
-                StatusCode::NOT_FOUND,
-                format!("{resource} {uid} not found"),
-            ),
+            PacsError::NotFound { resource, uid } => {
+                (StatusCode::NOT_FOUND, format!("{resource} {uid} not found"))
+            }
             PacsError::DicomParse(msg) | PacsError::InvalidUid(msg) => {
                 (StatusCode::BAD_REQUEST, msg.clone())
             }

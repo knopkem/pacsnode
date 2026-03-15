@@ -142,9 +142,7 @@ fn multipart_response(parts: Vec<Bytes>) -> Result<Response, ApiError> {
         .status(StatusCode::OK)
         .header(
             header::CONTENT_TYPE,
-            format!(
-                "multipart/related; type=\"application/dicom\"; boundary={boundary}"
-            ),
+            format!("multipart/related; type=\"application/dicom\"; boundary={boundary}"),
         )
         .body(axum::body::Body::from(body))
         .map_err(|e| ApiError(PacsError::Internal(e.to_string())))
@@ -165,8 +163,8 @@ fn build_multipart_body(parts: &[Bytes], boundary: &str) -> Bytes {
 
 /// Serialize `values` as a JSON array and return `application/dicom+json`.
 fn dicom_json_response(values: &[&serde_json::Value]) -> Result<Response, ApiError> {
-    let body = serde_json::to_vec(values)
-        .map_err(|e| ApiError(PacsError::Internal(e.to_string())))?;
+    let body =
+        serde_json::to_vec(values).map_err(|e| ApiError(PacsError::Internal(e.to_string())))?;
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/dicom+json")

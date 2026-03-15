@@ -10,6 +10,9 @@ license.workspace     = true
 name = "pacsnode"
 path = "src/main.rs"
 
+[dev-dependencies]
+serial_test = { workspace = true }
+
 [dependencies]
 axum         = { workspace = true }
 pacs-core    = { workspace = true }

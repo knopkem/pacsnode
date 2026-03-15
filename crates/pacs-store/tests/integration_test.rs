@@ -20,13 +20,19 @@ use pacs_core::{
 use pacs_store::PgMetadataStore;
 use rstest::rstest;
 use sqlx::PgPool;
-use testcontainers::runners::AsyncRunner;
-use testcontainers::ContainerAsync;
+use testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt};
 use testcontainers_modules::postgres::Postgres;
+
+const DEFAULT_POSTGRES_IMAGE_TAG: &str = "16-alpine";
 
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
+
+fn postgres_image_tag() -> String {
+    std::env::var("PACSNODE_TEST_POSTGRES_TAG")
+        .unwrap_or_else(|_| DEFAULT_POSTGRES_IMAGE_TAG.to_string())
+}
 
 /// Starts a PostgreSQL container, connects a pool, and runs migrations.
 ///
@@ -34,6 +40,7 @@ use testcontainers_modules::postgres::Postgres;
 /// test (dropping it stops the container).
 async fn setup_pool() -> (PgPool, ContainerAsync<Postgres>) {
     let container = Postgres::default()
+        .with_tag(postgres_image_tag())
         .start()
         .await
         .expect("failed to start Postgres container");

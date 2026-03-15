@@ -70,8 +70,8 @@ impl ParsedDicom {
         // 4. Study-level attributes.
         let patient_id = optional_string(ds, tags::PATIENT_ID);
         let patient_name = optional_string(ds, tags::PATIENT_NAME);
-        let study_date = date_display_string(ds, tags::STUDY_DATE)
-            .and_then(|s| parse_dicom_date(&s).ok());
+        let study_date =
+            date_display_string(ds, tags::STUDY_DATE).and_then(|s| parse_dicom_date(&s).ok());
         let study_time = optional_string(ds, tags::STUDY_TIME);
         let accession_number = optional_string(ds, tags::ACCESSION_NUMBER);
         let referring_physician = optional_string(ds, tags::REFERRING_PHYSICIAN_NAME);
@@ -173,11 +173,7 @@ mod tests {
         ds.set_string(tags::MODALITY, Vr::CS, "CT");
         ds.set_u16(tags::ROWS, 512);
         ds.set_u16(tags::COLUMNS, 512);
-        let ff = FileFormat::from_dataset(
-            "1.2.840.10008.5.1.4.1.1.2",
-            "1.2.3.4.5.1.1",
-            ds,
-        );
+        let ff = FileFormat::from_dataset("1.2.840.10008.5.1.4.1.1.2", "1.2.3.4.5.1.1", ds);
         let mut buf = Vec::new();
         DicomWriter::new(std::io::Cursor::new(&mut buf))
             .write_file(&ff)
@@ -230,7 +226,10 @@ mod tests {
     #[test]
     fn test_from_bytes_blob_key_format() {
         let parsed = ParsedDicom::from_bytes(make_test_dicom()).unwrap();
-        assert_eq!(parsed.instance.blob_key, "1.2.3.4.5/1.2.3.4.5.1/1.2.3.4.5.1.1");
+        assert_eq!(
+            parsed.instance.blob_key,
+            "1.2.3.4.5/1.2.3.4.5.1/1.2.3.4.5.1.1"
+        );
     }
 
     #[test]

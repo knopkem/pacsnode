@@ -10,9 +10,7 @@ use axum::{
 use crate::{error::ApiError, state::AppState, state::DicomNode};
 
 /// `GET /api/nodes` — list all registered DICOM nodes.
-pub async fn list_nodes(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse, ApiError> {
+pub async fn list_nodes(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let nodes = state.store.list_nodes().await?;
     Ok(Json(nodes))
 }
@@ -89,8 +87,7 @@ mod tests {
         });
 
         let app = build_router(make_test_state(store, MockBlobStr::new()));
-        let node_json =
-            r#"{"ae_title":"PACS1","host":"10.0.0.1","port":104,"description":null}"#;
+        let node_json = r#"{"ae_title":"PACS1","host":"10.0.0.1","port":104,"description":null}"#;
 
         // Add the node
         let add_resp = app
@@ -183,4 +180,3 @@ mod tests {
         assert_eq!(del_resp.status(), StatusCode::NO_CONTENT);
     }
 }
-

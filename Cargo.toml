@@ -87,6 +87,7 @@ mockall             = "0.13"
 rstest              = "0.23"
 testcontainers      = "0.23"
 testcontainers-modules = { version = "0.11", features = ["postgres"] }
+serial_test             = "3"
 
 [profile.release]
 opt-level = 3

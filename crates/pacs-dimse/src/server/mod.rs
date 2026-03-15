@@ -5,8 +5,8 @@ use std::sync::Arc;
 use dicom_toolkit_data::DataSet;
 use dicom_toolkit_dict::tags;
 use dicom_toolkit_net::{
-    handle_find_rq, handle_get_rq, handle_move_rq, handle_store_rq, Association,
-    AssociationConfig, DicomServer as NetDicomServer, StaticDestinationLookup,
+    handle_find_rq, handle_get_rq, handle_move_rq, handle_store_rq, Association, AssociationConfig,
+    DicomServer as NetDicomServer, StaticDestinationLookup,
 };
 use pacs_core::{BlobStore, MetadataStore};
 use tokio::net::TcpListener;
@@ -94,15 +94,14 @@ impl DicomServer {
     /// own spawned task; dropping or cancelling the `serve` future only stops
     /// the accept loop — in-flight association tasks run to completion
     /// independently.
-    pub async fn serve(
-        self: Arc<Self>,
-        shutdown: CancellationToken,
-    ) -> Result<(), DimseError> {
+    pub async fn serve(self: Arc<Self>, shutdown: CancellationToken) -> Result<(), DimseError> {
         let addr = format!("0.0.0.0:{}", self.config.port);
-        let listener = TcpListener::bind(&addr).await.map_err(|e| DimseError::Bind {
-            port: self.config.port,
-            source: e,
-        })?;
+        let listener = TcpListener::bind(&addr)
+            .await
+            .map_err(|e| DimseError::Bind {
+                port: self.config.port,
+                source: e,
+            })?;
 
         info!(
             port = self.config.port,
@@ -225,21 +224,22 @@ impl DicomServer {
                     .map_err(DimseError::from),
 
                 // C-MOVE-RQ
-                0x0021 => {
-                    handle_move_rq(
-                        &mut assoc,
-                        ctx_id,
-                        &cmd,
-                        &query_provider,
-                        &dest_lookup,
-                        &local_ae,
-                    )
-                    .await
-                    .map_err(DimseError::from)
-                }
+                0x0021 => handle_move_rq(
+                    &mut assoc,
+                    ctx_id,
+                    &cmd,
+                    &query_provider,
+                    &dest_lookup,
+                    &local_ae,
+                )
+                .await
+                .map_err(DimseError::from),
 
                 other => {
-                    warn!(command_field = other, "Unknown DIMSE command field — ignoring");
+                    warn!(
+                        command_field = other,
+                        "Unknown DIMSE command field — ignoring"
+                    );
                     Ok(())
                 }
             };
@@ -271,10 +271,10 @@ async fn send_echo_response(
 
     let mut rsp = DataSet::new();
     rsp.set_uid(tags::AFFECTED_SOP_CLASS_UID, "1.2.840.10008.1.1");
-    rsp.set_u16(tags::COMMAND_FIELD, 0x8030_u16);         // C-ECHO-RSP
+    rsp.set_u16(tags::COMMAND_FIELD, 0x8030_u16); // C-ECHO-RSP
     rsp.set_u16(tags::MESSAGE_ID_BEING_RESPONDED_TO, msg_id);
     rsp.set_u16(tags::COMMAND_DATA_SET_TYPE, 0x0101_u16); // no dataset
-    rsp.set_u16(tags::STATUS, 0x0000_u16);                // success
+    rsp.set_u16(tags::STATUS, 0x0000_u16); // success
 
     assoc.send_dimse_command(ctx_id, &rsp).await?;
     Ok(())
@@ -436,6 +436,9 @@ mod tests {
         let result = build_dicom_server(&config, store, blobs, vec![]).await;
         assert!(result.is_ok(), "build_dicom_server failed");
         let server = result.unwrap();
-        assert!(server.local_addr().is_ok(), "server should have a bound address");
+        assert!(
+            server.local_addr().is_ok(),
+            "server should have a bound address"
+        );
     }
 }

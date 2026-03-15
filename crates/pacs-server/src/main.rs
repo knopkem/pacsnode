@@ -48,15 +48,14 @@ async fn main() -> Result<()> {
 
     // ── Blob store ────────────────────────────────────────────────────────────
     let storage_config = pacs_storage::StorageConfig {
-        endpoint:   cfg.storage.endpoint.clone(),
-        bucket:     cfg.storage.bucket.clone(),
+        endpoint: cfg.storage.endpoint.clone(),
+        bucket: cfg.storage.bucket.clone(),
         access_key: cfg.storage.access_key.clone(),
         secret_key: cfg.storage.secret_key.clone(),
-        region:     cfg.storage.region.clone(),
+        region: cfg.storage.region.clone(),
     };
     let blob_store: Arc<dyn pacs_core::BlobStore> = Arc::new(
-        pacs_storage::S3BlobStore::new(&storage_config)
-            .context("failed to build S3 blob store")?,
+        pacs_storage::S3BlobStore::new(&storage_config).context("failed to build S3 blob store")?,
     );
 
     // ── Metadata store ────────────────────────────────────────────────────────
@@ -84,10 +83,10 @@ async fn main() -> Result<()> {
 
     // ── DIMSE server ──────────────────────────────────────────────────────────
     let dimse_config = pacs_dimse::DimseConfig {
-        ae_title:         cfg.server.ae_title.clone(),
-        port:             cfg.server.dicom_port,
+        ae_title: cfg.server.ae_title.clone(),
+        port: cfg.server.dicom_port,
         max_associations: cfg.server.max_associations,
-        timeout_secs:     cfg.server.dimse_timeout_secs,
+        timeout_secs: cfg.server.dimse_timeout_secs,
     };
     let dicom_server = Arc::new(pacs_dimse::DicomServer::new(
         dimse_config,
@@ -125,15 +124,22 @@ async fn main() -> Result<()> {
 fn init_tracing(level: &str, format: &LogFormat) {
     use tracing_subscriber::{fmt, EnvFilter};
 
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(level));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
 
     match format {
         LogFormat::Json => {
-            fmt().json().with_env_filter(filter).with_target(true).init();
+            fmt()
+                .json()
+                .with_env_filter(filter)
+                .with_target(true)
+                .init();
         }
         LogFormat::Pretty => {
-            fmt().pretty().with_env_filter(filter).with_target(true).init();
+            fmt()
+                .pretty()
+                .with_env_filter(filter)
+                .with_target(true)
+                .init();
         }
     }
 }

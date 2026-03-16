@@ -67,3 +67,30 @@ level = "info"
 
 # Log output format: "json" for structured logging, "pretty" for human-readable
 format = "json"
+
+# ── Optional Plugins ────────────────────────────────────────────────────────────
+#
+# Built-in storage and DIMSE plugins are enabled automatically.
+# Add optional plugin IDs below to enable them:
+#   - "basic-auth"
+#   - "audit-logger"
+#   - "prometheus-metrics"
+
+[plugins]
+enabled = []
+
+# Example basic-auth config:
+# [plugins.basic-auth]
+# username = "admin"
+# password_hash = "$argon2id$v=19$m=19456,t=2,p=1$REPLACE_WITH_BASE64_SALT$REPLACE_WITH_HASH"
+# jwt_secret = "replace-with-a-long-random-secret"
+# token_ttl_secs = 3600
+# public_paths = ["/health", "/metrics"]
+#
+# Example audit logger config:
+# [plugins.audit-logger]
+# max_connections = 5
+#
+# Example Prometheus metrics config:
+# [plugins.prometheus-metrics]
+# endpoint = "/metrics"

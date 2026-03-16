@@ -28,8 +28,10 @@
 //! a throwaway Postgres instance automatically — no manual setup required.
 
 pub mod error;
+pub mod plugin;
 pub mod store;
 
 pub(crate) mod queries;
 
+pub use plugin::PgMetadataStorePlugin;
 pub use store::PgMetadataStore;

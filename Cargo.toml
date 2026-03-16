@@ -2,10 +2,14 @@
 resolver = "2"
 members = [
     "crates/pacs-core",
+    "crates/pacs-plugin",
+    "crates/pacs-auth-plugin",
+    "crates/pacs-audit-plugin",
     "crates/pacs-dicom",
     "crates/pacs-store",
     "crates/pacs-storage",
     "crates/pacs-dimse",
+    "crates/pacs-metrics-plugin",
     "crates/pacs-api",
     "crates/pacs-server",
 ]
@@ -21,10 +25,14 @@ authors     = ["pacsnode Contributors"]
 [workspace.dependencies]
 # ── Internal crates ───────────────────────────────────────────────────────────
 pacs-core    = { path = "crates/pacs-core" }
+pacs-plugin  = { path = "crates/pacs-plugin" }
+pacs-auth-plugin = { path = "crates/pacs-auth-plugin" }
+pacs-audit-plugin = { path = "crates/pacs-audit-plugin" }
 pacs-dicom   = { path = "crates/pacs-dicom" }
 pacs-store   = { path = "crates/pacs-store" }
 pacs-storage = { path = "crates/pacs-storage" }
 pacs-dimse   = { path = "crates/pacs-dimse" }
+pacs-metrics-plugin = { path = "crates/pacs-metrics-plugin" }
 pacs-api     = { path = "crates/pacs-api" }
 
 # ── dicom-toolkit-rs (git dep — not yet published to crates.io) ───────────────
@@ -66,6 +74,8 @@ uuid         = { version = "1", features = ["v4", "serde"] }
 chrono       = { version = "0.4", features = ["serde"] }
 bytes        = "1"
 url          = { version = "2", features = ["serde"] }
+inventory    = "0.3"
+toml         = "0.8"
 
 # ── Observability ─────────────────────────────────────────────────────────────
 tracing             = "0.1"

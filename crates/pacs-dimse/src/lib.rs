@@ -12,9 +12,11 @@
 pub mod client;
 pub mod config;
 pub mod error;
+pub mod plugin;
 pub mod server;
 
 pub use client::DicomClient;
 pub use config::DimseConfig;
 pub use error::DimseError;
+pub use plugin::{PACS_QUERY_SCP_PLUGIN_ID, PACS_STORE_SCP_PLUGIN_ID};
 pub use server::{build_dicom_server, DicomNode, DicomServer};

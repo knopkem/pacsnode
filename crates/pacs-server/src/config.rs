@@ -27,11 +27,13 @@
 //! format = "json"
 //! ```
 
+use std::collections::HashMap;
+
 use config::{Config, ConfigError, Environment, File};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Top-level application configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
     /// HTTP server settings.
     #[serde(default)]
@@ -43,10 +45,13 @@ pub struct AppConfig {
     /// Structured logging settings.
     #[serde(default)]
     pub logging: LoggingConfig,
+    /// Optional plugin activation and configuration.
+    #[serde(default)]
+    pub plugins: PluginsConfig,
 }
 
 /// HTTP + DIMSE listener configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ServerConfig {
     /// TCP port for the DICOMweb / REST HTTP API.
@@ -67,7 +72,7 @@ pub struct ServerConfig {
 }
 
 /// PostgreSQL connection configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DatabaseConfig {
     /// `postgres://user:password@host:port/dbname` connection string.
     pub url: String,
@@ -80,7 +85,7 @@ pub struct DatabaseConfig {
 }
 
 /// Object storage (S3/RustFS/MinIO) configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StorageConfig {
     /// S3-compatible endpoint URL (e.g. `http://localhost:9000`).
     pub endpoint: String,
@@ -96,7 +101,7 @@ pub struct StorageConfig {
 }
 
 /// Log format and verbosity.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct LoggingConfig {
     /// Log level filter (e.g. `"info"`, `"debug"`, `"info,pacs_dimse=trace"`).
     #[serde(default = "default_log_level")]
@@ -107,7 +112,7 @@ pub struct LoggingConfig {
 }
 
 /// Log output format.
-#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum LogFormat {
     /// Machine-readable JSON (default, suitable for production).
@@ -115,6 +120,17 @@ pub enum LogFormat {
     Json,
     /// Human-readable pretty-printed output (useful in development).
     Pretty,
+}
+
+/// Plugin system configuration.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct PluginsConfig {
+    /// Optional plugin IDs to activate in addition to the built-in default-enabled plugins.
+    #[serde(default)]
+    pub enabled: Vec<String>,
+    /// Per-plugin configuration sections keyed by plugin ID.
+    #[serde(default, flatten)]
+    pub configs: HashMap<String, serde_json::Value>,
 }
 
 impl AppConfig {

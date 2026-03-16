@@ -7,6 +7,7 @@ use axum::{
     Json,
 };
 use pacs_core::{StudyQuery, StudyUid};
+use pacs_plugin::{AuthenticatedUser, PacsEvent, ResourceLevel};
 
 use crate::{error::ApiError, state::AppState};
 
@@ -30,12 +31,19 @@ pub async fn get_study(
 /// Returns `204 No Content` on success.
 pub async fn delete_study(
     State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     Path(uid): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let study_uid = StudyUid::from(uid.as_str());
+    state.store.delete_study(&study_uid).await?;
     state
-        .store
-        .delete_study(&StudyUid::from(uid.as_str()))
-        .await?;
+        .plugins
+        .emit_event(PacsEvent::ResourceDeleted {
+            level: ResourceLevel::Study,
+            uid: study_uid.to_string(),
+            user_id: user.map(|extension| extension.0.user_id),
+        })
+        .await;
     Ok(StatusCode::NO_CONTENT)
 }
 

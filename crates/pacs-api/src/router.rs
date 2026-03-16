@@ -17,17 +17,11 @@ use crate::{
     state::AppState,
 };
 
-/// Constructs the full Axum [`Router`] with all DICOMweb and REST routes,
-/// middleware layers applied, and the shared [`AppState`] wired in.
+/// Constructs the full Axum [`Router`] without binding application state.
 ///
-/// # Middleware stack (outermost → innermost)
-///
-/// - [`TraceLayer`] — HTTP request/response tracing
-/// - [`CorsLayer`] — permissive CORS headers
-/// - [`TimeoutLayer`] — 30-second request timeout
-/// - [`RequestBodyLimitLayer`] — 500 MiB body size limit
-/// - [`CompressionLayer`] — response compression
-pub fn build_router(state: AppState) -> Router {
+/// This is primarily used by the plugin host so plugin-contributed routes can
+/// be merged before a final call to [`axum::Router::with_state`].
+pub fn build_router_without_state() -> Router<AppState> {
     Router::new()
         // ── Health / Stats ────────────────────────────────────────────────────
         .route("/health", get(health::get_health))
@@ -107,7 +101,20 @@ pub fn build_router(state: AppState) -> Router {
         ))
         .layer(RequestBodyLimitLayer::new(500 * 1024 * 1024))
         .layer(CompressionLayer::new())
-        .with_state(state)
+}
+
+/// Constructs the full Axum [`Router`] with all DICOMweb and REST routes,
+/// middleware layers applied, and the shared [`AppState`] wired in.
+///
+/// # Middleware stack (outermost → innermost)
+///
+/// - [`TraceLayer`] — HTTP request/response tracing
+/// - [`CorsLayer`] — permissive CORS headers
+/// - [`TimeoutLayer`] — 30-second request timeout
+/// - [`RequestBodyLimitLayer`] — 500 MiB body size limit
+/// - [`CompressionLayer`] — response compression
+pub fn build_router(state: AppState) -> Router {
+    build_router_without_state().with_state(state)
 }
 
 #[cfg(test)]

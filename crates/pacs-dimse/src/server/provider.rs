@@ -18,6 +18,8 @@ use pacs_dicom::tags::{
     dataset_to_dicom_json, date_display_string, optional_i32, optional_i32_from_u16,
     optional_string, parse_dicom_date, BODY_PART_EXAMINED, MODALITIES_IN_STUDY,
 };
+use pacs_plugin::{FindScpHandler, GetScpHandler, MoveScpHandler, StoreScpHandler};
+use pacs_plugin::{PacsEvent, PluginRegistry, QuerySource};
 use tracing::{debug, error, instrument, warn};
 
 // ── C-STORE provider ──────────────────────────────────────────────────────────
@@ -26,12 +28,26 @@ use tracing::{debug, error, instrument, warn};
 pub struct PacsStoreProvider {
     store: Arc<dyn MetadataStore>,
     blobs: Arc<dyn BlobStore>,
+    plugins: Option<Arc<PluginRegistry>>,
 }
 
 impl PacsStoreProvider {
     /// Creates a new `PacsStoreProvider` backed by the given stores.
     pub fn new(store: Arc<dyn MetadataStore>, blobs: Arc<dyn BlobStore>) -> Self {
-        Self { store, blobs }
+        Self::with_plugins(store, blobs, None)
+    }
+
+    /// Creates a new `PacsStoreProvider` backed by the given stores and plugin registry.
+    pub fn with_plugins(
+        store: Arc<dyn MetadataStore>,
+        blobs: Arc<dyn BlobStore>,
+        plugins: Option<Arc<PluginRegistry>>,
+    ) -> Self {
+        Self {
+            store,
+            blobs,
+            plugins,
+        }
     }
 }
 
@@ -199,7 +215,26 @@ impl StoreServiceProvider for PacsStoreProvider {
             return StoreResult::failure(STATUS_PROCESSING_FAILURE);
         }
 
+        if let Some(plugins) = &self.plugins {
+            plugins
+                .emit_event(PacsEvent::InstanceStored {
+                    study_uid: study_uid_str,
+                    series_uid: series_uid_str,
+                    sop_instance_uid: sop_instance_uid_str,
+                    sop_class_uid: event.sop_class_uid,
+                    source: event.calling_ae,
+                    user_id: None,
+                })
+                .await;
+        }
+
         StoreResult::success()
+    }
+}
+
+impl StoreScpHandler for PacsStoreProvider {
+    fn handle_store(&self, event: StoreEvent) -> pacs_plugin::BoxFuture<'_, StoreResult> {
+        Box::pin(StoreServiceProvider::on_store(self, event))
     }
 }
 
@@ -212,12 +247,26 @@ impl StoreServiceProvider for PacsStoreProvider {
 pub struct PacsQueryProvider {
     store: Arc<dyn MetadataStore>,
     blobs: Arc<dyn BlobStore>,
+    plugins: Option<Arc<PluginRegistry>>,
 }
 
 impl PacsQueryProvider {
     /// Creates a new `PacsQueryProvider`.
     pub fn new(store: Arc<dyn MetadataStore>, blobs: Arc<dyn BlobStore>) -> Self {
-        Self { store, blobs }
+        Self::with_plugins(store, blobs, None)
+    }
+
+    /// Creates a new `PacsQueryProvider` with an optional plugin registry.
+    pub fn with_plugins(
+        store: Arc<dyn MetadataStore>,
+        blobs: Arc<dyn BlobStore>,
+        plugins: Option<Arc<PluginRegistry>>,
+    ) -> Self {
+        Self {
+            store,
+            blobs,
+            plugins,
+        }
     }
 }
 
@@ -245,7 +294,7 @@ impl FindServiceProvider for PacsQueryProvider {
             }
         };
 
-        match level {
+        let results = match level {
             QueryRetrieveLevel::Patient => build_patient_responses(&studies),
             QueryRetrieveLevel::Study => studies.iter().map(build_study_response).collect(),
             QueryRetrieveLevel::Series => {
@@ -254,7 +303,22 @@ impl FindServiceProvider for PacsQueryProvider {
             QueryRetrieveLevel::Image => {
                 query_instance_matches(self.store.as_ref(), &studies, &keys).await
             }
+        };
+
+        if let Some(plugins) = &self.plugins {
+            plugins
+                .emit_event(PacsEvent::QueryPerformed {
+                    level: level.as_str().into(),
+                    source: QuerySource::Dimse {
+                        calling_ae: event.calling_ae,
+                    },
+                    num_results: results.len(),
+                    user_id: None,
+                })
+                .await;
         }
+
+        results
     }
 }
 
@@ -266,6 +330,24 @@ impl GetServiceProvider for PacsQueryProvider {
     async fn on_get(&self, event: GetEvent) -> Vec<RetrieveItem> {
         debug!("C-GET received");
         retrieve_items_for(self.store.as_ref(), self.blobs.as_ref(), &event.identifier).await
+    }
+}
+
+impl FindScpHandler for PacsQueryProvider {
+    fn handle_find(&self, event: FindEvent) -> pacs_plugin::BoxFuture<'_, Vec<DataSet>> {
+        Box::pin(FindServiceProvider::on_find(self, event))
+    }
+}
+
+impl GetScpHandler for PacsQueryProvider {
+    fn handle_get(&self, event: GetEvent) -> pacs_plugin::BoxFuture<'_, Vec<RetrieveItem>> {
+        Box::pin(GetServiceProvider::on_get(self, event))
+    }
+}
+
+impl MoveScpHandler for PacsQueryProvider {
+    fn handle_move(&self, event: MoveEvent) -> pacs_plugin::BoxFuture<'_, Vec<RetrieveItem>> {
+        Box::pin(MoveServiceProvider::on_move(self, event))
     }
 }
 

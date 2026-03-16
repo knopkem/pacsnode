@@ -9,6 +9,7 @@ license.workspace     = true
 [dependencies]
 pacs-core          = { workspace = true }
 pacs-dicom         = { workspace = true }
+pacs-plugin        = { workspace = true }
 dicom-toolkit-core = { workspace = true }
 dicom-toolkit-dict = { workspace = true }
 dicom-toolkit-data = { workspace = true }

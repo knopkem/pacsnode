@@ -9,6 +9,7 @@ license.workspace     = true
 [dependencies]
 pacs-core    = { workspace = true }
 pacs-dicom   = { workspace = true }
+pacs-plugin  = { workspace = true }
 async-trait  = { workspace = true }
 axum         = { workspace = true }
 bytes        = { workspace = true }

@@ -7,6 +7,7 @@ use axum::{
 };
 use chrono::NaiveDate;
 use pacs_core::{InstanceQuery, SeriesQuery, SeriesUid, SopInstanceUid, StudyQuery, StudyUid};
+use pacs_plugin::{AuthenticatedUser, PacsEvent, QuerySource};
 use serde::Deserialize;
 
 use crate::{error::ApiError, state::AppState};
@@ -81,6 +82,7 @@ pub struct InstanceSearchParams {
 /// Returns a JSON array of DICOM JSON metadata objects (PS3.18 §6.7).
 pub async fn search_studies(
     State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     Query(params): Query<StudySearchParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     let (date_from, date_to) = parse_date_range(params.study_date.as_deref());
@@ -102,12 +104,22 @@ pub async fn search_studies(
         .iter()
         .map(|s| s.metadata.as_value().clone())
         .collect();
+    state
+        .plugins
+        .emit_event(PacsEvent::QueryPerformed {
+            level: "STUDY".into(),
+            source: QuerySource::Dicomweb,
+            num_results: metadata.len(),
+            user_id: user.map(|extension| extension.0.user_id),
+        })
+        .await;
     Ok(Json(metadata))
 }
 
 /// `GET /wado/studies/:study_uid/series` — QIDO-RS series search.
 pub async fn search_series(
     State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     Path(study_uid): Path<String>,
     Query(params): Query<SeriesSearchParams>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -124,12 +136,22 @@ pub async fn search_series(
         .iter()
         .map(|s| s.metadata.as_value().clone())
         .collect();
+    state
+        .plugins
+        .emit_event(PacsEvent::QueryPerformed {
+            level: "SERIES".into(),
+            source: QuerySource::Dicomweb,
+            num_results: metadata.len(),
+            user_id: user.map(|extension| extension.0.user_id),
+        })
+        .await;
     Ok(Json(metadata))
 }
 
 /// `GET /wado/studies/:study_uid/series/:series_uid/instances` — QIDO-RS instance search.
 pub async fn search_instances(
     State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     Path((_study_uid, series_uid)): Path<(String, String)>,
     Query(params): Query<InstanceSearchParams>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -146,6 +168,15 @@ pub async fn search_instances(
         .iter()
         .map(|i| i.metadata.as_value().clone())
         .collect();
+    state
+        .plugins
+        .emit_event(PacsEvent::QueryPerformed {
+            level: "IMAGE".into(),
+            source: QuerySource::Dicomweb,
+            num_results: metadata.len(),
+            user_id: user.map(|extension| extension.0.user_id),
+        })
+        .await;
     Ok(Json(metadata))
 }
 

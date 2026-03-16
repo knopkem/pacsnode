@@ -8,6 +8,7 @@ use axum::{
 };
 use bytes::Bytes;
 use pacs_core::{blob_key_for, PacsError};
+use pacs_plugin::{AuthenticatedUser, PacsEvent};
 use serde_json::json;
 
 use crate::{error::ApiError, state::AppState};
@@ -19,6 +20,7 @@ use crate::{error::ApiError, state::AppState};
 /// PS3.18 store response JSON.
 pub async fn stow_store(
     State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -41,6 +43,7 @@ pub async fn stow_store(
 
     // Persist each instance.
     let study_uid_str = parsed[0].instance.study_uid.to_string();
+    let user_id = user.map(|extension| extension.0.user_id);
     let mut stored = Vec::new();
 
     for p in &parsed {
@@ -69,6 +72,18 @@ pub async fn stow_store(
             .store_instance(&p.instance)
             .await
             .map_err(ApiError::from)?;
+
+        state
+            .plugins
+            .emit_event(PacsEvent::InstanceStored {
+                study_uid: p.instance.study_uid.to_string(),
+                series_uid: p.instance.series_uid.to_string(),
+                sop_instance_uid: p.instance.instance_uid.to_string(),
+                sop_class_uid: p.instance.sop_class_uid.clone().unwrap_or_default(),
+                source: "STOW-RS".into(),
+                user_id: user_id.clone(),
+            })
+            .await;
 
         stored.push(json!({
             "00081150": { "vr": "UI", "Value": [p.instance.sop_class_uid.as_deref().unwrap_or("")] },

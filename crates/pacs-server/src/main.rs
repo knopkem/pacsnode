@@ -3,10 +3,10 @@
 //! ⚠️ **NOT FOR CLINICAL USE** — This software has not been validated for
 //! diagnostic or therapeutic purposes.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-use anyhow::{Context, Result};
-use sqlx::postgres::PgPoolOptions;
+use anyhow::{anyhow, Context, Result};
+use pacs_plugin::{PluginRegistry, ServerInfo};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -14,6 +14,11 @@ use tracing::{info, warn};
 mod config;
 
 use config::{AppConfig, LogFormat};
+use pacs_audit_plugin as _;
+use pacs_auth_plugin as _;
+use pacs_metrics_plugin as _;
+use pacs_storage as _;
+use pacs_store as _;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -29,51 +34,44 @@ async fn main() -> Result<()> {
         ae_title   = %cfg.server.ae_title,
         "pacsnode starting"
     );
-
-    // ── Database ──────────────────────────────────────────────────────────────
-    let pool = PgPoolOptions::new()
-        .max_connections(cfg.database.max_connections)
-        .connect(&cfg.database.url)
-        .await
-        .context("failed to connect to PostgreSQL")?;
-
-    if cfg.database.run_migrations {
-        info!("running database migrations");
-        sqlx::migrate!("../../migrations")
-            .run(&pool)
-            .await
-            .context("database migration failed")?;
-        info!("migrations complete");
+    let mut registry = PluginRegistry::new();
+    if !cfg.plugins.enabled.is_empty() {
+        registry.set_enabled(cfg.plugins.enabled.clone());
     }
+    registry
+        .register_all_discovered()
+        .context("failed to register compiled-in plugins")?;
 
-    // ── Blob store ────────────────────────────────────────────────────────────
-    let storage_config = pacs_storage::StorageConfig {
-        endpoint: cfg.storage.endpoint.clone(),
-        bucket: cfg.storage.bucket.clone(),
-        access_key: cfg.storage.access_key.clone(),
-        secret_key: cfg.storage.secret_key.clone(),
-        region: cfg.storage.region.clone(),
+    let server_info = ServerInfo {
+        ae_title: cfg.server.ae_title.clone(),
+        http_port: cfg.server.http_port,
+        dicom_port: cfg.server.dicom_port,
+        version: env!("CARGO_PKG_VERSION"),
     };
-    let blob_store: Arc<dyn pacs_core::BlobStore> = Arc::new(
-        pacs_storage::S3BlobStore::new(&storage_config).context("failed to build S3 blob store")?,
-    );
+    let plugin_configs = build_plugin_configs(&cfg)?;
+    registry
+        .init_all(server_info.clone(), &plugin_configs)
+        .await
+        .context("failed to initialize plugins")?;
+    let registry = Arc::new(registry);
 
-    // ── Metadata store ────────────────────────────────────────────────────────
-    let meta_store: Arc<dyn pacs_core::MetadataStore> =
-        Arc::new(pacs_store::PgMetadataStore::new(pool.clone()));
+    let meta_store = registry
+        .metadata_store()
+        .ok_or_else(|| anyhow!("no MetadataStore plugin is active"))?;
+    let blob_store = registry
+        .blob_store()
+        .ok_or_else(|| anyhow!("no BlobStore plugin is active"))?;
 
     // ── HTTP server ───────────────────────────────────────────────────────────
     let app_state = pacs_api::AppState {
-        server_info: pacs_api::ServerInfo {
-            ae_title: cfg.server.ae_title.clone(),
-            http_port: cfg.server.http_port,
-            dicom_port: cfg.server.dicom_port,
-            version: env!("CARGO_PKG_VERSION"),
-        },
+        server_info: server_info.clone(),
         store: meta_store.clone(),
         blobs: blob_store.clone(),
+        plugins: Arc::clone(&registry),
     };
-    let router = pacs_api::build_router(app_state);
+    let router = registry
+        .apply_middleware(pacs_api::build_router_without_state().merge(registry.merged_routes()))
+        .with_state(app_state);
 
     let http_addr = format!("0.0.0.0:{}", cfg.server.http_port);
     let http_listener = TcpListener::bind(&http_addr)
@@ -88,10 +86,11 @@ async fn main() -> Result<()> {
         max_associations: cfg.server.max_associations,
         timeout_secs: cfg.server.dimse_timeout_secs,
     };
-    let dicom_server = Arc::new(pacs_dimse::DicomServer::new(
+    let dicom_server = Arc::new(pacs_dimse::DicomServer::with_plugins(
         dimse_config,
         meta_store,
         blob_store,
+        Some(Arc::clone(&registry)),
     ));
     let shutdown_token = CancellationToken::new();
     let shutdown_token2 = shutdown_token.clone();
@@ -116,8 +115,54 @@ async fn main() -> Result<()> {
         }
     }
 
+    registry
+        .shutdown_all()
+        .await
+        .context("failed to shut down plugins")?;
+
     info!("pacsnode shut down");
     Ok(())
+}
+
+fn build_plugin_configs(cfg: &AppConfig) -> Result<HashMap<String, serde_json::Value>> {
+    let mut configs = cfg.plugins.configs.clone();
+
+    let mut db_config = serde_json::to_value(&cfg.database).context("serialize database config")?;
+    if let Some(override_value) = configs.remove("pg-metadata-store") {
+        merge_json(&mut db_config, override_value);
+    }
+    configs.insert("pg-metadata-store".into(), db_config);
+
+    let mut storage_config =
+        serde_json::to_value(&cfg.storage).context("serialize storage config")?;
+    if let Some(override_value) = configs.remove("s3-blob-store") {
+        merge_json(&mut storage_config, override_value);
+    }
+    configs.insert("s3-blob-store".into(), storage_config);
+
+    let mut audit_config = serde_json::to_value(&cfg.database).context("serialize audit config")?;
+    if let Some(override_value) = configs.remove("audit-logger") {
+        merge_json(&mut audit_config, override_value);
+    }
+    configs.insert("audit-logger".into(), audit_config);
+
+    Ok(configs)
+}
+
+fn merge_json(base: &mut serde_json::Value, overlay: serde_json::Value) {
+    match (base, overlay) {
+        (serde_json::Value::Object(base_map), serde_json::Value::Object(overlay_map)) => {
+            for (key, value) in overlay_map {
+                match base_map.get_mut(&key) {
+                    Some(existing) => merge_json(existing, value),
+                    None => {
+                        base_map.insert(key, value);
+                    }
+                }
+            }
+        }
+        (base_slot, overlay_value) => *base_slot = overlay_value,
+    }
 }
 
 /// Initialise the global [`tracing`] subscriber.

@@ -1,41 +1,14 @@
-//! Shared application state injected into every Axum handler.
-
-use std::sync::Arc;
-
-use pacs_core::{BlobStore, MetadataStore};
-use serde::Serialize;
+//! Re-exports of the shared application state types from `pacs-plugin`.
 
 pub use pacs_core::DicomNode;
-
-/// Static server identity exposed via `GET /system`.
-///
-/// Populated once from [`AppConfig`](pacs_server::config::AppConfig) at
-/// startup and shared read-only across all request handlers.
-#[derive(Debug, Clone, Serialize)]
-pub struct ServerInfo {
-    /// DICOM Application Entity title of this PACS node.
-    pub ae_title: String,
-    /// TCP port the HTTP / DICOMweb API is bound to.
-    pub http_port: u16,
-    /// TCP port the DIMSE SCP is bound to.
-    pub dicom_port: u16,
-    /// Crate version from `Cargo.toml` (`CARGO_PKG_VERSION`).
-    pub version: &'static str,
-}
-
-/// Shared state cloned into every Axum handler via [`axum::extract::State`].
-#[derive(Clone)]
-pub struct AppState {
-    /// Static server identity (AE title, ports, version).
-    pub server_info: ServerInfo,
-    /// DICOM metadata store (study/series/instance catalogue and node registry).
-    pub store: Arc<dyn MetadataStore>,
-    /// Binary DICOM blob store.
-    pub blobs: Arc<dyn BlobStore>,
-}
+pub use pacs_plugin::{AppState, ServerInfo};
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use pacs_plugin::PluginRegistry;
+
     use super::*;
     use crate::test_support::{make_test_state, MockBlobStr, MockMetaStore};
 
@@ -80,5 +53,22 @@ mod tests {
         assert_eq!(json["ae_title"], "PACSNODE");
         assert_eq!(json["http_port"], 8042);
         assert_eq!(json["dicom_port"], 4242);
+    }
+
+    #[test]
+    fn test_app_state_holds_plugin_registry() {
+        let state = AppState {
+            server_info: ServerInfo {
+                ae_title: "PACSNODE".into(),
+                http_port: 8042,
+                dicom_port: 4242,
+                version: "0.1.0",
+            },
+            store: Arc::new(MockMetaStore::new()),
+            blobs: Arc::new(MockBlobStr::new()),
+            plugins: Arc::new(PluginRegistry::new()),
+        };
+
+        let _ = state.clone();
     }
 }

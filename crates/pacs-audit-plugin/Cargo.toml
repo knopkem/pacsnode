@@ -1,0 +1,15 @@
+[package]
+name        = "pacs-audit-plugin"
+description = "pacsnode audit-log event plugin"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+
+[dependencies]
+async-trait = { workspace = true }
+pacs-plugin = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+sqlx        = { workspace = true }
+tracing     = { workspace = true }

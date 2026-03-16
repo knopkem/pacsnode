@@ -5,10 +5,18 @@ use std::sync::Arc;
 use dicom_toolkit_data::DataSet;
 use dicom_toolkit_dict::tags;
 use dicom_toolkit_net::{
-    handle_find_rq, handle_get_rq, handle_move_rq, handle_store_rq, Association, AssociationConfig,
-    DicomServer as NetDicomServer, StaticDestinationLookup,
+    handle_find_rq, handle_get_rq, handle_move_rq, handle_store_rq,
+    services::provider::{
+        FindEvent, FindServiceProvider, GetEvent, GetServiceProvider, MoveEvent,
+        MoveServiceProvider, RetrieveItem, StoreEvent, StoreResult, StoreServiceProvider,
+    },
+    Association, AssociationConfig, DicomServer as NetDicomServer, StaticDestinationLookup,
 };
 use pacs_core::{BlobStore, MetadataStore};
+use pacs_plugin::{
+    FindScpHandler, GetScpHandler, MoveScpHandler, PacsEvent, PluginError, PluginRegistry,
+    StoreScpHandler,
+};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -18,6 +26,70 @@ use crate::error::DimseError;
 
 pub mod provider;
 use provider::{PacsQueryProvider, PacsStoreProvider};
+
+struct DynStoreProvider {
+    inner: Arc<dyn StoreScpHandler>,
+}
+
+impl DynStoreProvider {
+    fn new(inner: Arc<dyn StoreScpHandler>) -> Self {
+        Self { inner }
+    }
+}
+
+impl StoreServiceProvider for DynStoreProvider {
+    async fn on_store(&self, event: StoreEvent) -> StoreResult {
+        self.inner.handle_store(event).await
+    }
+}
+
+struct DynFindProvider {
+    inner: Arc<dyn FindScpHandler>,
+}
+
+impl DynFindProvider {
+    fn new(inner: Arc<dyn FindScpHandler>) -> Self {
+        Self { inner }
+    }
+}
+
+impl FindServiceProvider for DynFindProvider {
+    async fn on_find(&self, event: FindEvent) -> Vec<DataSet> {
+        self.inner.handle_find(event).await
+    }
+}
+
+struct DynGetProvider {
+    inner: Arc<dyn GetScpHandler>,
+}
+
+impl DynGetProvider {
+    fn new(inner: Arc<dyn GetScpHandler>) -> Self {
+        Self { inner }
+    }
+}
+
+impl GetServiceProvider for DynGetProvider {
+    async fn on_get(&self, event: GetEvent) -> Vec<RetrieveItem> {
+        self.inner.handle_get(event).await
+    }
+}
+
+struct DynMoveProvider {
+    inner: Arc<dyn MoveScpHandler>,
+}
+
+impl DynMoveProvider {
+    fn new(inner: Arc<dyn MoveScpHandler>) -> Self {
+        Self { inner }
+    }
+}
+
+impl MoveServiceProvider for DynMoveProvider {
+    async fn on_move(&self, event: MoveEvent) -> Vec<RetrieveItem> {
+        self.inner.handle_move(event).await
+    }
+}
 
 /// A known remote DICOM node (AE title + network address).
 #[derive(Debug, Clone)]
@@ -54,6 +126,7 @@ pub struct DicomServer {
     config: DimseConfig,
     store: Arc<dyn MetadataStore>,
     blobs: Arc<dyn BlobStore>,
+    plugins: Option<Arc<PluginRegistry>>,
     known_nodes: Arc<tokio::sync::RwLock<Vec<DicomNode>>>,
 }
 
@@ -64,10 +137,21 @@ impl DicomServer {
         store: Arc<dyn MetadataStore>,
         blobs: Arc<dyn BlobStore>,
     ) -> Self {
+        Self::with_plugins(config, store, blobs, None)
+    }
+
+    /// Creates a new `DicomServer` wired to an optional plugin registry.
+    pub fn with_plugins(
+        config: DimseConfig,
+        store: Arc<dyn MetadataStore>,
+        blobs: Arc<dyn BlobStore>,
+        plugins: Option<Arc<PluginRegistry>>,
+    ) -> Self {
         Self {
             config,
             store,
             blobs,
+            plugins,
             known_nodes: Arc::new(tokio::sync::RwLock::new(Vec::new())),
         }
     }
@@ -80,6 +164,70 @@ impl DicomServer {
     /// Returns a snapshot of all registered remote nodes.
     pub async fn nodes(&self) -> Vec<DicomNode> {
         self.known_nodes.read().await.clone()
+    }
+
+    fn resolve_store_handler(&self) -> Result<Arc<dyn StoreScpHandler>, PluginError> {
+        if let Some(plugins) = &self.plugins {
+            return plugins
+                .store_scp_handler()?
+                .ok_or_else(|| PluginError::MissingDependency {
+                    plugin_id: "dicom-server".into(),
+                    dependency: "store-scp-plugin".into(),
+                });
+        }
+
+        Ok(Arc::new(PacsStoreProvider::new(
+            Arc::clone(&self.store),
+            Arc::clone(&self.blobs),
+        )))
+    }
+
+    fn resolve_find_handler(&self) -> Result<Arc<dyn FindScpHandler>, PluginError> {
+        if let Some(plugins) = &self.plugins {
+            return plugins
+                .find_scp_handler()?
+                .ok_or_else(|| PluginError::MissingDependency {
+                    plugin_id: "dicom-server".into(),
+                    dependency: "find-scp-plugin".into(),
+                });
+        }
+
+        Ok(Arc::new(PacsQueryProvider::new(
+            Arc::clone(&self.store),
+            Arc::clone(&self.blobs),
+        )))
+    }
+
+    fn resolve_get_handler(&self) -> Result<Arc<dyn GetScpHandler>, PluginError> {
+        if let Some(plugins) = &self.plugins {
+            return plugins
+                .get_scp_handler()?
+                .ok_or_else(|| PluginError::MissingDependency {
+                    plugin_id: "dicom-server".into(),
+                    dependency: "get-scp-plugin".into(),
+                });
+        }
+
+        Ok(Arc::new(PacsQueryProvider::new(
+            Arc::clone(&self.store),
+            Arc::clone(&self.blobs),
+        )))
+    }
+
+    fn resolve_move_handler(&self) -> Result<Arc<dyn MoveScpHandler>, PluginError> {
+        if let Some(plugins) = &self.plugins {
+            return plugins
+                .move_scp_handler()?
+                .ok_or_else(|| PluginError::MissingDependency {
+                    plugin_id: "dicom-server".into(),
+                    dependency: "move-scp-plugin".into(),
+                });
+        }
+
+        Ok(Arc::new(PacsQueryProvider::new(
+            Arc::clone(&self.store),
+            Arc::clone(&self.blobs),
+        )))
     }
 
     /// Start listening on the configured DICOM port.
@@ -138,7 +286,7 @@ impl DicomServer {
                     debug!(peer = %peer_addr, "Accepted TCP connection");
                     let server = Arc::clone(&self);
                     tokio::spawn(async move {
-                        Self::handle_connection(stream, server).await;
+                        Self::handle_connection(stream, peer_addr, server).await;
                         drop(permit);
                     });
                 }
@@ -158,7 +306,11 @@ impl DicomServer {
     ///
     /// This function is **not** cancellation-safe. It must run to completion
     /// so the association is properly released or aborted.
-    async fn handle_connection(stream: tokio::net::TcpStream, server: Arc<DicomServer>) {
+    async fn handle_connection(
+        stream: tokio::net::TcpStream,
+        peer_addr: std::net::SocketAddr,
+        server: Arc<DicomServer>,
+    ) {
         let assoc_config = AssociationConfig {
             local_ae_title: server.config.ae_title.clone(),
             max_pdu_length: 65_536,
@@ -176,10 +328,47 @@ impl DicomServer {
             }
         };
 
-        let store_provider =
-            PacsStoreProvider::new(Arc::clone(&server.store), Arc::clone(&server.blobs));
-        let query_provider =
-            PacsQueryProvider::new(Arc::clone(&server.store), Arc::clone(&server.blobs));
+        if let Some(plugins) = &server.plugins {
+            plugins
+                .emit_event(PacsEvent::AssociationOpened {
+                    calling_ae: assoc.calling_ae.clone(),
+                    peer_addr,
+                })
+                .await;
+        }
+
+        let store_provider = match server.resolve_store_handler() {
+            Ok(handler) => DynStoreProvider::new(handler),
+            Err(error) => {
+                error!(error = %error, "Failed to resolve C-STORE SCP handler");
+                let _ = assoc.abort().await;
+                return;
+            }
+        };
+        let find_provider = match server.resolve_find_handler() {
+            Ok(handler) => DynFindProvider::new(handler),
+            Err(error) => {
+                error!(error = %error, "Failed to resolve C-FIND SCP handler");
+                let _ = assoc.abort().await;
+                return;
+            }
+        };
+        let get_provider = match server.resolve_get_handler() {
+            Ok(handler) => DynGetProvider::new(handler),
+            Err(error) => {
+                error!(error = %error, "Failed to resolve C-GET SCP handler");
+                let _ = assoc.abort().await;
+                return;
+            }
+        };
+        let move_provider = match server.resolve_move_handler() {
+            Ok(handler) => DynMoveProvider::new(handler),
+            Err(error) => {
+                error!(error = %error, "Failed to resolve C-MOVE SCP handler");
+                let _ = assoc.abort().await;
+                return;
+            }
+        };
 
         // Snapshot the known-node list for C-MOVE destination resolution.
         let dest_lookup = {
@@ -214,12 +403,12 @@ impl DicomServer {
                     .map_err(DimseError::from),
 
                 // C-FIND-RQ
-                0x0020 => handle_find_rq(&mut assoc, ctx_id, &cmd, &query_provider)
+                0x0020 => handle_find_rq(&mut assoc, ctx_id, &cmd, &find_provider)
                     .await
                     .map_err(DimseError::from),
 
                 // C-GET-RQ
-                0x0010 => handle_get_rq(&mut assoc, ctx_id, &cmd, &query_provider)
+                0x0010 => handle_get_rq(&mut assoc, ctx_id, &cmd, &get_provider)
                     .await
                     .map_err(DimseError::from),
 
@@ -228,7 +417,7 @@ impl DicomServer {
                     &mut assoc,
                     ctx_id,
                     &cmd,
-                    &query_provider,
+                    &move_provider,
                     &dest_lookup,
                     &local_ae,
                 )
@@ -253,6 +442,14 @@ impl DicomServer {
 
         if let Err(e) = assoc.release().await {
             debug!(error = %e, "Error releasing association (may already be closed)");
+        }
+
+        if let Some(plugins) = &server.plugins {
+            plugins
+                .emit_event(PacsEvent::AssociationClosed {
+                    calling_ae: assoc.calling_ae.clone(),
+                })
+                .await;
         }
     }
 }

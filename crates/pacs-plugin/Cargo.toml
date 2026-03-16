@@ -1,0 +1,25 @@
+[package]
+name        = "pacs-plugin"
+description = "pacsnode — plugin traits, registry, and event bus"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+
+[dependencies]
+async-trait       = { workspace = true }
+axum              = { workspace = true }
+bytes             = { workspace = true }
+dicom-toolkit-data = { workspace = true }
+dicom-toolkit-net = { workspace = true }
+inventory         = { workspace = true }
+pacs-core         = { workspace = true }
+serde             = { workspace = true }
+serde_json        = { workspace = true }
+thiserror         = { workspace = true }
+tokio             = { workspace = true }
+tracing           = { workspace = true }
+
+[dev-dependencies]
+rstest   = { workspace = true }
+tokio    = { workspace = true }

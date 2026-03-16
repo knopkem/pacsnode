@@ -14,6 +14,7 @@ pub mod routes;
 pub mod state;
 
 pub use router::build_router;
+pub use router::build_router_without_state;
 pub use state::{AppState, DicomNode, ServerInfo};
 
 #[cfg(test)]
@@ -28,6 +29,8 @@ pub(crate) mod test_support {
         PacsStatistics, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery,
         StudyUid,
     };
+
+    use pacs_plugin::PluginRegistry;
 
     use crate::state::AppState;
 
@@ -72,6 +75,7 @@ pub(crate) mod test_support {
     /// Build an [`AppState`] backed by the provided mock stores.
     pub fn make_test_state(store: MockMetaStore, blobs: MockBlobStr) -> AppState {
         use crate::state::ServerInfo;
+
         AppState {
             server_info: ServerInfo {
                 ae_title: "TESTPACS".into(),
@@ -81,6 +85,7 @@ pub(crate) mod test_support {
             },
             store: Arc::new(store),
             blobs: Arc::new(blobs),
+            plugins: Arc::new(PluginRegistry::new()),
         }
     }
 }

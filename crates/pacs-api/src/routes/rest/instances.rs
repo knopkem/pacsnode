@@ -7,6 +7,7 @@ use axum::{
     Json,
 };
 use pacs_core::{InstanceQuery, SeriesUid, SopInstanceUid};
+use pacs_plugin::{AuthenticatedUser, PacsEvent, ResourceLevel};
 
 use crate::{error::ApiError, state::AppState};
 
@@ -46,12 +47,19 @@ pub async fn get_instance(
 /// Returns `204 No Content` on success.
 pub async fn delete_instance(
     State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     Path(uid): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let instance_uid = SopInstanceUid::from(uid.as_str());
+    state.store.delete_instance(&instance_uid).await?;
     state
-        .store
-        .delete_instance(&SopInstanceUid::from(uid.as_str()))
-        .await?;
+        .plugins
+        .emit_event(PacsEvent::ResourceDeleted {
+            level: ResourceLevel::Instance,
+            uid: instance_uid.to_string(),
+            user_id: user.map(|extension| extension.0.user_id),
+        })
+        .await;
     Ok(StatusCode::NO_CONTENT)
 }
 

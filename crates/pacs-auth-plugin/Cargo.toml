@@ -1,0 +1,27 @@
+[package]
+name        = "pacs-auth-plugin"
+description = "pacsnode basic JWT auth plugin"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+
+[dependencies]
+argon2      = { workspace = true }
+async-trait = { workspace = true }
+axum        = { workspace = true }
+http        = { workspace = true }
+jsonwebtoken = { workspace = true }
+pacs-plugin = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+axum        = { workspace = true }
+bytes       = { workspace = true }
+pacs-core   = { workspace = true }
+tokio       = { workspace = true }
+tower       = { workspace = true }

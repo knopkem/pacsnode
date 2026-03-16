@@ -20,8 +20,10 @@
 
 pub mod config;
 pub mod error;
+pub mod plugin;
 pub mod s3;
 
 pub use config::StorageConfig;
 pub use error::StorageError;
+pub use plugin::S3BlobStorePlugin;
 pub use s3::S3BlobStore;

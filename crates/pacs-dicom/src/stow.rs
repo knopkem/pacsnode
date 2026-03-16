@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn test_split_multipart_single_part() {
         let dicom = make_dicom("1.1", "1.1.1", "1.1.1.1");
-        let body = build_multipart("bdry", &[dicom.clone()]);
+        let body = build_multipart("bdry", std::slice::from_ref(&dicom));
         let parts = split_multipart(body.as_ref(), "bdry");
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].as_ref(), dicom.as_slice());

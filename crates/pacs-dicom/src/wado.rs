@@ -337,11 +337,71 @@ pub fn transcode_part10(data: Bytes, target_ts_uid: &str) -> Result<Bytes, Dicom
     write_file(transcoded)
 }
 
+/// Prepares DIMSE-ready dataset bytes in the requested transfer syntax.
+///
+/// This helper accepts either a stored DICOM Part 10 object or a bare Explicit
+/// VR Little Endian dataset and returns bytes suitable for a DIMSE C-STORE
+/// sub-operation. File Meta Information is stripped from the output.
+///
+/// # Example
+///
+/// ```no_run
+/// use bytes::Bytes;
+/// use dicom_toolkit_dict::ts::transfer_syntaxes;
+/// use pacs_dicom::prepare_dimse_dataset;
+///
+/// # fn example(data: Bytes) -> Result<(), pacs_dicom::DicomError> {
+/// let _dataset = prepare_dimse_dataset(data, transfer_syntaxes::EXPLICIT_VR_LITTLE_ENDIAN.uid)?;
+/// # Ok(())
+/// # }
+/// ```
+pub fn prepare_dimse_dataset(data: Bytes, target_ts_uid: &str) -> Result<Bytes, DicomError> {
+    if !supports_retrieve_transfer_syntax(target_ts_uid) {
+        return Err(DicomError::Unsupported {
+            message: format!("transfer syntax {target_ts_uid} is not supported for retrieve"),
+        });
+    }
+
+    match read_file(data.clone()) {
+        Ok(file) => {
+            let part10 = if file.meta.transfer_syntax_uid == target_ts_uid {
+                data
+            } else {
+                transcode_part10(data, target_ts_uid)?
+            };
+            let transcoded = read_file(part10)?;
+            write_dataset_bytes(&transcoded.dataset, target_ts_uid)
+        }
+        Err(_) => dataset_bytes_to_target(data, target_ts_uid),
+    }
+}
+
 fn read_file(data: Bytes) -> Result<FileFormat, DicomError> {
     let mut reader = DicomReader::new(Cursor::new(data.as_ref()));
     reader
         .read_file()
         .map_err(|e| DicomError::Toolkit(e.to_string()))
+}
+
+fn dataset_bytes_to_target(data: Bytes, target_ts_uid: &str) -> Result<Bytes, DicomError> {
+    let dataset = DicomReader::new(Cursor::new(data.as_ref()))
+        .read_dataset(transfer_syntaxes::EXPLICIT_VR_LITTLE_ENDIAN.uid)
+        .map_err(|e| DicomError::Toolkit(e.to_string()))?;
+
+    if target_ts_uid == transfer_syntaxes::EXPLICIT_VR_LITTLE_ENDIAN.uid {
+        return write_dataset_bytes(&dataset, target_ts_uid);
+    }
+
+    let sop_class_uid = required_string(&dataset, tags::SOP_CLASS_UID, "SOPClassUID (0008,0016)")?;
+    let sop_instance_uid = required_string(
+        &dataset,
+        tags::SOP_INSTANCE_UID,
+        "SOPInstanceUID (0008,0018)",
+    )?;
+    let file = FileFormat::from_dataset(&sop_class_uid, &sop_instance_uid, dataset);
+    let transcoded = transcode_part10(write_file(file)?, target_ts_uid)?;
+    let transcoded_file = read_file(transcoded)?;
+    write_dataset_bytes(&transcoded_file.dataset, target_ts_uid)
 }
 
 fn render_dataset_frame(
@@ -823,6 +883,14 @@ fn write_file(file: FileFormat) -> Result<Bytes, DicomError> {
     Ok(Bytes::from(buf))
 }
 
+fn write_dataset_bytes(dataset: &DataSet, ts_uid: &str) -> Result<Bytes, DicomError> {
+    let mut buf = Vec::new();
+    dicom_toolkit_data::DicomWriter::new(Cursor::new(&mut buf))
+        .write_dataset(dataset, ts_uid)
+        .map_err(|e| DicomError::Toolkit(e.to_string()))?;
+    Ok(Bytes::from(buf))
+}
+
 fn dataset_for_single_frame(
     file: &FileFormat,
     frame_bytes: Bytes,
@@ -1143,6 +1211,16 @@ fn required_u16(dataset: &DataSet, tag: Tag, name: &'static str) -> Result<u16, 
                 .map(|element| element.value.to_display_string())
                 .and_then(|value| value.trim().parse::<u16>().ok())
         })
+        .ok_or(DicomError::MissingTag { tag: name })
+}
+
+fn required_string(dataset: &DataSet, tag: Tag, name: &'static str) -> Result<String, DicomError> {
+    dataset
+        .get_string(tag)
+        .map(str::trim)
+        .map(|value| value.trim_end_matches('\0'))
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
         .ok_or(DicomError::MissingTag { tag: name })
 }
 
@@ -1486,6 +1564,51 @@ mod tests {
         let frames = extract_frames(transcoded, &[1, 2]).unwrap();
         assert_eq!(frames[0], Bytes::from_static(&[0x11, 0x22]));
         assert_eq!(frames[1], Bytes::from_static(&[0x33, 0x44]));
+    }
+
+    #[test]
+    fn prepare_dimse_dataset_transcodes_part10_to_requested_transfer_syntax() {
+        let dataset_bytes =
+            prepare_dimse_dataset(make_multiframe_dicom(), transfer_syntaxes::RLE_LOSSLESS.uid)
+                .unwrap();
+        let dataset = DicomReader::new(Cursor::new(dataset_bytes.as_ref()))
+            .read_dataset(transfer_syntaxes::RLE_LOSSLESS.uid)
+            .unwrap();
+        let pixel_data = dataset.get(tags::PIXEL_DATA).unwrap();
+        assert!(matches!(
+            pixel_data.value,
+            Value::PixelData(PixelData::Encapsulated { .. })
+        ));
+    }
+
+    #[test]
+    fn prepare_dimse_dataset_transcodes_bare_dataset_from_explicit_le() {
+        let file = read_file(make_multiframe_dicom()).unwrap();
+        let bare_dataset = write_dataset_bytes(
+            &file.dataset,
+            transfer_syntaxes::EXPLICIT_VR_LITTLE_ENDIAN.uid,
+        )
+        .unwrap();
+        let transcoded =
+            prepare_dimse_dataset(bare_dataset, transfer_syntaxes::JPEG_BASELINE.uid).unwrap();
+        let dataset = DicomReader::new(Cursor::new(transcoded.as_ref()))
+            .read_dataset(transfer_syntaxes::JPEG_BASELINE.uid)
+            .unwrap();
+        let pixel_data = dataset.get(tags::PIXEL_DATA).unwrap();
+        assert!(matches!(
+            pixel_data.value,
+            Value::PixelData(PixelData::Encapsulated { .. })
+        ));
+    }
+
+    #[test]
+    fn prepare_dimse_dataset_rejects_unsupported_transfer_syntax() {
+        let error = prepare_dimse_dataset(
+            make_multiframe_dicom(),
+            transfer_syntaxes::JPEG_LOSSLESS.uid,
+        )
+        .unwrap_err();
+        assert!(matches!(error, DicomError::Unsupported { .. }));
     }
 
     #[test]

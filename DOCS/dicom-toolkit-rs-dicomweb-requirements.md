@@ -1,11 +1,11 @@
-# dicom-toolkit-rs DICOMweb follow-up status
+# dicom-toolkit-rs follow-up status
 
-As of `dicom-toolkit-rs` commit `493cd42`, all toolkit requirements that were
-previously tracked for the pacsnode DICOMweb follow-up have landed upstream.
+Most of the previously tracked pacsnode DICOMweb and DIMSE follow-up items have
+landed upstream as of `dicom-toolkit-rs` commit `493cd42`.
 
-That means this file is no longer an active requirements list. It is now a small
-status note so future work can quickly see that the known upstream blockers were
-closed and that pacsnode should prefer the toolkit APIs over local workarounds.
+This file stays trimmed to the unresolved upstream work only. When pacsnode
+finds a toolkit-side blocker, add it here; when the upstream fix lands, remove
+it again.
 
 ---
 
@@ -30,8 +30,15 @@ instead of pacsnode-specific patching where possible:
 
 ## Current remaining upstream work
 
-No unresolved `dicom-toolkit-rs` requirements are currently tracked for this
-DICOMweb follow-up.
+- **Classic JPEG Lossless encode support** (`1.2.840.10008.1.2.4.57` /
+  `1.2.840.10008.1.2.4.70`)
+  - `pacsnode` now wires DIMSE SCP transfer-syntax policy into association
+    negotiation and uses retrieve-time transcoding for DIMSE C-GET/C-MOVE.
+  - The remaining blocker is upstream: `dicom-toolkit-rs` can decode classic
+    JPEG Lossless, but `supported_encode_transfer_syntaxes()` / `can_encode()`
+    still exclude `JPEG_LOSSLESS` and `JPEG_LOSSLESS_SV1`.
+  - Until that lands upstream, pacsnode cannot truly emit classic JPEG Lossless
+    on retrieve even though the rest of the retrieve/transcode path is wired.
 
 If future pacsnode work uncovers a new toolkit bug, missing feature, or cleanup
 opportunity, add it here and remove it again once the upstream change lands.
@@ -46,3 +53,6 @@ opportunity, add it here and remove it again once the upstream change lands.
   - `crates/pacs-dicom/src/wado.rs`
 - toolkit helper definitions live in:
   - `../dcmtk-rs/crates/dicom-toolkit-data/src/value.rs`
+- classic JPEG Lossless encode capability is currently absent from:
+  - `../dcmtk-rs/crates/dicom-toolkit-codec/src/registry.rs`
+  - `../dcmtk-rs/crates/dicom-toolkit-codec/src/jpeg/mod.rs`

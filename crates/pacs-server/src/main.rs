@@ -98,6 +98,9 @@ async fn main() -> Result<()> {
         ae_title: cfg.server.ae_title.clone(),
         port: cfg.server.dicom_port,
         ae_whitelist_enabled: cfg.server.ae_whitelist_enabled,
+        accept_all_transfer_syntaxes: cfg.server.accept_all_transfer_syntaxes,
+        accepted_transfer_syntaxes: cfg.server.accepted_transfer_syntaxes.clone(),
+        preferred_transfer_syntaxes: cfg.server.preferred_transfer_syntaxes.clone(),
         max_associations: cfg.server.max_associations,
         timeout_secs: cfg.server.dimse_timeout_secs,
     };

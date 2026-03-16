@@ -2,8 +2,11 @@ use std::{io::Cursor, sync::LazyLock};
 
 use bytes::Bytes;
 use dicom_toolkit_codec::{
-    can_encode, jp2k::Jp2kCodec, jpeg::JpegParams, jpeg_ls::JpegLsCodec, rle_encode_frame,
-    supported_encode_transfer_syntaxes,
+    can_encode,
+    jp2k::Jp2kCodec,
+    jpeg::{encode_jpeg_lossless, JpegParams},
+    jpeg_ls::JpegLsCodec,
+    rle_encode_frame, supported_encode_transfer_syntaxes,
 };
 use dicom_toolkit_data::{
     element_value_bytes, encapsulated_frames, encapsulated_pixel_data_from_frames,
@@ -277,7 +280,8 @@ pub fn supports_retrieve_transfer_syntax(ts_uid: &str) -> bool {
 ///
 /// If the source file already uses `target_ts_uid`, the original bytes are returned.
 /// For compressed syntaxes, pacsnode currently supports output to RLE, JPEG
-/// Baseline/Extended, JPEG-LS Lossless, JPEG 2000 Lossless, and JPEG 2000.
+/// Baseline/Extended, classic JPEG Lossless, JPEG-LS Lossless, JPEG 2000
+/// Lossless, and JPEG 2000.
 ///
 /// # Example
 ///
@@ -766,6 +770,20 @@ fn encode_frame_for_transfer_syntax(
             )
             .map_err(|e| DicomError::Toolkit(e.to_string()))
         }
+        uid if uid == transfer_syntaxes::JPEG_LOSSLESS.uid
+            || uid == transfer_syntaxes::JPEG_LOSSLESS_SV1.uid =>
+        {
+            encode_jpeg_lossless(
+                frame,
+                cols,
+                rows,
+                samples_per_pixel,
+                bits_allocated,
+                bits_stored,
+                1,
+            )
+            .map_err(|e| DicomError::Toolkit(e.to_string()))
+        }
         uid if uid == transfer_syntaxes::JPEG_LS_LOSSLESS.uid => JpegLsCodec::encode_frame(
             frame,
             u32::from(cols),
@@ -1235,6 +1253,8 @@ fn is_supported_output_transfer_syntax(ts_uid: &str) -> bool {
             uid if uid == transfer_syntaxes::RLE_LOSSLESS.uid
                 || uid == transfer_syntaxes::JPEG_BASELINE.uid
                 || uid == transfer_syntaxes::JPEG_EXTENDED.uid
+                || uid == transfer_syntaxes::JPEG_LOSSLESS.uid
+                || uid == transfer_syntaxes::JPEG_LOSSLESS_SV1.uid
                 || uid == transfer_syntaxes::JPEG_LS_LOSSLESS.uid
                 || uid == transfer_syntaxes::JPEG_2000_LOSSLESS.uid
                 || uid == transfer_syntaxes::JPEG_2000.uid
@@ -1479,14 +1499,18 @@ mod tests {
         let syntaxes = supported_retrieve_transfer_syntaxes();
         assert!(syntaxes.contains(&transfer_syntaxes::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN.uid));
         assert!(syntaxes.contains(&transfer_syntaxes::JPEG_BASELINE.uid));
+        assert!(syntaxes.contains(&transfer_syntaxes::JPEG_LOSSLESS.uid));
+        assert!(syntaxes.contains(&transfer_syntaxes::JPEG_LOSSLESS_SV1.uid));
         assert!(syntaxes.contains(&transfer_syntaxes::JPEG_2000_LOSSLESS.uid));
         assert!(syntaxes.contains(&transfer_syntaxes::RLE_LOSSLESS.uid));
-        assert!(!syntaxes.contains(&transfer_syntaxes::JPEG_LOSSLESS.uid));
         assert!(supports_retrieve_transfer_syntax(
             transfer_syntaxes::JPEG_BASELINE.uid
         ));
-        assert!(!supports_retrieve_transfer_syntax(
+        assert!(supports_retrieve_transfer_syntax(
             transfer_syntaxes::JPEG_LOSSLESS.uid
+        ));
+        assert!(supports_retrieve_transfer_syntax(
+            transfer_syntaxes::JPEG_LOSSLESS_SV1.uid
         ));
     }
 
@@ -1567,6 +1591,25 @@ mod tests {
     }
 
     #[test]
+    fn transcode_part10_to_jpeg_lossless_roundtrips_frames() {
+        let transcoded = transcode_part10(
+            make_multiframe_dicom(),
+            transfer_syntaxes::JPEG_LOSSLESS.uid,
+        )
+        .unwrap();
+        let file = DicomReader::new(Cursor::new(transcoded.as_ref()))
+            .read_file()
+            .unwrap();
+        assert_eq!(
+            file.meta.transfer_syntax_uid,
+            transfer_syntaxes::JPEG_LOSSLESS.uid
+        );
+        let frames = extract_frames(transcoded, &[1, 2]).unwrap();
+        assert_eq!(frames[0], Bytes::from_static(&[0x11, 0x22]));
+        assert_eq!(frames[1], Bytes::from_static(&[0x33, 0x44]));
+    }
+
+    #[test]
     fn prepare_dimse_dataset_transcodes_part10_to_requested_transfer_syntax() {
         let dataset_bytes =
             prepare_dimse_dataset(make_multiframe_dicom(), transfer_syntaxes::RLE_LOSSLESS.uid)
@@ -1603,21 +1646,24 @@ mod tests {
 
     #[test]
     fn prepare_dimse_dataset_rejects_unsupported_transfer_syntax() {
-        let error = prepare_dimse_dataset(
+        let dataset_bytes = prepare_dimse_dataset(
             make_multiframe_dicom(),
-            transfer_syntaxes::JPEG_LOSSLESS.uid,
+            transfer_syntaxes::JPEG_LOSSLESS_SV1.uid,
         )
-        .unwrap_err();
-        assert!(matches!(error, DicomError::Unsupported { .. }));
+        .unwrap();
+        let dataset = DicomReader::new(Cursor::new(dataset_bytes.as_ref()))
+            .read_dataset(transfer_syntaxes::JPEG_LOSSLESS_SV1.uid)
+            .unwrap();
+        let pixel_data = dataset.get(tags::PIXEL_DATA).unwrap();
+        assert!(matches!(
+            pixel_data.value,
+            Value::PixelData(PixelData::Encapsulated { .. })
+        ));
     }
 
     #[test]
-    fn transcode_part10_rejects_jpeg_lossless_output() {
-        let error = transcode_part10(
-            make_multiframe_dicom(),
-            transfer_syntaxes::JPEG_LOSSLESS.uid,
-        )
-        .unwrap_err();
+    fn transcode_part10_rejects_unknown_output_transfer_syntax() {
+        let error = transcode_part10(make_multiframe_dicom(), "1.2.3.4.5").unwrap_err();
         assert!(matches!(error, DicomError::Unsupported { .. }));
     }
 

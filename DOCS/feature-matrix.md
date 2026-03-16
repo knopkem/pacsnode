@@ -108,12 +108,12 @@
 | **Explicit VR Big Endian** (1.2.840.10008.1.2.2) | ✅ | ✅ | Big-endian retrieve-time transcode and rendering path covered |
 | **Deflated Explicit VR LE** (1.2.840.10008.1.2.1.99) | ✅ | ✅ | Read/write plus WADO retrieve-time transcode verified |
 | **JPEG Baseline** (1.2.840.10008.1.2.4.50) | ✅ | ✅ | Toolkit-backed decode plus retrieve-time transcode/output exercised in tests |
-| **JPEG Lossless** (1.2.840.10008.1.2.4.57/70) | ⚠️ | ✅ | Decode path exists, but classic JPEG Lossless encode support is still missing upstream in `dicom-toolkit-rs`, so pacsnode cannot yet re-emit 1.2.840.10008.1.2.4.57/70 on retrieve |
+| **JPEG Lossless** (1.2.840.10008.1.2.4.57/70) | ✅ | ✅ | Toolkit-backed decode plus retrieve-time transcode/output verified for both classic JPEG Lossless UIDs |
 | **JPEG 2000 Lossless** (1.2.840.10008.1.2.4.90) | ✅ | ✅ | Toolkit-backed decode plus lossless retrieve-time transcode verified |
 | **JPEG 2000 Lossy** (1.2.840.10008.1.2.4.91) | ⚠️ | ✅ | Retrieve-time output path is wired, but lossy quality/interoperability coverage is still thin |
 | **RLE Lossless** (1.2.840.10008.1.2.5) | ✅ | ✅ | Toolkit-backed decode plus retrieve-time transcode verified |
 | **MPEG-2/4** | ❌ | ⚠️ | Neither fully supports |
-| **Server-side transcoding** | ✅ | ✅ | WADO-RS/WADO-URI retrieve plus DIMSE C-GET/C-MOVE can transcode into the supported output syntaxes; classic JPEG Lossless remains blocked upstream |
+| **Server-side transcoding** | ✅ | ✅ | WADO-RS/WADO-URI retrieve plus DIMSE C-GET/C-MOVE can transcode into the supported output syntaxes, including classic JPEG Lossless |
 | **`Accept` header negotiation** | ✅ | ✅ | WADO-RS retrieve honors `Accept` transfer-syntax requests for DICOM object retrieval |
 
 ---

@@ -16,8 +16,22 @@ All generated code must meet the standards below without exception.
   - `cargo fmt --all -- --check`
   - `cargo clippy --workspace --all-targets -- -D warnings`
   - `RUSTDOCFLAGS="-Dwarnings" cargo doc --workspace --no-deps`
-  - `cargo deny check`
+- `cargo deny check`
 - If a CI-equivalent step cannot be run locally, say so explicitly and explain why.
+
+---
+
+## Toolkit Follow-up Reporting
+
+- If you discover a `dicom-toolkit-rs` bug, missing feature, or design issue while working on `pacsnode`, report it explicitly in your progress and final handoff instead of silently papering over it.
+- When the toolkit issue remains relevant after a local PACS-side fix or workaround, update `DOCS/dicom-toolkit-rs-dicomweb-requirements.md` in the same task.
+- Keep that requirements document trimmed to unresolved upstream work only:
+  - remove items that are already fixed or implemented
+  - add newly discovered toolkit bugs, missing features, or cleanup opportunities
+  - explain whether the upstream item is a blocker, a workaround target, or a simplification opportunity
+- Prefer documenting both halves of the situation:
+  - what `pacsnode` changed locally
+  - what should still be fixed upstream in `dicom-toolkit-rs`
 
 ---
 

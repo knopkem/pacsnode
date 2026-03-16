@@ -56,7 +56,7 @@ pub fn build_router_without_state() -> Router<AppState> {
         )
         // ── WADO-RS bulk data ─────────────────────────────────────────────────
         .route(
-            "/wado/studies/{study_uid}/series/{series_uid}/instances/{instance_uid}/bulkdata/{tag_path}",
+            "/wado/studies/{study_uid}/series/{series_uid}/instances/{instance_uid}/bulkdata/{*tag_path}",
             get(wado::instance_bulkdata),
         )
         // ── WADO-RS retrieve ──────────────────────────────────────────────────

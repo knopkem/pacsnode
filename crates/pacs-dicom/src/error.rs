@@ -44,10 +44,10 @@ pub enum DicomError {
         available: u32,
     },
 
-    /// A bulk-data path was malformed.
-    #[error("invalid bulk data tag path: {value}")]
+    /// A bulk-data attribute path was malformed or could not be resolved.
+    #[error("invalid bulk data attribute path: {value}")]
     InvalidTagPath {
-        /// The raw tag path string supplied by the caller.
+        /// The raw attribute path string supplied by the caller.
         value: String,
     },
 
@@ -112,7 +112,7 @@ mod tests {
         let e = DicomError::InvalidTagPath {
             value: "7FE0/0010".to_owned(),
         };
-        assert_eq!(e.to_string(), "invalid bulk data tag path: 7FE0/0010");
+        assert_eq!(e.to_string(), "invalid bulk data attribute path: 7FE0/0010");
     }
 
     #[test]

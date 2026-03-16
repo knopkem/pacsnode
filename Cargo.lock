@@ -653,7 +653,7 @@ dependencies = [
 [[package]]
 name = "dicom-toolkit-codec"
 version = "0.2.0"
-source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#be9550d5c0a4e4f6f65f589ab5b7fe4a41606fe5"
+source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#339950e10829e04a4cd1ba999cd819471bb367c5"
 dependencies = [
  "dicom-toolkit-core",
  "dicom-toolkit-data",
@@ -669,7 +669,7 @@ dependencies = [
 [[package]]
 name = "dicom-toolkit-core"
 version = "0.2.0"
-source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#be9550d5c0a4e4f6f65f589ab5b7fe4a41606fe5"
+source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#339950e10829e04a4cd1ba999cd819471bb367c5"
 dependencies = [
  "crc32fast",
  "encoding_rs",
@@ -683,7 +683,7 @@ dependencies = [
 [[package]]
 name = "dicom-toolkit-data"
 version = "0.2.0"
-source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#be9550d5c0a4e4f6f65f589ab5b7fe4a41606fe5"
+source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#339950e10829e04a4cd1ba999cd819471bb367c5"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -700,7 +700,7 @@ dependencies = [
 [[package]]
 name = "dicom-toolkit-dict"
 version = "0.2.0"
-source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#be9550d5c0a4e4f6f65f589ab5b7fe4a41606fe5"
+source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#339950e10829e04a4cd1ba999cd819471bb367c5"
 dependencies = [
  "dicom-toolkit-core",
 ]
@@ -708,11 +708,12 @@ dependencies = [
 [[package]]
 name = "dicom-toolkit-image"
 version = "0.2.0"
-source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#be9550d5c0a4e4f6f65f589ab5b7fe4a41606fe5"
+source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#339950e10829e04a4cd1ba999cd819471bb367c5"
 dependencies = [
  "dicom-toolkit-core",
  "dicom-toolkit-data",
  "dicom-toolkit-dict",
+ "jpeg-encoder",
  "png",
  "tiff",
  "tracing",
@@ -721,7 +722,7 @@ dependencies = [
 [[package]]
 name = "dicom-toolkit-jpeg2000"
 version = "0.4.0"
-source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#be9550d5c0a4e4f6f65f589ab5b7fe4a41606fe5"
+source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#339950e10829e04a4cd1ba999cd819471bb367c5"
 dependencies = [
  "fearless_simd",
 ]
@@ -729,7 +730,7 @@ dependencies = [
 [[package]]
 name = "dicom-toolkit-net"
 version = "0.2.0"
-source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#be9550d5c0a4e4f6f65f589ab5b7fe4a41606fe5"
+source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#339950e10829e04a4cd1ba999cd819471bb367c5"
 dependencies = [
  "bytes",
  "dicom-toolkit-core",
@@ -841,7 +842,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1862,7 +1863,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2068,7 +2069,9 @@ dependencies = [
  "dicom-toolkit-data",
  "dicom-toolkit-dict",
  "dicom-toolkit-image",
+ "jpeg-encoder",
  "pacs-core",
+ "png",
  "rstest",
  "serde_json",
  "thiserror",
@@ -2894,7 +2897,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3321,7 +3324,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -15,6 +15,8 @@ dicom-toolkit-data   = { workspace = true }
 dicom-toolkit-image  = { workspace = true }
 bytes                = { workspace = true }
 chrono               = { workspace = true }
+jpeg-encoder         = "0.6"
+png                  = "0.17"
 serde_json           = { workspace = true }
 thiserror            = { workspace = true }
 tracing              = { workspace = true }

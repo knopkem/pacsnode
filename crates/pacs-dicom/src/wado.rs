@@ -2,11 +2,18 @@ use std::{io::Cursor, sync::LazyLock};
 
 use bytes::Bytes;
 use dicom_toolkit_codec::{
-    jp2k::Jp2kCodec, jpeg::JpegParams, jpeg_ls::JpegLsCodec, rle_encode_frame,
+    can_encode, jp2k::Jp2kCodec, jpeg::JpegParams, jpeg_ls::JpegLsCodec, rle_encode_frame,
+    supported_encode_transfer_syntaxes,
 };
-use dicom_toolkit_data::{DicomReader, Element, FileFormat, PixelData, Value};
+use dicom_toolkit_data::{
+    element_value_bytes, encapsulated_frames, parse_attribute_path, AttributePathSegment, DataSet,
+    DicomReader, Element, FileFormat, PixelData, Value,
+};
 use dicom_toolkit_dict::{tags, ts::transfer_syntaxes, Tag, Vr};
-use dicom_toolkit_image::{frame_to_png_bytes, DicomImage};
+use dicom_toolkit_image::{render_frame_u8, DicomImage, RenderedFrameOptions, RenderedRegion};
+use jpeg_encoder::{ColorType as JpegColorType, Encoder as JpegEncoder};
+use pacs_core::DicomJson;
+use png::{BitDepth as PngBitDepth, ColorType as PngColorType, Encoder as PngEncoder};
 
 use crate::error::{BulkDataValue, DicomError};
 
@@ -18,14 +25,33 @@ static SUPPORTED_RETRIEVE_TRANSFER_SYNTAXES: LazyLock<Vec<&'static str>> = LazyL
         transfer_syntaxes::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN.uid,
     ];
 
-    for &syntax in dicom_toolkit_codec::supported_transfer_syntaxes() {
-        if !syntaxes.contains(&syntax) {
+    for &syntax in supported_encode_transfer_syntaxes() {
+        if is_supported_output_transfer_syntax(syntax) && !syntaxes.contains(&syntax) {
             syntaxes.push(syntax);
         }
     }
 
     syntaxes
 });
+
+/// Rendered media types supported by pacsnode's WADO rendered endpoints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderedMediaType {
+    /// Portable Network Graphics output.
+    Png,
+    /// JPEG output with an explicit encoder quality in the range `1..=100`.
+    Jpeg { quality: u8 },
+}
+
+impl RenderedMediaType {
+    /// Returns the HTTP content type associated with this rendered media type.
+    pub fn content_type(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Jpeg { .. } => "image/jpeg",
+        }
+    }
+}
 
 /// Extracts one or more DICOM frames as raw native pixel bytes.
 ///
@@ -65,24 +91,59 @@ pub fn extract_frames(data: Bytes, frame_numbers: &[u32]) -> Result<Vec<Bytes>, 
 /// # }
 /// ```
 pub fn render_frames_png(data: Bytes, frame_numbers: &[u32]) -> Result<Vec<Bytes>, DicomError> {
+    render_frames_with_options(
+        data,
+        frame_numbers,
+        RenderedMediaType::Png,
+        &RenderedFrameOptions::default(),
+    )
+}
+
+/// Renders one or more DICOM frames in the requested media type with optional
+/// rendered-image transforms.
+///
+/// Frame numbers are **1-based**, matching DICOMweb WADO-RS semantics. The
+/// `frame` field in `options` is ignored; the caller-selected `frame_numbers`
+/// always determine which frame(s) are rendered.
+///
+/// # Example
+///
+/// ```no_run
+/// use bytes::Bytes;
+/// use pacs_dicom::{render_frames_with_options, RenderedFrameOptions, RenderedMediaType};
+///
+/// # fn example(instance_bytes: Bytes) -> Result<(), pacs_dicom::DicomError> {
+/// let options = RenderedFrameOptions {
+///     rows: Some(256),
+///     ..Default::default()
+/// };
+/// let jpeg = render_frames_with_options(
+///     instance_bytes,
+///     &[1],
+///     RenderedMediaType::Jpeg { quality: 90 },
+///     &options,
+/// )?;
+/// assert!(!jpeg[0].is_empty());
+/// # Ok(())
+/// # }
+/// ```
+pub fn render_frames_with_options(
+    data: Bytes,
+    frame_numbers: &[u32],
+    media_type: RenderedMediaType,
+    options: &RenderedFrameOptions,
+) -> Result<Vec<Bytes>, DicomError> {
     let file = read_file(data)?;
     decoded_frames_for_processing(&file, frame_numbers)?
         .into_iter()
         .map(|frame_bytes| {
             let dataset = dataset_for_single_frame(&file, frame_bytes)?;
-            let image = DicomImage::from_dataset(&dataset)
-                .map_err(|e| DicomError::Toolkit(e.to_string()))?;
-            frame_to_png_bytes(&image, 0)
-                .map(Bytes::from)
-                .map_err(|e| DicomError::Toolkit(e.to_string()))
+            render_dataset_frame(&dataset, media_type, options)
         })
         .collect()
 }
 
 /// Extracts raw bulk data for a single top-level DICOM tag.
-///
-/// For native pixel data and other binary tags, this returns a single payload.
-/// For encapsulated pixel data, this returns one payload per fragment.
 ///
 /// # Example
 ///
@@ -100,70 +161,89 @@ pub fn render_frames_png(data: Bytes, frame_numbers: &[u32]) -> Result<Vec<Bytes
 /// # }
 /// ```
 pub fn extract_bulk_data(data: Bytes, tag: Tag) -> Result<BulkDataValue, DicomError> {
-    let file = read_file(data)?;
-    let element = file.dataset.get(tag).ok_or(DicomError::MissingTag {
-        tag: "BulkDataElement",
-    })?;
-
-    match &element.value {
-        Value::U8(bytes) => Ok(BulkDataValue::Single(Bytes::copy_from_slice(bytes))),
-        Value::U16(values) => Ok(BulkDataValue::Single(Bytes::from(encode_u16(values)))),
-        Value::I16(values) => Ok(BulkDataValue::Single(Bytes::from(encode_i16(values)))),
-        Value::U32(values) => Ok(BulkDataValue::Single(Bytes::from(encode_u32(values)))),
-        Value::I32(values) => Ok(BulkDataValue::Single(Bytes::from(encode_i32(values)))),
-        Value::U64(values) => Ok(BulkDataValue::Single(Bytes::from(encode_u64(values)))),
-        Value::I64(values) => Ok(BulkDataValue::Single(Bytes::from(encode_i64(values)))),
-        Value::F32(values) => Ok(BulkDataValue::Single(Bytes::from(encode_f32(values)))),
-        Value::F64(values) => Ok(BulkDataValue::Single(Bytes::from(encode_f64(values)))),
-        Value::PixelData(PixelData::Native { bytes }) => {
-            Ok(BulkDataValue::Single(Bytes::copy_from_slice(bytes)))
-        }
-        Value::PixelData(PixelData::Encapsulated { fragments, .. }) => {
-            Ok(BulkDataValue::Multipart(
-                fragments
-                    .iter()
-                    .cloned()
-                    .map(Bytes::from)
-                    .collect::<Vec<_>>(),
-            ))
-        }
-        _ => Err(DicomError::Unsupported {
-            message: format!("tag {} does not contain bulk data", tag_hex(tag)),
-        }),
-    }
+    extract_bulk_data_path(data, &tag_hex(tag))
 }
 
-/// Parses a top-level bulk-data tag path like `7FE00010` into a DICOM [`Tag`].
+/// Extracts raw bulk data for an attribute path such as `7FE00010` or
+/// `00082112/0/00111010`.
+///
+/// For native bulk data and other eligible binary VRs, this returns a single
+/// payload. For encapsulated Pixel Data, this returns one compressed payload per
+/// resolved frame.
+///
+/// # Example
+///
+/// ```no_run
+/// use bytes::Bytes;
+/// use pacs_dicom::{extract_bulk_data_path, BulkDataValue};
+///
+/// # fn example(instance_bytes: Bytes) -> Result<(), pacs_dicom::DicomError> {
+/// let bulk = extract_bulk_data_path(instance_bytes, "7FE00010")?;
+/// assert!(matches!(bulk, BulkDataValue::Single(_) | BulkDataValue::Multipart(_)));
+/// # Ok(())
+/// # }
+/// ```
+pub fn extract_bulk_data_path(data: Bytes, path: &str) -> Result<BulkDataValue, DicomError> {
+    let path_segments = parse_bulk_data_path(path)?;
+    let file = read_file(data)?;
+    let (element, containing_dataset) =
+        resolve_attribute_path_with_container(&file.dataset, &path_segments)?;
+    extract_bulk_data_element(&file, containing_dataset, element)
+}
+
+/// Returns instance metadata with `BulkDataURI` entries injected for every
+/// eligible binary attribute, including nested sequence paths.
+///
+/// The supplied `metadata` value is used as the base DICOM JSON structure, while
+/// the raw Part 10 `data` is parsed to discover the precise attribute paths that
+/// should expose bulk data.
+pub fn metadata_with_bulk_data_uris<F>(
+    metadata: &DicomJson,
+    data: Bytes,
+    resolve_uri: F,
+) -> Result<DicomJson, DicomError>
+where
+    F: Fn(&str) -> String,
+{
+    let file = read_file(data)?;
+    let mut patched = metadata.as_value().clone();
+    patch_bulk_data_uris(&file.dataset, &mut patched, None, &resolve_uri)?;
+    Ok(DicomJson::from(patched))
+}
+
+/// Parses a bulk-data attribute path such as `7FE00010` or
+/// `00082112/0/00111010`.
 ///
 /// # Example
 ///
 /// ```rust
-/// use pacs_dicom::parse_bulk_data_tag_path;
+/// use pacs_dicom::parse_bulk_data_path;
 ///
-/// let tag = parse_bulk_data_tag_path("7FE00010").unwrap();
-/// assert_eq!(format!("{:04X}{:04X}", tag.group, tag.element), "7FE00010");
+/// let path = parse_bulk_data_path("00082112/0/00111010").unwrap();
+/// assert_eq!(path.len(), 3);
 /// ```
+pub fn parse_bulk_data_path(value: &str) -> Result<Vec<AttributePathSegment>, DicomError> {
+    parse_attribute_path(value).map_err(|_| DicomError::InvalidTagPath {
+        value: value.to_owned(),
+    })
+}
+
+/// Parses a top-level bulk-data tag path like `7FE00010` into a DICOM [`Tag`].
 pub fn parse_bulk_data_tag_path(value: &str) -> Result<Tag, DicomError> {
-    if value.len() != 8 || !value.as_bytes().iter().all(u8::is_ascii_hexdigit) {
-        return Err(DicomError::InvalidTagPath {
+    let path = parse_bulk_data_path(value)?;
+    match path.as_slice() {
+        [AttributePathSegment::Tag(tag)] => Ok(*tag),
+        _ => Err(DicomError::InvalidTagPath {
             value: value.to_owned(),
-        });
+        }),
     }
-
-    let group = u16::from_str_radix(&value[..4], 16).map_err(|_| DicomError::InvalidTagPath {
-        value: value.to_owned(),
-    })?;
-    let element = u16::from_str_radix(&value[4..], 16).map_err(|_| DicomError::InvalidTagPath {
-        value: value.to_owned(),
-    })?;
-
-    Ok(Tag::new(group, element))
 }
 
 /// Returns the transfer syntax UIDs pacsnode can retrieve directly or transcode into.
 ///
 /// This includes the native DICOM transfer syntaxes, Deflated Explicit VR Little
-/// Endian, and the compressed syntaxes that `dicom-toolkit-rs` can decode.
+/// Endian, and the compressed syntaxes that pacsnode can actively encode for
+/// retrieve responses.
 ///
 /// # Example
 ///
@@ -263,6 +343,110 @@ fn read_file(data: Bytes) -> Result<FileFormat, DicomError> {
         .map_err(|e| DicomError::Toolkit(e.to_string()))
 }
 
+fn render_dataset_frame(
+    dataset: &DataSet,
+    media_type: RenderedMediaType,
+    options: &RenderedFrameOptions,
+) -> Result<Bytes, DicomError> {
+    let image =
+        DicomImage::from_dataset(dataset).map_err(|e| DicomError::Toolkit(e.to_string()))?;
+    let mut render_options = options.clone();
+    render_options.frame = 0;
+
+    let rendered =
+        render_frame_u8(&image, &render_options).map_err(|e| DicomError::Toolkit(e.to_string()))?;
+    let (rows, columns) = rendered_dimensions(&image, &render_options)?;
+    encode_rendered_pixels(
+        &rendered,
+        rows,
+        columns,
+        image.output_channels(),
+        media_type,
+    )
+}
+
+fn extract_bulk_data_element(
+    file: &FileFormat,
+    containing_dataset: &DataSet,
+    element: &Element,
+) -> Result<BulkDataValue, DicomError> {
+    match &element.value {
+        Value::PixelData(PixelData::Native { bytes }) => {
+            Ok(BulkDataValue::Single(Bytes::copy_from_slice(bytes)))
+        }
+        Value::PixelData(pixel_data @ PixelData::Encapsulated { .. }) => {
+            Ok(BulkDataValue::Multipart(
+                encapsulated_frames(pixel_data, total_frames_from_dataset(containing_dataset))
+                    .map_err(|e| DicomError::Toolkit(e.to_string()))?
+                    .into_iter()
+                    .map(Bytes::from)
+                    .collect(),
+            ))
+        }
+        _ if is_bulk_data_eligible(element) => {
+            element_value_bytes(element, file.meta.transfer_syntax_uid.as_str())
+                .map(Bytes::from)
+                .map(BulkDataValue::Single)
+                .map_err(|e| DicomError::Toolkit(e.to_string()))
+        }
+        _ => Err(DicomError::Unsupported {
+            message: format!("tag {} does not contain bulk data", tag_hex(element.tag)),
+        }),
+    }
+}
+
+fn resolve_attribute_path_with_container<'a>(
+    dataset: &'a DataSet,
+    path: &[AttributePathSegment],
+) -> Result<(&'a Element, &'a DataSet), DicomError> {
+    if path.is_empty() {
+        return Err(DicomError::Unsupported {
+            message: "attribute path must not be empty".into(),
+        });
+    }
+
+    let mut current = dataset;
+    let mut index = 0usize;
+    while index < path.len() {
+        let AttributePathSegment::Tag(tag) = path[index] else {
+            return Err(DicomError::Unsupported {
+                message: "attribute path must start with a tag segment".into(),
+            });
+        };
+        let element = current.get(tag).ok_or_else(|| DicomError::InvalidTagPath {
+            value: tag_hex(tag),
+        })?;
+        if index == path.len() - 1 {
+            return Ok((element, current));
+        }
+
+        let AttributePathSegment::Item(item_index) = path[index + 1] else {
+            return Err(DicomError::Unsupported {
+                message: format!(
+                    "tag {} must be followed by an item index before descending",
+                    tag_hex(tag)
+                ),
+            });
+        };
+        let items = element.items().ok_or_else(|| DicomError::Unsupported {
+            message: format!(
+                "tag {} is not a sequence and cannot be indexed",
+                tag_hex(tag)
+            ),
+        })?;
+        current = items
+            .get(item_index)
+            .ok_or_else(|| DicomError::InvalidTagPath {
+                value: format!("{}/{}", tag_hex(tag), item_index),
+            })?;
+        index += 2;
+    }
+
+    Err(DicomError::Unsupported {
+        message: "attribute path did not resolve to an element".into(),
+    })
+}
+
 fn extract_frames_from_file(
     file: &FileFormat,
     frame_numbers: &[u32],
@@ -281,7 +465,8 @@ fn extract_frames_from_file(
                 "BitsAllocated (0028,0100)",
             )?;
             let samples = file.dataset.get_u16(tags::SAMPLES_PER_PIXEL).unwrap_or(1);
-            let compressed_frames = encapsulated_frames(pixel_data, total_frames(file))?;
+            let compressed_frames = encapsulated_frames(pixel_data, total_frames(file))
+                .map_err(|e| DicomError::Toolkit(e.to_string()))?;
 
             frame_indices
                 .into_iter()
@@ -495,6 +680,7 @@ fn encode_frames_for_transfer_syntax(
         offset_table.push(offset);
         offset = offset
             .checked_add(encoded_len)
+            .and_then(|value| value.checked_add(8))
             .ok_or_else(|| DicomError::Unsupported {
                 message: "offset table overflow for encapsulated PixelData".into(),
             })?;
@@ -560,6 +746,30 @@ fn encode_frame_for_transfer_syntax(
             false,
         )
         .map_err(|e| DicomError::Toolkit(e.to_string())),
+        uid if uid == transfer_syntaxes::HIGH_THROUGHPUT_JPEG_2000_LOSSLESS_ONLY.uid => {
+            Jp2kCodec::encode_frame_htj2k(
+                frame,
+                u32::from(cols),
+                u32::from(rows),
+                bits_stored,
+                samples_per_pixel,
+                true,
+            )
+            .map_err(|e| DicomError::Toolkit(e.to_string()))
+        }
+        uid if uid == transfer_syntaxes::HIGH_THROUGHPUT_JPEG_2000.uid => {
+            // The toolkit registry defaults generic HTJ2K output to a lossless stream
+            // because pacsnode does not currently expose a rendered/transcode quality knob.
+            Jp2kCodec::encode_frame_htj2k(
+                frame,
+                u32::from(cols),
+                u32::from(rows),
+                bits_stored,
+                samples_per_pixel,
+                true,
+            )
+            .map_err(|e| DicomError::Toolkit(e.to_string()))
+        }
         other => Err(DicomError::Unsupported {
             message: format!("transfer syntax {other} is not supported for encoding"),
         }),
@@ -589,15 +799,7 @@ fn is_big_endian_transfer_syntax(ts_uid: &str) -> bool {
 }
 
 fn is_compressed_output_transfer_syntax(ts_uid: &str) -> bool {
-    matches!(
-        ts_uid,
-        uid if uid == transfer_syntaxes::RLE_LOSSLESS.uid
-            || uid == transfer_syntaxes::JPEG_BASELINE.uid
-            || uid == transfer_syntaxes::JPEG_EXTENDED.uid
-            || uid == transfer_syntaxes::JPEG_LS_LOSSLESS.uid
-            || uid == transfer_syntaxes::JPEG_2000_LOSSLESS.uid
-            || uid == transfer_syntaxes::JPEG_2000.uid
-    )
+    !is_native_transfer_syntax(ts_uid) && is_supported_output_transfer_syntax(ts_uid)
 }
 
 fn swap_pixel_endianness(bytes: &mut [u8], bits_allocated: u16) -> Result<(), DicomError> {
@@ -654,7 +856,7 @@ fn dataset_for_single_frame(
     Ok(dataset)
 }
 
-fn pixel_data(dataset: &dicom_toolkit_data::DataSet) -> Result<&PixelData, DicomError> {
+fn pixel_data(dataset: &DataSet) -> Result<&PixelData, DicomError> {
     match &dataset
         .get(tags::PIXEL_DATA)
         .ok_or(DicomError::MissingTag { tag: "PixelData" })?
@@ -668,7 +870,11 @@ fn pixel_data(dataset: &dicom_toolkit_data::DataSet) -> Result<&PixelData, Dicom
 }
 
 fn total_frames(file: &FileFormat) -> u32 {
-    file.dataset
+    total_frames_from_dataset(&file.dataset)
+}
+
+fn total_frames_from_dataset(dataset: &DataSet) -> u32 {
+    dataset
         .get(tags::NUMBER_OF_FRAMES)
         .map(|element| element.value.to_display_string())
         .and_then(|value| value.trim().parse::<u32>().ok())
@@ -701,109 +907,247 @@ fn validate_frame_numbers(
         .collect()
 }
 
-fn encapsulated_frames(
-    pixel_data: &PixelData,
-    total_frames: u32,
-) -> Result<Vec<Vec<u8>>, DicomError> {
-    let PixelData::Encapsulated {
-        offset_table,
-        fragments,
-    } = pixel_data
-    else {
+fn patch_bulk_data_uris<F>(
+    dataset: &DataSet,
+    json: &mut serde_json::Value,
+    parent_path: Option<&str>,
+    resolve_uri: &F,
+) -> Result<(), DicomError>
+where
+    F: Fn(&str) -> String,
+{
+    let Some(entries) = json.as_object_mut() else {
         return Err(DicomError::Unsupported {
-            message: "encapsulated frame extraction requires compressed PixelData".into(),
+            message: "instance metadata JSON must be an object".into(),
         });
     };
 
-    if fragments.is_empty() {
+    for (tag, element) in dataset.iter() {
+        let key = tag_hex(*tag);
+        let current_path = match parent_path {
+            Some(parent) => format!("{parent}/{key}"),
+            None => key.clone(),
+        };
+
+        if let Some(items) = element.items() {
+            if let Some(value_array) = entries
+                .get_mut(&key)
+                .and_then(|entry| entry.get_mut("Value"))
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                for (index, item) in items.iter().enumerate() {
+                    if let Some(item_json) = value_array.get_mut(index) {
+                        let item_path = format!("{current_path}/{index}");
+                        patch_bulk_data_uris(
+                            item,
+                            item_json,
+                            Some(item_path.as_str()),
+                            resolve_uri,
+                        )?;
+                    }
+                }
+            }
+            continue;
+        }
+
+        if is_bulk_data_eligible(element) {
+            entries.insert(
+                key,
+                serde_json::json!({
+                    "vr": element.vr.code(),
+                    "BulkDataURI": resolve_uri(current_path.as_str()),
+                }),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn is_bulk_data_eligible(element: &Element) -> bool {
+    matches!(element.value, Value::PixelData(_))
+        || matches!(
+            element.vr,
+            Vr::OB | Vr::OD | Vr::OF | Vr::OL | Vr::OV | Vr::OW | Vr::UN
+        )
+}
+
+fn rendered_dimensions(
+    image: &DicomImage,
+    options: &RenderedFrameOptions,
+) -> Result<(u32, u32), DicomError> {
+    let (rows, columns) = match options.region {
+        Some(region) => cropped_dimensions(image.rows, image.columns, region)?,
+        None => (image.rows, image.columns),
+    };
+    target_render_dimensions(rows, columns, options.rows, options.columns)
+}
+
+fn cropped_dimensions(
+    rows: u32,
+    columns: u32,
+    region: RenderedRegion,
+) -> Result<(u32, u32), DicomError> {
+    validate_rendered_region(region)?;
+    let start_row = (region.top * rows as f64).floor() as u32;
+    let end_row = ((region.top + region.height) * rows as f64).ceil() as u32;
+    let start_col = (region.left * columns as f64).floor() as u32;
+    let end_col = ((region.left + region.width) * columns as f64).ceil() as u32;
+
+    let cropped_rows = end_row.saturating_sub(start_row);
+    let cropped_columns = end_col.saturating_sub(start_col);
+    if cropped_rows == 0 || cropped_columns == 0 {
         return Err(DicomError::Unsupported {
-            message: "encapsulated PixelData does not contain any fragments".into(),
+            message: "rendered crop region resolved to an empty image".into(),
         });
     }
 
-    if total_frames == 1 {
-        return Ok(vec![fragments.concat()]);
+    Ok((cropped_rows, cropped_columns))
+}
+
+fn validate_rendered_region(region: RenderedRegion) -> Result<(), DicomError> {
+    let values = [region.left, region.top, region.width, region.height];
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(DicomError::Unsupported {
+            message: "rendered region values must be finite".into(),
+        });
     }
-
-    if !offset_table.is_empty() && offset_table.len() >= total_frames as usize {
-        let fragment_starts = fragment_starts(fragments);
-        let total_len = fragments.iter().map(Vec::len).sum::<usize>();
-        let mut frames = Vec::with_capacity(total_frames as usize);
-
-        for index in 0..total_frames as usize {
-            let start = offset_table[index] as usize;
-            let end = offset_table
-                .get(index + 1)
-                .copied()
-                .map(|value| value as usize)
-                .unwrap_or(total_len);
-
-            if start >= end || end > total_len {
-                return Err(DicomError::Unsupported {
-                    message: format!(
-                        "encapsulated offset table is invalid for frame {}",
-                        index + 1
-                    ),
-                });
-            }
-
-            let mut frame = Vec::with_capacity(end - start);
-            for (fragment, fragment_start) in fragments.iter().zip(fragment_starts.iter().copied())
-            {
-                let fragment_end = fragment_start + fragment.len();
-                if fragment_end <= start || fragment_start >= end {
-                    continue;
-                }
-                let slice_start = start.saturating_sub(fragment_start);
-                let slice_end = (end - fragment_start).min(fragment.len());
-                frame.extend_from_slice(&fragment[slice_start..slice_end]);
-            }
-
-            if frame.is_empty() {
-                return Err(DicomError::Unsupported {
-                    message: format!(
-                        "could not resolve compressed payload for frame {}",
-                        index + 1
-                    ),
-                });
-            }
-
-            frames.push(frame);
-        }
-
-        return Ok(frames);
+    if region.left < 0.0
+        || region.top < 0.0
+        || region.width <= 0.0
+        || region.height <= 0.0
+        || region.left + region.width > 1.0
+        || region.top + region.height > 1.0
+    {
+        return Err(DicomError::Unsupported {
+            message: "rendered region must stay within [0.0, 1.0] and have positive width/height"
+                .into(),
+        });
     }
+    Ok(())
+}
 
-    if fragments.len() == total_frames as usize {
-        return Ok(fragments.clone());
-    }
-
-    Err(DicomError::Unsupported {
-        message: format!(
-            "unable to map {} encapsulated fragment(s) to {} frame(s)",
-            fragments.len(),
-            total_frames
+fn target_render_dimensions(
+    rows: u32,
+    columns: u32,
+    target_rows: Option<u32>,
+    target_columns: Option<u32>,
+) -> Result<(u32, u32), DicomError> {
+    let original_rows = rows;
+    let original_columns = columns;
+    let (rows, columns) = match (target_rows, target_columns) {
+        (Some(rows), Some(columns)) => (rows, columns),
+        (Some(rows), None) => (
+            rows,
+            scale_preserving_aspect(original_columns, rows, original_rows)?,
         ),
+        (None, Some(columns)) => (
+            scale_preserving_aspect(original_rows, columns, original_columns)?,
+            columns,
+        ),
+        (None, None) => (rows, columns),
+    };
+
+    if rows == 0 || columns == 0 {
+        return Err(DicomError::Unsupported {
+            message: "rendered output dimensions must be greater than zero".into(),
+        });
+    }
+
+    Ok((rows, columns))
+}
+
+fn scale_preserving_aspect(
+    numerator: u32,
+    scaled_by: u32,
+    divisor: u32,
+) -> Result<u32, DicomError> {
+    let scaled =
+        (u64::from(numerator) * u64::from(scaled_by) + u64::from(divisor) / 2) / u64::from(divisor);
+    u32::try_from(scaled).map_err(|_| DicomError::Unsupported {
+        message: "scaled rendered dimension exceeds u32 range".into(),
     })
 }
 
-fn fragment_starts(fragments: &[Vec<u8>]) -> Vec<usize> {
-    let mut offset = 0usize;
-    fragments
-        .iter()
-        .map(|fragment| {
-            let start = offset;
-            offset += fragment.len();
-            start
-        })
-        .collect()
+fn encode_rendered_pixels(
+    pixels: &[u8],
+    rows: u32,
+    columns: u32,
+    channels: u8,
+    media_type: RenderedMediaType,
+) -> Result<Bytes, DicomError> {
+    match media_type {
+        RenderedMediaType::Png => encode_png(pixels, rows, columns, channels),
+        RenderedMediaType::Jpeg { quality } => {
+            encode_jpeg(pixels, rows, columns, channels, quality)
+        }
+    }
 }
 
-fn required_u16(
-    dataset: &dicom_toolkit_data::DataSet,
-    tag: Tag,
-    name: &'static str,
-) -> Result<u16, DicomError> {
+fn encode_png(pixels: &[u8], rows: u32, columns: u32, channels: u8) -> Result<Bytes, DicomError> {
+    let mut buf = Vec::new();
+    let mut encoder = PngEncoder::new(&mut buf, columns, rows);
+    encoder.set_color(png_color_type(channels)?);
+    encoder.set_depth(PngBitDepth::Eight);
+    let mut writer = encoder
+        .write_header()
+        .map_err(|e| DicomError::Toolkit(e.to_string()))?;
+    writer
+        .write_image_data(pixels)
+        .map_err(|e| DicomError::Toolkit(e.to_string()))?;
+    drop(writer);
+    Ok(Bytes::from(buf))
+}
+
+fn encode_jpeg(
+    pixels: &[u8],
+    rows: u32,
+    columns: u32,
+    channels: u8,
+    quality: u8,
+) -> Result<Bytes, DicomError> {
+    if !(1..=100).contains(&quality) {
+        return Err(DicomError::Unsupported {
+            message: format!("JPEG quality must be in the range 1..=100, got {quality}"),
+        });
+    }
+
+    let width = u16::try_from(columns).map_err(|_| DicomError::Unsupported {
+        message: format!("rendered JPEG width {columns} exceeds encoder limits"),
+    })?;
+    let height = u16::try_from(rows).map_err(|_| DicomError::Unsupported {
+        message: format!("rendered JPEG height {rows} exceeds encoder limits"),
+    })?;
+
+    let mut buf = Vec::new();
+    let encoder = JpegEncoder::new(&mut buf, quality);
+    encoder
+        .encode(pixels, width, height, jpeg_color_type(channels)?)
+        .map_err(|e| DicomError::Toolkit(e.to_string()))?;
+    Ok(Bytes::from(buf))
+}
+
+fn png_color_type(channels: u8) -> Result<PngColorType, DicomError> {
+    match channels {
+        1 => Ok(PngColorType::Grayscale),
+        3 => Ok(PngColorType::Rgb),
+        n => Err(DicomError::Unsupported {
+            message: format!("unsupported output channel count {n} for PNG encoding"),
+        }),
+    }
+}
+
+fn jpeg_color_type(channels: u8) -> Result<JpegColorType, DicomError> {
+    match channels {
+        1 => Ok(JpegColorType::Luma),
+        3 => Ok(JpegColorType::Rgb),
+        n => Err(DicomError::Unsupported {
+            message: format!("unsupported output channel count {n} for JPEG encoding"),
+        }),
+    }
+}
+
+fn required_u16(dataset: &DataSet, tag: Tag, name: &'static str) -> Result<u16, DicomError> {
     dataset
         .get_u16(tag)
         .or_else(|| {
@@ -815,60 +1159,23 @@ fn required_u16(
         .ok_or(DicomError::MissingTag { tag: name })
 }
 
-fn encode_u16(values: &[u16]) -> Vec<u8> {
-    values
-        .iter()
-        .flat_map(|value| value.to_le_bytes())
-        .collect()
-}
+fn is_supported_output_transfer_syntax(ts_uid: &str) -> bool {
+    if is_native_transfer_syntax(ts_uid) {
+        return true;
+    }
 
-fn encode_i16(values: &[i16]) -> Vec<u8> {
-    values
-        .iter()
-        .flat_map(|value| value.to_le_bytes())
-        .collect()
-}
-
-fn encode_u32(values: &[u32]) -> Vec<u8> {
-    values
-        .iter()
-        .flat_map(|value| value.to_le_bytes())
-        .collect()
-}
-
-fn encode_i32(values: &[i32]) -> Vec<u8> {
-    values
-        .iter()
-        .flat_map(|value| value.to_le_bytes())
-        .collect()
-}
-
-fn encode_u64(values: &[u64]) -> Vec<u8> {
-    values
-        .iter()
-        .flat_map(|value| value.to_le_bytes())
-        .collect()
-}
-
-fn encode_i64(values: &[i64]) -> Vec<u8> {
-    values
-        .iter()
-        .flat_map(|value| value.to_le_bytes())
-        .collect()
-}
-
-fn encode_f32(values: &[f32]) -> Vec<u8> {
-    values
-        .iter()
-        .flat_map(|value| value.to_le_bytes())
-        .collect()
-}
-
-fn encode_f64(values: &[f64]) -> Vec<u8> {
-    values
-        .iter()
-        .flat_map(|value| value.to_le_bytes())
-        .collect()
+    can_encode(ts_uid)
+        && matches!(
+            ts_uid,
+            uid if uid == transfer_syntaxes::RLE_LOSSLESS.uid
+                || uid == transfer_syntaxes::JPEG_BASELINE.uid
+                || uid == transfer_syntaxes::JPEG_EXTENDED.uid
+                || uid == transfer_syntaxes::JPEG_LS_LOSSLESS.uid
+                || uid == transfer_syntaxes::JPEG_2000_LOSSLESS.uid
+                || uid == transfer_syntaxes::JPEG_2000.uid
+                || uid == transfer_syntaxes::HIGH_THROUGHPUT_JPEG_2000_LOSSLESS_ONLY.uid
+                || uid == transfer_syntaxes::HIGH_THROUGHPUT_JPEG_2000.uid
+        )
 }
 
 fn tag_hex(tag: Tag) -> String {
@@ -881,7 +1188,9 @@ mod tests {
     use dicom_toolkit_data::{
         DataSet, DicomReader, DicomWriter, Element, FileFormat, PixelData, Value,
     };
-    use dicom_toolkit_dict::{tags, ts::transfer_syntaxes, Vr};
+    use dicom_toolkit_dict::{tags, ts::transfer_syntaxes, Tag, Vr};
+    use pacs_core::DicomJson;
+    use serde_json::json;
 
     use super::*;
 
@@ -946,6 +1255,41 @@ mod tests {
         Bytes::from(buf)
     }
 
+    fn make_nested_bulkdata_dicom() -> Bytes {
+        let mut ds = DataSet::new();
+        ds.set_string(tags::STUDY_INSTANCE_UID, Vr::UI, "1.2.3");
+        ds.set_string(tags::SERIES_INSTANCE_UID, Vr::UI, "1.2.3.4");
+        ds.set_string(tags::SOP_INSTANCE_UID, Vr::UI, "1.2.3.4.5");
+        ds.set_string(tags::SOP_CLASS_UID, Vr::UI, "1.2.840.10008.5.1.4.1.1.2");
+        ds.insert(Element::bytes(
+            Tag::new(0x0011, 0x1010),
+            Vr::OB,
+            vec![0xAA, 0xBB, 0xCC, 0xDD],
+        ));
+
+        let mut item = DataSet::new();
+        item.insert(Element::bytes(
+            Tag::new(0x0011, 0x1011),
+            Vr::OB,
+            vec![0xDE, 0xAD],
+        ));
+        ds.set_sequence(Tag::new(0x0008, 0x2112), vec![item]);
+
+        let ff = FileFormat::from_dataset("1.2.840.10008.5.1.4.1.1.2", "1.2.3.4.5", ds);
+        let mut buf = Vec::new();
+        DicomWriter::new(Cursor::new(&mut buf))
+            .write_file(&ff)
+            .unwrap();
+        Bytes::from(buf)
+    }
+
+    fn png_dimensions(bytes: &[u8]) -> (u32, u32) {
+        assert!(bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]));
+        let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
+        let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
+        (width, height)
+    }
+
     #[test]
     fn extract_frames_returns_requested_native_frames() {
         let frames = extract_frames(make_multiframe_dicom(), &[1, 2]).unwrap();
@@ -974,6 +1318,35 @@ mod tests {
     }
 
     #[test]
+    fn render_frames_with_options_returns_jpeg_bytes() {
+        let frames = render_frames_with_options(
+            make_multiframe_dicom(),
+            &[1],
+            RenderedMediaType::Jpeg { quality: 90 },
+            &RenderedFrameOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0].starts_with(&[0xFF, 0xD8, 0xFF]));
+    }
+
+    #[test]
+    fn render_frames_with_options_resizes_png_preserving_aspect() {
+        let frames = render_frames_with_options(
+            make_multiframe_dicom(),
+            &[1],
+            RenderedMediaType::Png,
+            &RenderedFrameOptions {
+                rows: Some(4),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(png_dimensions(&frames[0]), (8, 4));
+    }
+
+    #[test]
     fn extract_bulk_data_returns_native_pixel_payload() {
         let bulk_data = extract_bulk_data(make_multiframe_dicom(), tags::PIXEL_DATA).unwrap();
         assert_eq!(
@@ -983,19 +1356,73 @@ mod tests {
     }
 
     #[test]
+    fn extract_bulk_data_path_supports_nested_sequence_items() {
+        let bulk_data =
+            extract_bulk_data_path(make_nested_bulkdata_dicom(), "00082112/0/00111011").unwrap();
+        assert_eq!(
+            bulk_data,
+            BulkDataValue::Single(Bytes::from_static(&[0xDE, 0xAD]))
+        );
+    }
+
+    #[test]
+    fn metadata_with_bulk_data_uris_patches_nested_binary_attributes() {
+        let metadata = DicomJson::from(json!({
+            "00111010": {
+                "vr": "OB",
+                "InlineBinary": "qrvM3Q=="
+            },
+            "00082112": {
+                "vr": "SQ",
+                "Value": [
+                    {
+                        "00111011": {
+                            "vr": "OB",
+                            "InlineBinary": "3q0="
+                        }
+                    }
+                ]
+            }
+        }));
+
+        let patched =
+            metadata_with_bulk_data_uris(&metadata, make_nested_bulkdata_dicom(), |path| {
+                format!("/bulk/{path}")
+            })
+            .unwrap();
+        let value = patched.as_value();
+
+        assert_eq!(value["00111010"]["BulkDataURI"], json!("/bulk/00111010"));
+        assert!(value["00111010"].get("InlineBinary").is_none());
+        assert_eq!(
+            value["00082112"]["Value"][0]["00111011"]["BulkDataURI"],
+            json!("/bulk/00082112/0/00111011")
+        );
+        assert!(value["00082112"]["Value"][0]["00111011"]
+            .get("InlineBinary")
+            .is_none());
+    }
+
+    #[test]
     fn parse_bulk_data_tag_path_accepts_hex() {
         let tag = parse_bulk_data_tag_path("7FE00010").unwrap();
         assert_eq!(tag, tags::PIXEL_DATA);
     }
 
     #[test]
-    fn supported_retrieve_transfer_syntaxes_include_codec_uids() {
+    fn supported_retrieve_transfer_syntaxes_only_include_encodable_outputs() {
         let syntaxes = supported_retrieve_transfer_syntaxes();
         assert!(syntaxes.contains(&transfer_syntaxes::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN.uid));
         assert!(syntaxes.contains(&transfer_syntaxes::JPEG_BASELINE.uid));
-        assert!(syntaxes.contains(&transfer_syntaxes::JPEG_LOSSLESS.uid));
         assert!(syntaxes.contains(&transfer_syntaxes::JPEG_2000_LOSSLESS.uid));
         assert!(syntaxes.contains(&transfer_syntaxes::RLE_LOSSLESS.uid));
+        assert!(!syntaxes.contains(&transfer_syntaxes::JPEG_LOSSLESS.uid));
+        assert!(supports_retrieve_transfer_syntax(
+            transfer_syntaxes::JPEG_BASELINE.uid
+        ));
+        assert!(!supports_retrieve_transfer_syntax(
+            transfer_syntaxes::JPEG_LOSSLESS.uid
+        ));
     }
 
     #[test]

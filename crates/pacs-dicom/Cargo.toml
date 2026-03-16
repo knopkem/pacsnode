@@ -8,9 +8,11 @@ license.workspace     = true
 
 [dependencies]
 pacs-core            = { workspace = true }
+dicom-toolkit-codec  = { workspace = true }
 dicom-toolkit-core   = { workspace = true }
 dicom-toolkit-dict   = { workspace = true }
 dicom-toolkit-data   = { workspace = true }
+dicom-toolkit-image  = { workspace = true }
 bytes                = { workspace = true }
 chrono               = { workspace = true }
 serde_json           = { workspace = true }

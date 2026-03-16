@@ -25,7 +25,10 @@ pub mod error;
 pub mod parser;
 pub mod stow;
 pub mod tags;
+pub mod wado;
 
+pub use error::BulkDataValue;
 pub use error::DicomError;
 pub use parser::ParsedDicom;
 pub use stow::parse_stow_multipart;
+pub use wado::{extract_bulk_data, extract_frames, parse_bulk_data_tag_path, render_frames_png};

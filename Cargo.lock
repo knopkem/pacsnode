@@ -349,6 +349,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 
 [[package]]
+name = "bytemuck"
+version = "1.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8efb64bd706a16a1bdde310ae86b351e4d21550d98d056f22f8a7f7a2183fec"
+
+[[package]]
 name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -540,6 +546,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-deque"
+version = "0.8.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9dd111b7b7f7d55b72c0a6ae361660ee5853c9af73f70c3c2ef6858b950e2e51"
+dependencies = [
+ "crossbeam-epoch",
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-epoch"
+version = "0.9.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-queue"
 version = "0.3.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -626,9 +651,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "dicom-toolkit-codec"
+version = "0.2.0"
+source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#be9550d5c0a4e4f6f65f589ab5b7fe4a41606fe5"
+dependencies = [
+ "dicom-toolkit-core",
+ "dicom-toolkit-data",
+ "dicom-toolkit-dict",
+ "dicom-toolkit-jpeg2000",
+ "flate2",
+ "inventory",
+ "jpeg-decoder",
+ "jpeg-encoder",
+ "tracing",
+]
+
+[[package]]
 name = "dicom-toolkit-core"
-version = "0.1.0"
-source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#694f10ee0a7696d8a98cfe296ec9adf19b6e05a9"
+version = "0.2.0"
+source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#be9550d5c0a4e4f6f65f589ab5b7fe4a41606fe5"
 dependencies = [
  "crc32fast",
  "encoding_rs",
@@ -641,8 +682,8 @@ dependencies = [
 
 [[package]]
 name = "dicom-toolkit-data"
-version = "0.1.0"
-source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#694f10ee0a7696d8a98cfe296ec9adf19b6e05a9"
+version = "0.2.0"
+source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#be9550d5c0a4e4f6f65f589ab5b7fe4a41606fe5"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -658,16 +699,37 @@ dependencies = [
 
 [[package]]
 name = "dicom-toolkit-dict"
-version = "0.1.0"
-source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#694f10ee0a7696d8a98cfe296ec9adf19b6e05a9"
+version = "0.2.0"
+source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#be9550d5c0a4e4f6f65f589ab5b7fe4a41606fe5"
 dependencies = [
  "dicom-toolkit-core",
 ]
 
 [[package]]
+name = "dicom-toolkit-image"
+version = "0.2.0"
+source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#be9550d5c0a4e4f6f65f589ab5b7fe4a41606fe5"
+dependencies = [
+ "dicom-toolkit-core",
+ "dicom-toolkit-data",
+ "dicom-toolkit-dict",
+ "png",
+ "tiff",
+ "tracing",
+]
+
+[[package]]
+name = "dicom-toolkit-jpeg2000"
+version = "0.4.0"
+source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#be9550d5c0a4e4f6f65f589ab5b7fe4a41606fe5"
+dependencies = [
+ "fearless_simd",
+]
+
+[[package]]
 name = "dicom-toolkit-net"
-version = "0.1.0"
-source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#694f10ee0a7696d8a98cfe296ec9adf19b6e05a9"
+version = "0.2.0"
+source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#be9550d5c0a4e4f6f65f589ab5b7fe4a41606fe5"
 dependencies = [
  "bytes",
  "dicom-toolkit-core",
@@ -779,7 +841,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -802,6 +864,24 @@ dependencies = [
  "concurrent-queue",
  "parking",
  "pin-project-lite",
+]
+
+[[package]]
+name = "fdeflate"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
+dependencies = [
+ "simd-adler32",
+]
+
+[[package]]
+name = "fearless_simd"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8fb2907d1f08b2b316b9223ced5b0e89d87028ba8deae9764741dba8ff7f3903"
+dependencies = [
+ "bytemuck",
 ]
 
 [[package]]
@@ -1511,6 +1591,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "jpeg-decoder"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00810f1d8b74be64b13dbf3db89ac67740615d6c891f0e7b6179326533011a07"
+dependencies = [
+ "rayon",
+]
+
+[[package]]
+name = "jpeg-encoder"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b454d911ac55068f53495488d8ccd0646eaa540c033a28ee15b07838afafb01f"
+
+[[package]]
 name = "js-sys"
 version = "0.3.91"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1751,7 +1846,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1876,6 +1971,8 @@ dependencies = [
  "axum",
  "bytes",
  "chrono",
+ "dicom-toolkit-data",
+ "dicom-toolkit-dict",
  "http",
  "http-body-util",
  "mime",
@@ -1950,9 +2047,11 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "chrono",
+ "dicom-toolkit-codec",
  "dicom-toolkit-core",
  "dicom-toolkit-data",
  "dicom-toolkit-dict",
+ "dicom-toolkit-image",
  "pacs-core",
  "rstest",
  "serde_json",
@@ -2271,6 +2370,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
+name = "png"
+version = "0.17.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82151a2fc869e011c153adc57cf2789ccb8d9906ce52c0b39a6b5697749d7526"
+dependencies = [
+ "bitflags 1.3.2",
+ "crc32fast",
+ "fdeflate",
+ "flate2",
+ "miniz_oxide",
+]
+
+[[package]]
 name = "potential_utf"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2491,6 +2603,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
 dependencies = [
  "getrandom 0.3.4",
+]
+
+[[package]]
+name = "rayon"
+version = "1.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "368f01d005bf8fd9b1206fb6fa653e6c4a81ceb1466406b81792d87c5677a58f"
+dependencies = [
+ "either",
+ "rayon-core",
+]
+
+[[package]]
+name = "rayon-core"
+version = "1.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
+dependencies = [
+ "crossbeam-deque",
+ "crossbeam-utils",
 ]
 
 [[package]]
@@ -2728,7 +2860,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3155,7 +3287,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3529,6 +3661,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f60246a4944f24f6e018aa17cdeffb7818b76356965d03b07d6a9886e8962185"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "tiff"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba1310fcea54c6a9a4fd1aad794ecc02c31682f6bfbecdf460bf19533eed1e3e"
+dependencies = [
+ "flate2",
+ "jpeg-decoder",
+ "weezl",
 ]
 
 [[package]]
@@ -4194,6 +4337,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "weezl"
+version = "0.1.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
+
+[[package]]
 name = "whoami"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4225,7 +4374,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

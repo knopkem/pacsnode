@@ -1,4 +1,14 @@
+use bytes::Bytes;
 use pacs_core::PacsError;
+
+/// Raw bulk data extracted from a DICOM element.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BulkDataValue {
+    /// A single octet-stream payload.
+    Single(Bytes),
+    /// Multiple payload parts, typically one encapsulated fragment per part.
+    Multipart(Vec<Bytes>),
+}
 
 /// Error type for DICOM parsing and processing operations within `pacs-dicom`.
 #[derive(Debug, thiserror::Error)]
@@ -24,6 +34,29 @@ pub enum DicomError {
     /// The `multipart/related` body was structurally invalid.
     #[error("invalid multipart content: {0}")]
     MultipartParse(String),
+
+    /// A requested frame number was invalid for the instance.
+    #[error("invalid frame number {requested}; instance exposes {available} frame(s)")]
+    InvalidFrame {
+        /// The requested 1-based frame number.
+        requested: u32,
+        /// Total available frame count.
+        available: u32,
+    },
+
+    /// A bulk-data path was malformed.
+    #[error("invalid bulk data tag path: {value}")]
+    InvalidTagPath {
+        /// The raw tag path string supplied by the caller.
+        value: String,
+    },
+
+    /// The requested DICOM operation is not supported for the instance.
+    #[error("unsupported DICOM operation: {message}")]
+    Unsupported {
+        /// Human-readable explanation of the unsupported condition.
+        message: String,
+    },
 }
 
 impl From<DicomError> for PacsError {
@@ -60,6 +93,37 @@ mod tests {
     fn test_multipart_parse_display() {
         let e = DicomError::MultipartParse("no boundary".to_owned());
         assert_eq!(e.to_string(), "invalid multipart content: no boundary");
+    }
+
+    #[test]
+    fn test_invalid_frame_display() {
+        let e = DicomError::InvalidFrame {
+            requested: 3,
+            available: 2,
+        };
+        assert_eq!(
+            e.to_string(),
+            "invalid frame number 3; instance exposes 2 frame(s)"
+        );
+    }
+
+    #[test]
+    fn test_invalid_tag_path_display() {
+        let e = DicomError::InvalidTagPath {
+            value: "7FE0/0010".to_owned(),
+        };
+        assert_eq!(e.to_string(), "invalid bulk data tag path: 7FE0/0010");
+    }
+
+    #[test]
+    fn test_unsupported_display() {
+        let e = DicomError::Unsupported {
+            message: "image/jpeg rendering is not available".to_owned(),
+        };
+        assert_eq!(
+            e.to_string(),
+            "unsupported DICOM operation: image/jpeg rendering is not available"
+        );
     }
 
     #[test]

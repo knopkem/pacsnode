@@ -60,10 +60,10 @@
 | **WADO-RS** — Study Metadata | ✅ | ✅ (plugin) | `application/dicom+json` |
 | **WADO-RS** — Series Metadata | ✅ | ✅ (plugin) | |
 | **WADO-RS** — Instance Metadata | ✅ | ✅ (plugin) | |
-| **WADO-RS** — Frame Retrieval | ❌ | ✅ (plugin) | No `/frames/{n}` endpoint |
-| **WADO-RS** — Rendered (thumbnail/preview) | ❌ | ✅ (plugin) | No server-side rendering |
-| **WADO-RS** — Bulk Data | ❌ | ✅ (plugin) | No `/bulkdata` endpoint |
-| **WADO-URI** (legacy) | ❌ | ✅ (plugin) | No `?requestType=WADO` support |
+| **WADO-RS** — Frame Retrieval | ✅ | ✅ (plugin) | `/frames/{n[,m...]}` returns native frame bytes |
+| **WADO-RS** — Rendered (thumbnail/preview) | ⚠️ | ✅ (plugin) | PNG rendered previews for study/series/instance/frame; no JPEG or `Accept` negotiation |
+| **WADO-RS** — Bulk Data | ⚠️ | ✅ (plugin) | Instance bulk-data endpoint plus Pixel Data `BulkDataURI`; broader tag-path coverage can expand later |
+| **WADO-URI** (legacy) | ⚠️ | ✅ (plugin) | Supports classic single-object retrieval and PNG rendering via `contentType=image/png` |
 | **STOW-RS** — Store Instances | ✅ | ✅ (plugin) | Multipart DICOM upload, PS3.18 response |
 | **UPS-RS** (Worklist) | ❌ | ❌ | Neither implements natively |
 | **Capabilities / Conformance** | ✅ | ✅ | `GET /system` returns AE, ports, nodes |
@@ -93,9 +93,9 @@
 | **Async Job Queue** | ❌ | ✅ | Orthanc: `/jobs` API for long tasks |
 | **Lua/Python Scripting** | ❌ | ✅ | Orthanc: server-side automation |
 | **Peer-to-Peer Sync** | ❌ | ✅ | Orthanc: replicate between Orthanc instances |
-| **Plugin System** | ❌ | ✅ | Orthanc: C/Python/Java plugin SDK |
-| **User Management** | ❌ 🔮 | ✅ (plugin) | Planned: local users + OIDC |
-| **Audit Log API** | ❌ 🔮 | ✅ (plugin) | Schema exists, no code writes to it yet |
+| **Plugin System** | ✅ | ✅ | Compile-time trait-based plugin system with built-in storage/DIMSE plugins and optional auth/audit/metrics plugins |
+| **User Management** | ⚠️ 🔮 | ✅ (plugin) | Optional `basic-auth` plugin supports a configured local credential + JWTs; no user CRUD, groups, or roles yet |
+| **Audit Log API** | ❌ | ✅ (plugin) | Optional audit plugin writes `audit_log` rows, but no REST API exists to browse/search them yet |
 
 ---
 
@@ -161,12 +161,12 @@
 |---------|:--------:|:-------:|-------|
 | **HTTP TLS/HTTPS** | ❌ 🔮 | ✅ | Plaintext only; use reverse proxy |
 | **DIMSE TLS** | ❌ | ✅ | Plaintext TCP only |
-| **Authentication** (any) | ❌ 🔮 | ✅ | Planned: local + OIDC |
+| **Authentication** (any) | ⚠️ | ✅ | Optional `basic-auth` plugin provides local login, refresh, and bearer-token protection; no multi-user/OIDC yet |
 | **RBAC / Role-based access** | ❌ 🔮 | ✅ (plugin) | Planned: 5-role model |
-| **JWT token validation** | ❌ 🔮 | ❌ | Planned; `jsonwebtoken` crate in deps |
+| **JWT token validation** | ✅ | ❌ | `basic-auth` plugin issues and validates JWT bearer tokens |
 | **OIDC / OAuth2** | ❌ 🔮 | ✅ (plugin) | Planned |
 | **API key auth** | ❌ 🔮 | ✅ | Planned as Phase 1 |
-| **Audit logging** | ⚠️ 🔮 | ✅ (plugin) | Schema exists; no writes yet |
+| **Audit logging** | ✅ | ✅ (plugin) | Optional `audit-logger` plugin persists store/query/delete/study-complete/association events to `audit_log` |
 | **PHI redaction in logs** | ⚠️ | ✅ | Policy stated but no filter enforced |
 | **Encryption at rest** | ❌ | ❌ | Neither implements natively (delegate to infra) |
 | **CORS configuration** | ⚠️ | ✅ | Currently `permissive()`; needs tightening |
@@ -186,7 +186,7 @@
 | **Stone Web Viewer** | ❌ | ✅ (plugin) | Orthanc-specific advanced viewer |
 | **Custom study list / worklist UI** | ❌ 🔮 | ❌ | Planned: `@pacsnode/extension-worklist` |
 | **Static file serving** | ❌ 🔮 | ✅ | Planned: `tower-http::ServeDir` |
-| **Server-side rendering** (thumbnails) | ❌ | ✅ | Orthanc renders PNG/JPEG previews |
+| **Server-side rendering** (thumbnails) | ⚠️ | ✅ | DICOMweb rendered PNG endpoints now exist; no integrated web UI/worklist thumbnail flow yet |
 
 ---
 
@@ -206,7 +206,7 @@
 | **Docker support** | ✅ | ✅ | Multi-stage build, docker-compose |
 | **Database migrations** | ✅ | ✅ | sqlx-cli, auto-run on startup |
 | **Async job queue** | ❌ | ✅ | Orthanc: `/jobs` API |
-| **Prometheus metrics** | ❌ | ✅ (plugin) | No metrics export |
+| **Prometheus metrics** | ✅ | ✅ (plugin) | Optional `prometheus-metrics` plugin exposes `/metrics` plus HTTP latency and PACS event counters |
 | **Clustering / HA** | ❌ | ⚠️ | Neither has native clustering |
 | **Hot config reload** | ❌ | ❌ | Requires restart |
 
@@ -249,14 +249,14 @@ Listed here for completeness and long-term roadmap consideration.
 | Category | pacsnode | Orthanc | Gap |
 |----------|:--------:|:-------:|:---:|
 | **DIMSE Services** | 85% | 95% | C-CANCEL, Storage Commitment, MWL |
-| **DICOMweb** | 75% | 90% | Frames, rendered, bulk data, WADO-URI |
-| **REST API** | 50% | 90% | Anonymize, modify, merge, split, export, jobs |
+| **DICOMweb** | 90% | 90% | Remaining gaps are mainly content negotiation and broader bulk-data/media coverage |
+| **REST API** | 60% | 90% | Biggest gaps are anonymize/modify/merge/split/export/jobs plus real user management |
 | **Transfer Syntax / Codecs** | 25% | 85% | JPEG, J2K, RLE, transcoding |
 | **Storage** | 80% | 85% | Blob cleanup, commitment, compression |
 | **Database** | 95% | 85% | pacsnode ahead: JSONB, GIN, sqlx compile-time |
-| **Security** | 10% | 60% | Auth, RBAC, TLS, audit — all planned |
-| **Viewer / UI** | 0% | 70% | OHIF integration planned |
-| **System / Ops** | 90% | 85% | Missing: job queue, metrics |
+| **Security** | 35% | 60% | Main remaining gaps are RBAC, OIDC/API keys, TLS, CORS hardening, and PHI log filtering |
+| **Viewer / UI** | 10% | 70% | Rendered DICOMweb previews exist, but OHIF/static UI hosting is still missing |
+| **System / Ops** | 95% | 85% | Main remaining gaps are async jobs, HA/federation work, and hot reload |
 | **Enterprise Features** | 5% | 25% | Long-term roadmap items |
 
 ---
@@ -267,13 +267,13 @@ Listed here for completeness and long-term roadmap consideration.
 
 1. **Authentication & RBAC** — no patient data should be accessible without login
 2. **TLS termination** — at minimum via reverse proxy (Nginx/Caddy), ideally native
-3. **Audit logging** — populate existing `audit_log` table (HIPAA requirement)
+3. **Operationalize audit logging** — enable/configure it by default in secured deployments and add review/search APIs
 4. **Blob cleanup on DELETE** — REST deletes leave orphaned S3 objects
 5. **CORS tightening** — replace `permissive()` with configured origins
 
 ### 🟡 High (important for interoperability)
 
-6. **WADO-RS frame retrieval** — OHIF needs `/frames/{n}` for efficient viewing
+6. **DICOMweb content negotiation / richer bulk-data coverage** — rendered output is PNG-only and bulk-data support is still conservative
 7. **JPEG / JPEG 2000 codecs** — many modalities send compressed; need decode for viewing
 8. **Anonymization API** — essential for research, sharing, and compliance
 9. **OHIF viewer integration** — web-based viewing is table stakes
@@ -284,7 +284,7 @@ Listed here for completeness and long-term roadmap consideration.
 
 12. **ZIP/DICOMDIR export** — downloading studies for CD/USB
 13. **Async job queue** — long-running ops (anonymize, export) shouldn't block
-14. **Prometheus metrics** — production monitoring
+14. **Metrics dashboards / deeper instrumentation** — the `/metrics` endpoint exists, but production dashboards and broader coverage are still needed
 15. **HL7/FHIR integration** — hospital system interop
 16. **Prior study prefetch** — radiology workflow optimization
 17. **Full-text search** — PostgreSQL tsvector for patient/study search
@@ -296,7 +296,7 @@ Listed here for completeness and long-term roadmap consideration.
 20. **Storage commitment** (N-EVENT-REPORT)
 21. **Multi-site federation / peer sync**
 22. **AI/ML integration pipeline**
-23. **Plugin / extension system**
+23. **Plugin ecosystem expansion** (viewer, anonymization, codecs, HL7, export)
 24. **Teaching file management**
 25. **Patient merge / reconciliation**
 

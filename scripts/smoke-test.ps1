@@ -8,9 +8,9 @@
 #   5. Statistics check    (REST API  — confirms files were stored)
 #   6. QIDO-RS query       (DICOMweb  — lists uploaded studies)
 #   7. C-FIND  via DIMSE   (findscu   — validates patient/study/series/image levels)
-#   8. WADO-RS retrieve    (DICOMweb  — retrieves a single instance;
-#                           equivalent to C-GET without a dedicated getscu
-#                           binary, which dicom-toolkit-rs does not provide)
+#   8. WADO-RS / WADO-URI  (DICOMweb  — retrieves an instance, frame bytes,
+#                           rendered PNG preview, bulk pixel data, and
+#                           legacy WADO-URI retrieval)
 #   9. Cleanup             (removes the test node registration)
 #
 # Prerequisites:
@@ -93,6 +93,14 @@ function Get-HttpStatus([string]$Uri, [string]$Method = "GET", $Body = $null) {
         return 0
     } catch {
         return 0
+    }
+}
+
+function Get-HttpResponse([string]$Uri, [string]$Method = "GET") {
+    try {
+        return Invoke-WebRequest -Uri $Uri -Method $Method -ErrorAction Stop -UseBasicParsing
+    } catch {
+        return $null
     }
 }
 
@@ -406,9 +414,9 @@ if ($studyUid -ne "" -and $seriesUid -ne "" -and $instanceUid -ne "") {
     Write-Fail "Skipping C-FIND IMAGE validation — no instance UID available"
 }
 
-# ── Step 8: WADO-RS retrieve (C-GET equivalent) ───────────────────────────────
+# ── Step 8: WADO-RS / WADO-URI retrieve ───────────────────────────────────────
 
-Write-Step 8 "WADO-RS retrieve  (DICOMweb C-GET equivalent)"
+Write-Step 8 "WADO-RS / WADO-URI retrieve"
 Write-Host "  (dicom-toolkit-rs has no getscu binary; WADO-RS is the" -ForegroundColor DarkGray
 Write-Host "   standard DICOMweb equivalent for instance retrieval)" -ForegroundColor DarkGray
 
@@ -437,6 +445,34 @@ if ($studyUid -ne "") {
             Write-Ok "SOPInstanceUID:    $instanceUid"
         } else {
             Write-Fail "WADO-RS retrieve returned HTTP $code"
+        }
+
+        $frameResp = Get-HttpResponse "$HttpBase/wado/studies/$studyUid/series/$seriesUid/instances/$instanceUid/frames/1"
+        if ($frameResp -and $frameResp.StatusCode -eq 200 -and [string]$frameResp.Headers["Content-Type"] -like "*application/octet-stream*") {
+            Write-Ok "WADO-RS frame retrieval returned octet-stream multipart data"
+        } else {
+            Write-Fail "WADO-RS frame retrieval failed"
+        }
+
+        $renderResp = Get-HttpResponse "$HttpBase/wado/studies/$studyUid/series/$seriesUid/instances/$instanceUid/rendered"
+        if ($renderResp -and $renderResp.StatusCode -eq 200 -and [string]$renderResp.Headers["Content-Type"] -like "*image/png*") {
+            Write-Ok "WADO-RS rendered instance returned PNG"
+        } else {
+            Write-Fail "WADO-RS rendered instance failed"
+        }
+
+        $bulkResp = Get-HttpResponse "$HttpBase/wado/studies/$studyUid/series/$seriesUid/instances/$instanceUid/bulkdata/7FE00010"
+        if ($bulkResp -and $bulkResp.StatusCode -eq 200 -and [string]$bulkResp.Headers["Content-Type"] -like "*application/octet-stream*") {
+            Write-Ok "WADO-RS bulk data returned application/octet-stream"
+        } else {
+            Write-Fail "WADO-RS bulk data failed"
+        }
+
+        $wadoUriResp = Get-HttpResponse "$HttpBase/wado?requestType=WADO&studyUID=$studyUid&seriesUID=$seriesUid&objectUID=$instanceUid"
+        if ($wadoUriResp -and $wadoUriResp.StatusCode -eq 200 -and [string]$wadoUriResp.Headers["Content-Type"] -like "*application/dicom*") {
+            Write-Ok "WADO-URI returned application/dicom"
+        } else {
+            Write-Fail "WADO-URI failed"
         }
     } else {
         Write-Fail "Could not resolve series/instance UIDs for WADO-RS retrieve"

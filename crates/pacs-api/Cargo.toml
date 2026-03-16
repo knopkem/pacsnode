@@ -27,6 +27,8 @@ tracing      = { workspace = true }
 uuid         = { workspace = true }
 
 [dev-dependencies]
+dicom-toolkit-data = { workspace = true }
+dicom-toolkit-dict = { workspace = true }
 http-body-util = "0.1"
 mockall        = { workspace = true }
 rstest         = { workspace = true }

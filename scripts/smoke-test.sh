@@ -9,9 +9,9 @@
 #   5. Statistics check    (REST API  — confirms files were stored)
 #   6. QIDO-RS query       (DICOMweb  — lists uploaded studies)
 #   7. C-FIND  via DIMSE   (findscu   — validates patient/study/series/image levels)
-#   8. WADO-RS retrieve    (DICOMweb  — retrieves a single instance;
-#                           equivalent to C-GET without a dedicated getscu
-#                           binary, which dicom-toolkit-rs does not provide)
+#   8. WADO-RS / WADO-URI  (DICOMweb  — retrieves an instance, frame bytes,
+#                           rendered PNG preview, bulk pixel data, and
+#                           legacy WADO-URI retrieval)
 #   9. Cleanup             (removes the test node registration)
 #
 # Prerequisites:
@@ -397,9 +397,9 @@ else
     fail "Skipping C-FIND IMAGE validation — no instance UID available"
 fi
 
-# ── Step 8: WADO-RS retrieve (equivalent to C-GET) ───────────────────────────
+# ── Step 8: WADO-RS / WADO-URI retrieve ──────────────────────────────────────
 
-step 8 "WADO-RS retrieve  (DICOMweb C-GET equivalent)"
+step 8 "WADO-RS / WADO-URI retrieve"
 printf "  \033[2m(dicom-toolkit-rs has no getscu binary; WADO-RS is the standard\033[0m\n"
 printf "  \033[2m DICOMweb equivalent for instance retrieval)\033[0m\n"
 
@@ -423,6 +423,50 @@ if [ -n "$STUDY_UID" ]; then
         else
             fail "WADO-RS retrieve returned HTTP ${HTTP_CODE}"
         fi
+
+        FRAME_HEADERS=$(mktemp)
+        FRAME_CODE=$(curl -s -o /dev/null -D "$FRAME_HEADERS" -w "%{http_code}" \
+            "${HTTP_BASE}/wado/studies/${STUDY_UID}/series/${SERIES_UID}/instances/${INSTANCE_UID}/frames/1")
+        FRAME_CT=$(awk 'BEGIN{IGNORECASE=1}/^Content-Type:/{print $2}' "$FRAME_HEADERS" | tr -d '\r')
+        if [ "$FRAME_CODE" = "200" ] && printf '%s' "$FRAME_CT" | grep -qi 'application/octet-stream'; then
+            ok "WADO-RS frame retrieval returned octet-stream multipart data"
+        else
+            fail "WADO-RS frame retrieval failed (HTTP ${FRAME_CODE}, content-type='${FRAME_CT}')"
+        fi
+        rm -f "$FRAME_HEADERS"
+
+        RENDER_HEADERS=$(mktemp)
+        RENDER_CODE=$(curl -s -o /dev/null -D "$RENDER_HEADERS" -w "%{http_code}" \
+            "${HTTP_BASE}/wado/studies/${STUDY_UID}/series/${SERIES_UID}/instances/${INSTANCE_UID}/rendered")
+        RENDER_CT=$(awk 'BEGIN{IGNORECASE=1}/^Content-Type:/{print $2}' "$RENDER_HEADERS" | tr -d '\r')
+        if [ "$RENDER_CODE" = "200" ] && printf '%s' "$RENDER_CT" | grep -qi 'image/png'; then
+            ok "WADO-RS rendered instance returned PNG"
+        else
+            fail "WADO-RS rendered instance failed (HTTP ${RENDER_CODE}, content-type='${RENDER_CT}')"
+        fi
+        rm -f "$RENDER_HEADERS"
+
+        BULK_HEADERS=$(mktemp)
+        BULK_CODE=$(curl -s -o /dev/null -D "$BULK_HEADERS" -w "%{http_code}" \
+            "${HTTP_BASE}/wado/studies/${STUDY_UID}/series/${SERIES_UID}/instances/${INSTANCE_UID}/bulkdata/7FE00010")
+        BULK_CT=$(awk 'BEGIN{IGNORECASE=1}/^Content-Type:/{print $2}' "$BULK_HEADERS" | tr -d '\r')
+        if [ "$BULK_CODE" = "200" ] && printf '%s' "$BULK_CT" | grep -qi 'application/octet-stream'; then
+            ok "WADO-RS bulk data returned application/octet-stream"
+        else
+            fail "WADO-RS bulk data failed (HTTP ${BULK_CODE}, content-type='${BULK_CT}')"
+        fi
+        rm -f "$BULK_HEADERS"
+
+        WADO_URI_HEADERS=$(mktemp)
+        WADO_URI_CODE=$(curl -s -o /dev/null -D "$WADO_URI_HEADERS" -w "%{http_code}" \
+            "${HTTP_BASE}/wado?requestType=WADO&studyUID=${STUDY_UID}&seriesUID=${SERIES_UID}&objectUID=${INSTANCE_UID}")
+        WADO_URI_CT=$(awk 'BEGIN{IGNORECASE=1}/^Content-Type:/{print $2}' "$WADO_URI_HEADERS" | tr -d '\r')
+        if [ "$WADO_URI_CODE" = "200" ] && printf '%s' "$WADO_URI_CT" | grep -qi 'application/dicom'; then
+            ok "WADO-URI returned application/dicom"
+        else
+            fail "WADO-URI failed (HTTP ${WADO_URI_CODE}, content-type='${WADO_URI_CT}')"
+        fi
+        rm -f "$WADO_URI_HEADERS"
     else
         fail "Could not resolve series/instance UIDs for WADO-RS retrieve"
     fi

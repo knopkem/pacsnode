@@ -27,6 +27,8 @@ pub fn build_router_without_state() -> Router<AppState> {
         .route("/health", get(health::get_health))
         .route("/statistics", get(health::get_statistics))
         .route("/system", get(health::get_system_info))
+        // ── WADO-URI ───────────────────────────────────────────────────────────
+        .route("/wado", get(wado::wado_uri))
         // ── STOW-RS ───────────────────────────────────────────────────────────
         // POST /wado/studies shares the path with QIDO GET below
         .route(
@@ -52,15 +54,40 @@ pub fn build_router_without_state() -> Router<AppState> {
             "/wado/studies/{study_uid}/series/{series_uid}/instances/{instance_uid}/metadata",
             get(wado::instance_metadata),
         )
+        // ── WADO-RS bulk data ─────────────────────────────────────────────────
+        .route(
+            "/wado/studies/{study_uid}/series/{series_uid}/instances/{instance_uid}/bulkdata/{tag_path}",
+            get(wado::instance_bulkdata),
+        )
         // ── WADO-RS retrieve ──────────────────────────────────────────────────
         .route("/wado/studies/{study_uid}", get(wado::retrieve_study))
+        .route(
+            "/wado/studies/{study_uid}/rendered",
+            get(wado::render_study),
+        )
         .route(
             "/wado/studies/{study_uid}/series/{series_uid}",
             get(wado::retrieve_series),
         )
         .route(
+            "/wado/studies/{study_uid}/series/{series_uid}/rendered",
+            get(wado::render_series),
+        )
+        .route(
             "/wado/studies/{study_uid}/series/{series_uid}/instances/{instance_uid}",
             get(wado::retrieve_instance),
+        )
+        .route(
+            "/wado/studies/{study_uid}/series/{series_uid}/instances/{instance_uid}/rendered",
+            get(wado::render_instance),
+        )
+        .route(
+            "/wado/studies/{study_uid}/series/{series_uid}/instances/{instance_uid}/frames/{frame_list}",
+            get(wado::retrieve_frames),
+        )
+        .route(
+            "/wado/studies/{study_uid}/series/{series_uid}/instances/{instance_uid}/frames/{frame_list}/rendered",
+            get(wado::render_frames),
         )
         // ── REST: studies ─────────────────────────────────────────────────────
         .route("/api/studies", get(rest::studies::list_studies))

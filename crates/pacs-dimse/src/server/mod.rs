@@ -2,17 +2,20 @@
 
 use std::sync::Arc;
 
+use bytes::Bytes;
 use dicom_toolkit_data::DataSet;
 use dicom_toolkit_dict::tags;
 use dicom_toolkit_net::{
-    handle_find_rq, handle_get_rq, handle_move_rq, handle_store_rq,
+    c_store, handle_find_rq, handle_store_rq,
     services::provider::{
         FindEvent, FindServiceProvider, GetEvent, GetServiceProvider, MoveEvent,
         MoveServiceProvider, RetrieveItem, StoreEvent, StoreResult, StoreServiceProvider,
     },
-    Association, AssociationConfig, DicomServer as NetDicomServer, StaticDestinationLookup,
+    Association, AssociationConfig, DestinationLookup, DicomServer as NetDicomServer,
+    PresentationContextRq, StaticDestinationLookup, StoreRequest,
 };
 use pacs_core::{BlobStore, MetadataStore, PacsError};
+use pacs_dicom::prepare_dimse_dataset;
 use pacs_plugin::{
     FindScpHandler, GetScpHandler, MoveScpHandler, PacsEvent, PluginError, PluginRegistry,
     StoreScpHandler,
@@ -26,6 +29,8 @@ use crate::error::DimseError;
 
 pub mod provider;
 use provider::{PacsQueryProvider, PacsStoreProvider};
+
+const TS_EXPLICIT_LE: &str = "1.2.840.10008.1.2.1";
 
 struct DynStoreProvider {
     inner: Arc<dyn StoreScpHandler>,
@@ -463,12 +468,12 @@ impl DicomServer {
                     .map_err(DimseError::from),
 
                 // C-GET-RQ
-                0x0010 => handle_get_rq(&mut assoc, ctx_id, &cmd, &get_provider)
+                0x0010 => handle_get_rq_with_transcoding(&mut assoc, ctx_id, &cmd, &get_provider)
                     .await
                     .map_err(DimseError::from),
 
                 // C-MOVE-RQ
-                0x0021 => handle_move_rq(
+                0x0021 => handle_move_rq_with_transcoding(
                     &mut assoc,
                     ctx_id,
                     &cmd,
@@ -530,6 +535,330 @@ async fn send_echo_response(
     Ok(())
 }
 
+fn association_config(config: &DimseConfig) -> AssociationConfig {
+    AssociationConfig {
+        local_ae_title: config.ae_title.clone(),
+        max_pdu_length: 65_536,
+        dimse_timeout_secs: config.timeout_secs,
+        accept_all_transfer_syntaxes: config.accept_all_transfer_syntaxes,
+        accepted_transfer_syntaxes: config.accepted_transfer_syntaxes.clone(),
+        preferred_transfer_syntaxes: config.preferred_transfer_syntaxes.clone(),
+        accepted_abstract_syntaxes: Vec::new(),
+        ..AssociationConfig::default()
+    }
+}
+
+fn next_message_id() -> u16 {
+    use std::sync::atomic::{AtomicU16, Ordering};
+    static ID: AtomicU16 = AtomicU16::new(1);
+    ID.fetch_add(1, Ordering::Relaxed)
+}
+
+fn prepare_retrieve_dataset(
+    item: &RetrieveItem,
+    target_ts_uid: &str,
+) -> Result<Vec<u8>, DimseError> {
+    Ok(prepare_dimse_dataset(Bytes::from(item.dataset.clone()), target_ts_uid)?.to_vec())
+}
+
+async fn handle_get_rq_with_transcoding<P>(
+    assoc: &mut Association,
+    ctx_id: u8,
+    cmd: &DataSet,
+    provider: &P,
+) -> Result<(), dicom_toolkit_core::error::DcmError>
+where
+    P: GetServiceProvider,
+{
+    let sop_class = cmd
+        .get_string(tags::AFFECTED_SOP_CLASS_UID)
+        .unwrap_or_default()
+        .trim_end_matches('\0')
+        .to_string();
+    let msg_id = cmd.get_u16(tags::MESSAGE_ID).unwrap_or(1);
+
+    let query_bytes = assoc.recv_dimse_data().await?;
+
+    let ts = assoc
+        .context_by_id(ctx_id)
+        .map(|pc| pc.transfer_syntax.trim_end_matches('\0').to_string())
+        .unwrap_or_else(|| TS_EXPLICIT_LE.to_string());
+
+    let identifier = dicom_toolkit_data::DicomReader::new(query_bytes.as_slice())
+        .read_dataset(&ts)
+        .unwrap_or_else(|_| DataSet::new());
+
+    let event = GetEvent {
+        calling_ae: assoc.calling_ae.clone(),
+        sop_class_uid: sop_class.clone(),
+        identifier,
+    };
+
+    let items = provider.on_get(event).await;
+    let total = items.len() as u16;
+    let mut completed: u16 = 0;
+    let mut failed: u16 = 0;
+
+    for item in &items {
+        let remaining = total.saturating_sub(completed + failed + 1);
+
+        let Some(store_ctx) = assoc.find_context(&item.sop_class_uid) else {
+            failed += 1;
+            continue;
+        };
+
+        let store_ctx_id = store_ctx.id;
+        let target_ts_uid = store_ctx.transfer_syntax.trim_end_matches('\0').to_string();
+        let dataset = match prepare_retrieve_dataset(item, &target_ts_uid) {
+            Ok(dataset) => dataset,
+            Err(err) => {
+                error!(
+                    error = %err,
+                    sop_class_uid = %item.sop_class_uid,
+                    sop_instance_uid = %item.sop_instance_uid,
+                    target_transfer_syntax = %target_ts_uid,
+                    "Failed to prepare C-GET retrieve dataset"
+                );
+                failed += 1;
+                continue;
+            }
+        };
+
+        let sub_msg_id = next_message_id();
+        let mut store_rq = DataSet::new();
+        store_rq.set_uid(tags::AFFECTED_SOP_CLASS_UID, &item.sop_class_uid);
+        store_rq.set_u16(tags::COMMAND_FIELD, 0x0001);
+        store_rq.set_u16(tags::MESSAGE_ID, sub_msg_id);
+        store_rq.set_u16(tags::PRIORITY, 0);
+        store_rq.set_u16(tags::COMMAND_DATA_SET_TYPE, 0x0000);
+        store_rq.set_uid(tags::AFFECTED_SOP_INSTANCE_UID, &item.sop_instance_uid);
+
+        assoc.send_dimse_command(store_ctx_id, &store_rq).await?;
+        assoc.send_dimse_data(store_ctx_id, &dataset).await?;
+
+        let (_rsp_ctx, store_rsp) = assoc.recv_dimse_command().await?;
+        let store_status = store_rsp.get_u16(tags::STATUS).unwrap_or(0xFFFF);
+        if store_status == 0x0000 {
+            completed += 1;
+        } else {
+            failed += 1;
+        }
+
+        let mut pending_rsp = DataSet::new();
+        pending_rsp.set_uid(tags::AFFECTED_SOP_CLASS_UID, &sop_class);
+        pending_rsp.set_u16(tags::COMMAND_FIELD, 0x8010);
+        pending_rsp.set_u16(tags::MESSAGE_ID_BEING_RESPONDED_TO, msg_id);
+        pending_rsp.set_u16(tags::COMMAND_DATA_SET_TYPE, 0x0101);
+        pending_rsp.set_u16(tags::STATUS, 0xFF00);
+        pending_rsp.set_u16(tags::NUMBER_OF_REMAINING_SUB_OPERATIONS, remaining);
+        pending_rsp.set_u16(tags::NUMBER_OF_COMPLETED_SUB_OPERATIONS, completed);
+        pending_rsp.set_u16(tags::NUMBER_OF_FAILED_SUB_OPERATIONS, failed);
+        pending_rsp.set_u16(tags::NUMBER_OF_WARNING_SUB_OPERATIONS, 0);
+        assoc.send_dimse_command(ctx_id, &pending_rsp).await?;
+    }
+
+    let final_status: u16 = if failed > 0 { 0xB000 } else { 0x0000 };
+
+    let mut final_rsp = DataSet::new();
+    final_rsp.set_uid(tags::AFFECTED_SOP_CLASS_UID, &sop_class);
+    final_rsp.set_u16(tags::COMMAND_FIELD, 0x8010);
+    final_rsp.set_u16(tags::MESSAGE_ID_BEING_RESPONDED_TO, msg_id);
+    final_rsp.set_u16(tags::COMMAND_DATA_SET_TYPE, 0x0101);
+    final_rsp.set_u16(tags::STATUS, final_status);
+    final_rsp.set_u16(tags::NUMBER_OF_REMAINING_SUB_OPERATIONS, 0);
+    final_rsp.set_u16(tags::NUMBER_OF_COMPLETED_SUB_OPERATIONS, completed);
+    final_rsp.set_u16(tags::NUMBER_OF_FAILED_SUB_OPERATIONS, failed);
+    final_rsp.set_u16(tags::NUMBER_OF_WARNING_SUB_OPERATIONS, 0);
+    assoc.send_dimse_command(ctx_id, &final_rsp).await
+}
+
+async fn handle_move_rq_with_transcoding<P, L>(
+    assoc: &mut Association,
+    ctx_id: u8,
+    cmd: &DataSet,
+    provider: &P,
+    dest_lookup: &L,
+    local_ae: &str,
+) -> Result<(), dicom_toolkit_core::error::DcmError>
+where
+    P: MoveServiceProvider,
+    L: DestinationLookup + ?Sized,
+{
+    let sop_class = cmd
+        .get_string(tags::AFFECTED_SOP_CLASS_UID)
+        .unwrap_or_default()
+        .trim_end_matches('\0')
+        .to_string();
+    let msg_id = cmd.get_u16(tags::MESSAGE_ID).unwrap_or(1);
+    let destination = cmd
+        .get_string(tags::MOVE_DESTINATION)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    let query_bytes = assoc.recv_dimse_data().await?;
+
+    let ts = assoc
+        .context_by_id(ctx_id)
+        .map(|pc| pc.transfer_syntax.trim_end_matches('\0').to_string())
+        .unwrap_or_else(|| TS_EXPLICIT_LE.to_string());
+
+    let identifier = dicom_toolkit_data::DicomReader::new(query_bytes.as_slice())
+        .read_dataset(&ts)
+        .unwrap_or_else(|_| DataSet::new());
+
+    let dest_addr = match dest_lookup.lookup(&destination) {
+        Some(addr) => addr,
+        None => {
+            let mut rsp = DataSet::new();
+            rsp.set_uid(tags::AFFECTED_SOP_CLASS_UID, &sop_class);
+            rsp.set_u16(tags::COMMAND_FIELD, 0x8021);
+            rsp.set_u16(tags::MESSAGE_ID_BEING_RESPONDED_TO, msg_id);
+            rsp.set_u16(tags::COMMAND_DATA_SET_TYPE, 0x0101);
+            rsp.set_u16(tags::STATUS, 0xA801);
+            return assoc.send_dimse_command(ctx_id, &rsp).await;
+        }
+    };
+
+    let event = MoveEvent {
+        calling_ae: assoc.calling_ae.clone(),
+        destination: destination.clone(),
+        sop_class_uid: sop_class.clone(),
+        identifier,
+    };
+
+    let items = provider.on_move(event).await;
+
+    if items.is_empty() {
+        let mut rsp = DataSet::new();
+        rsp.set_uid(tags::AFFECTED_SOP_CLASS_UID, &sop_class);
+        rsp.set_u16(tags::COMMAND_FIELD, 0x8021);
+        rsp.set_u16(tags::MESSAGE_ID_BEING_RESPONDED_TO, msg_id);
+        rsp.set_u16(tags::COMMAND_DATA_SET_TYPE, 0x0101);
+        rsp.set_u16(tags::STATUS, 0x0000);
+        rsp.set_u16(tags::NUMBER_OF_REMAINING_SUB_OPERATIONS, 0);
+        rsp.set_u16(tags::NUMBER_OF_COMPLETED_SUB_OPERATIONS, 0);
+        rsp.set_u16(tags::NUMBER_OF_FAILED_SUB_OPERATIONS, 0);
+        rsp.set_u16(tags::NUMBER_OF_WARNING_SUB_OPERATIONS, 0);
+        return assoc.send_dimse_command(ctx_id, &rsp).await;
+    }
+
+    let mut unique_sop_classes: Vec<String> = items
+        .iter()
+        .map(|item| item.sop_class_uid.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    unique_sop_classes.sort();
+
+    let sub_contexts: Vec<PresentationContextRq> = unique_sop_classes
+        .iter()
+        .enumerate()
+        .map(|(index, sop_class_uid)| PresentationContextRq {
+            id: (index * 2 + 1) as u8,
+            abstract_syntax: sop_class_uid.clone(),
+            transfer_syntaxes: vec![TS_EXPLICIT_LE.to_string()],
+        })
+        .collect();
+
+    let sub_cfg = AssociationConfig {
+        local_ae_title: local_ae.to_string(),
+        accept_all_transfer_syntaxes: true,
+        ..AssociationConfig::default()
+    };
+
+    let mut sub_assoc =
+        match Association::request(&dest_addr, &destination, local_ae, &sub_contexts, &sub_cfg)
+            .await
+        {
+            Ok(assoc) => assoc,
+            Err(_) => {
+                let total = items.len() as u16;
+                let mut rsp = DataSet::new();
+                rsp.set_uid(tags::AFFECTED_SOP_CLASS_UID, &sop_class);
+                rsp.set_u16(tags::COMMAND_FIELD, 0x8021);
+                rsp.set_u16(tags::MESSAGE_ID_BEING_RESPONDED_TO, msg_id);
+                rsp.set_u16(tags::COMMAND_DATA_SET_TYPE, 0x0101);
+                rsp.set_u16(tags::STATUS, 0xA801);
+                rsp.set_u16(tags::NUMBER_OF_REMAINING_SUB_OPERATIONS, 0);
+                rsp.set_u16(tags::NUMBER_OF_COMPLETED_SUB_OPERATIONS, 0);
+                rsp.set_u16(tags::NUMBER_OF_FAILED_SUB_OPERATIONS, total);
+                rsp.set_u16(tags::NUMBER_OF_WARNING_SUB_OPERATIONS, 0);
+                return assoc.send_dimse_command(ctx_id, &rsp).await;
+            }
+        };
+
+    let total = items.len() as u16;
+    let mut completed: u16 = 0;
+    let mut failed: u16 = 0;
+
+    for item in &items {
+        let remaining = total.saturating_sub(completed + failed + 1);
+
+        let Some(store_ctx) = sub_assoc.find_context(&item.sop_class_uid) else {
+            failed += 1;
+            continue;
+        };
+
+        let store_ctx_id = store_ctx.id;
+        let target_ts_uid = store_ctx.transfer_syntax.trim_end_matches('\0').to_string();
+        let dataset = match prepare_retrieve_dataset(item, &target_ts_uid) {
+            Ok(dataset) => dataset,
+            Err(err) => {
+                error!(
+                    error = %err,
+                    sop_class_uid = %item.sop_class_uid,
+                    sop_instance_uid = %item.sop_instance_uid,
+                    target_transfer_syntax = %target_ts_uid,
+                    "Failed to prepare C-MOVE retrieve dataset"
+                );
+                failed += 1;
+                continue;
+            }
+        };
+
+        let req = StoreRequest {
+            sop_class_uid: item.sop_class_uid.clone(),
+            sop_instance_uid: item.sop_instance_uid.clone(),
+            priority: 0,
+            dataset_bytes: dataset,
+            context_id: store_ctx_id,
+        };
+        match c_store(&mut sub_assoc, req).await {
+            Ok(rsp) if rsp.status == 0x0000 => completed += 1,
+            _ => failed += 1,
+        }
+
+        let mut pending_rsp = DataSet::new();
+        pending_rsp.set_uid(tags::AFFECTED_SOP_CLASS_UID, &sop_class);
+        pending_rsp.set_u16(tags::COMMAND_FIELD, 0x8021);
+        pending_rsp.set_u16(tags::MESSAGE_ID_BEING_RESPONDED_TO, msg_id);
+        pending_rsp.set_u16(tags::COMMAND_DATA_SET_TYPE, 0x0101);
+        pending_rsp.set_u16(tags::STATUS, 0xFF00);
+        pending_rsp.set_u16(tags::NUMBER_OF_REMAINING_SUB_OPERATIONS, remaining);
+        pending_rsp.set_u16(tags::NUMBER_OF_COMPLETED_SUB_OPERATIONS, completed);
+        pending_rsp.set_u16(tags::NUMBER_OF_FAILED_SUB_OPERATIONS, failed);
+        pending_rsp.set_u16(tags::NUMBER_OF_WARNING_SUB_OPERATIONS, 0);
+        assoc.send_dimse_command(ctx_id, &pending_rsp).await?;
+    }
+
+    let _ = sub_assoc.release().await;
+
+    let final_status: u16 = if failed > 0 { 0xB000 } else { 0x0000 };
+
+    let mut final_rsp = DataSet::new();
+    final_rsp.set_uid(tags::AFFECTED_SOP_CLASS_UID, &sop_class);
+    final_rsp.set_u16(tags::COMMAND_FIELD, 0x8021);
+    final_rsp.set_u16(tags::MESSAGE_ID_BEING_RESPONDED_TO, msg_id);
+    final_rsp.set_u16(tags::COMMAND_DATA_SET_TYPE, 0x0101);
+    final_rsp.set_u16(tags::STATUS, final_status);
+    final_rsp.set_u16(tags::NUMBER_OF_REMAINING_SUB_OPERATIONS, 0);
+    final_rsp.set_u16(tags::NUMBER_OF_COMPLETED_SUB_OPERATIONS, completed);
+    final_rsp.set_u16(tags::NUMBER_OF_FAILED_SUB_OPERATIONS, failed);
+    final_rsp.set_u16(tags::NUMBER_OF_WARNING_SUB_OPERATIONS, 0);
+    assoc.send_dimse_command(ctx_id, &final_rsp).await
+}
+
 // ── build_dicom_server ────────────────────────────────────────────────────────
 
 /// Build a [`dicom_toolkit_net::DicomServer`] wired up with pacsnode providers.
@@ -561,6 +890,7 @@ pub async fn build_dicom_server(
         .ae_title(&config.ae_title)
         .port(config.port)
         .max_associations(config.max_associations)
+        .config(association_config(config))
         .store_provider(store_provider)
         .find_provider(query_provider)
         .get_provider(query_provider2)
@@ -710,6 +1040,9 @@ mod ae_whitelist_tests {
                 ae_title: "PACSNODE".into(),
                 port: 4242,
                 ae_whitelist_enabled,
+                accept_all_transfer_syntaxes: true,
+                accepted_transfer_syntaxes: Vec::new(),
+                preferred_transfer_syntaxes: Vec::new(),
                 max_associations: 64,
                 timeout_secs: 30,
             },
@@ -853,6 +1186,30 @@ mod tests {
     }
 
     #[test]
+    fn association_config_applies_transfer_syntax_policy() {
+        let config = DimseConfig {
+            accept_all_transfer_syntaxes: false,
+            accepted_transfer_syntaxes: vec![
+                "1.2.840.10008.1.2.1".into(),
+                "1.2.840.10008.1.2.4.50".into(),
+            ],
+            preferred_transfer_syntaxes: vec!["1.2.840.10008.1.2.4.50".into()],
+            ..DimseConfig::default()
+        };
+
+        let assoc = association_config(&config);
+        assert!(!assoc.accept_all_transfer_syntaxes);
+        assert_eq!(
+            assoc.accepted_transfer_syntaxes,
+            config.accepted_transfer_syntaxes
+        );
+        assert_eq!(
+            assoc.preferred_transfer_syntaxes,
+            config.preferred_transfer_syntaxes
+        );
+    }
+
+    #[test]
     fn dicom_node_addr_method() {
         let node = DicomNode::new("STORESCP", "127.0.0.1", 4242);
         assert_eq!(node.addr(), "127.0.0.1:4242");
@@ -870,6 +1227,9 @@ mod tests {
             ae_title: "TESTPACS".into(),
             port: 0, // let OS pick a free port
             ae_whitelist_enabled: false,
+            accept_all_transfer_syntaxes: true,
+            accepted_transfer_syntaxes: Vec::new(),
+            preferred_transfer_syntaxes: Vec::new(),
             max_associations: 2,
             timeout_secs: 5,
         };

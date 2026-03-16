@@ -4,7 +4,7 @@ use std::{collections::HashSet, sync::Arc};
 
 use bytes::Bytes;
 use chrono::NaiveDate;
-use dicom_toolkit_data::{DataSet, DicomWriter};
+use dicom_toolkit_data::{DataSet, DicomWriter, FileFormat};
 use dicom_toolkit_dict::{tags, Vr};
 use dicom_toolkit_net::services::provider::{
     FindEvent, FindServiceProvider, GetEvent, GetServiceProvider, MoveEvent, MoveServiceProvider,
@@ -93,12 +93,17 @@ impl StoreServiceProvider for PacsStoreProvider {
         let series_uid = SeriesUid::from(series_uid_str.as_str());
         let instance_uid = SopInstanceUid::from(sop_instance_uid_str.as_str());
 
-        // ── Encode dataset to bytes (Explicit VR Little Endian) ────────────
+        // ── Encode dataset to a Part 10 file (Explicit VR Little Endian) ───
         let encoded = {
             let mut buf = Vec::new();
             {
+                let file = FileFormat::from_dataset(
+                    &event.sop_class_uid,
+                    &event.sop_instance_uid,
+                    event.dataset.clone(),
+                );
                 let mut writer = DicomWriter::new(&mut buf);
-                if let Err(e) = writer.write_dataset(&event.dataset, "1.2.840.10008.1.2.1") {
+                if let Err(e) = writer.write_file(&file) {
                     error!(error = %e, "Failed to encode received DICOM dataset");
                     return StoreResult::failure(STATUS_PROCESSING_FAILURE);
                 }
@@ -979,6 +984,51 @@ mod tests {
 
         let provider = PacsStoreProvider::new(Arc::new(mock_store), Arc::new(mock_blobs));
 
+        let result = provider.on_store(minimal_store_event()).await;
+        assert_eq!(result.status, 0x0000, "Expected success status");
+    }
+
+    #[tokio::test]
+    async fn on_store_persists_part10_blob() {
+        let mut mock_store = MockTestStore::new();
+        mock_store.expect_store_study().once().returning(|_| Ok(()));
+        mock_store
+            .expect_store_series()
+            .once()
+            .returning(|_| Ok(()));
+        mock_store
+            .expect_store_instance()
+            .once()
+            .returning(|instance| {
+                assert_eq!(
+                    instance.transfer_syntax.as_deref(),
+                    Some("1.2.840.10008.1.2.1")
+                );
+                Ok(())
+            });
+
+        let mut mock_blobs = MockTestBlobs::new();
+        mock_blobs
+            .expect_put()
+            .once()
+            .withf(|_, data| {
+                let file =
+                    dicom_toolkit_data::DicomReader::new(std::io::Cursor::new(data.as_ref()))
+                        .read_file()
+                        .ok();
+                match file {
+                    Some(file) => {
+                        file.meta.transfer_syntax_uid == "1.2.840.10008.1.2.1"
+                            && file.dataset.get_string(tags::STUDY_INSTANCE_UID) == Some("1.2.3.4")
+                            && file.dataset.get_string(tags::SERIES_INSTANCE_UID)
+                                == Some("1.2.3.4.1")
+                    }
+                    None => false,
+                }
+            })
+            .returning(|_, _| Ok(()));
+
+        let provider = PacsStoreProvider::new(Arc::new(mock_store), Arc::new(mock_blobs));
         let result = provider.on_store(minimal_store_event()).await;
         assert_eq!(result.status, 0x0000, "Expected success status");
     }

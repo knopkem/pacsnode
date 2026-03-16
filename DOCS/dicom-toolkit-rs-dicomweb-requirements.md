@@ -1,11 +1,11 @@
-# dicom-toolkit-rs DICOMweb follow-up status
+# dicom-toolkit-rs follow-up status
 
-As of `dicom-toolkit-rs` commit `493cd42`, all toolkit requirements that were
-previously tracked for the pacsnode DICOMweb follow-up have landed upstream.
+Most of the previously tracked pacsnode DICOMweb and DIMSE follow-up items have
+landed upstream as of `dicom-toolkit-rs` commit `aa732c8`.
 
-That means this file is no longer an active requirements list. It is now a small
-status note so future work can quickly see that the known upstream blockers were
-closed and that pacsnode should prefer the toolkit APIs over local workarounds.
+This file stays trimmed to the unresolved upstream work only. When pacsnode
+finds a toolkit-side blocker, add it here; when the upstream fix lands, remove
+it again.
 
 ---
 
@@ -25,6 +25,9 @@ instead of pacsnode-specific patching where possible:
 - high-level rendered frame options helpers
 - separate encode capability reporting
 - explicit DIMSE transfer-syntax policy configuration
+- classic JPEG Lossless encode support for:
+  - `1.2.840.10008.1.2.4.57`
+  - `1.2.840.10008.1.2.4.70`
 
 ---
 
@@ -58,8 +61,11 @@ encoding.
 ## Source references
 
 - toolkit upstream status checked against local `dcmtk-rs` checkout at commit
-  `493cd4298c29ceef39ec93021b4dcbb3683473bb`
+  `aa732c8a91a4a6de1d94f3da856581135e42ccda`
 - pacsnode now consumes the toolkit encapsulated Pixel Data builder from:
   - `crates/pacs-dicom/src/wado.rs`
 - toolkit helper definitions live in:
   - `../dcmtk-rs/crates/dicom-toolkit-data/src/value.rs`
+- classic JPEG Lossless encode capability now lives in:
+  - `../dcmtk-rs/crates/dicom-toolkit-codec/src/registry.rs`
+  - `../dcmtk-rs/crates/dicom-toolkit-codec/src/jpeg/lossless_encoder.rs`

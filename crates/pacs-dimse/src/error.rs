@@ -2,6 +2,7 @@
 
 use dicom_toolkit_core::error::DcmError;
 use pacs_core::PacsError;
+use pacs_dicom::DicomError;
 use thiserror::Error;
 
 /// All errors that can be returned by the `pacs-dimse` crate.
@@ -18,6 +19,10 @@ pub enum DimseError {
     /// An I/O error during network operations.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// An error occurred while transcoding or preparing DICOM payloads.
+    #[error("DICOM data error: {0}")]
+    Dicom(#[from] DicomError),
 
     /// No accepted presentation context exists for the requested SOP class.
     #[error("no presentation context accepted for SOP class {0}")]
@@ -66,5 +71,13 @@ mod tests {
         let pacs_err = PacsError::Internal("test".into());
         let err = DimseError::from(pacs_err);
         assert!(matches!(err, DimseError::Pacs(_)));
+    }
+
+    #[test]
+    fn from_dicom_error() {
+        let err = DimseError::from(DicomError::Unsupported {
+            message: "unsupported".into(),
+        });
+        assert!(matches!(err, DimseError::Dicom(_)));
     }
 }

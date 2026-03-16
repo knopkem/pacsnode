@@ -177,6 +177,10 @@ See [`config.toml.example`](config.toml.example) for a fully-commented reference
 | `server.http_port` | `PACS_SERVER__HTTP_PORT` | `8042` | HTTP port for REST + DICOMweb |
 | `server.dicom_port` | `PACS_SERVER__DICOM_PORT` | `4242` | DIMSE protocol port |
 | `server.ae_title` | `PACS_SERVER__AE_TITLE` | `PACSNODE` | DICOM Application Entity title |
+| `server.ae_whitelist_enabled` | `PACS_SERVER__AE_WHITELIST_ENABLED` | `false` | Require inbound DIMSE callers to exist in the registered node list |
+| `server.accept_all_transfer_syntaxes` | `PACS_SERVER__ACCEPT_ALL_TRANSFER_SYNTAXES` | `true` | Accept any DIMSE transfer syntax offered by the peer |
+| `server.accepted_transfer_syntaxes` | `PACS_SERVER__ACCEPTED_TRANSFER_SYNTAXES` | `[]` | Optional DIMSE transfer-syntax allow-list used when accept-all is disabled |
+| `server.preferred_transfer_syntaxes` | `PACS_SERVER__PREFERRED_TRANSFER_SYNTAXES` | `[]` | Preferred DIMSE transfer-syntax order during presentation-context selection |
 | `server.max_associations` | `PACS_SERVER__MAX_ASSOCIATIONS` | `64` | Max concurrent DIMSE connections |
 | `server.dimse_timeout_secs` | `PACS_SERVER__DIMSE_TIMEOUT_SECS` | `30` | DIMSE operation timeout (seconds) |
 
@@ -204,6 +208,38 @@ See [`config.toml.example`](config.toml.example) for a fully-commented reference
 |---------|---------|---------|-------------|
 | `logging.level` | `PACS_LOGGING__LEVEL` | `info` | Log level ([tracing env_filter syntax](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html)) |
 | `logging.format` | `PACS_LOGGING__FORMAT` | `json` | `json` or `pretty` |
+
+#### Bootstrap DICOM Nodes
+
+You can pre-seed the remote node registry directly from `config.toml` with
+repeated `[[nodes]]` tables. On startup, pacsnode upserts each configured node
+into the `dicom_nodes` table before the HTTP and DIMSE servers start listening.
+
+```toml
+[server]
+ae_whitelist_enabled = true
+
+[[nodes]]
+ae_title = "MODALITY1"
+host = "192.168.1.10"
+port = 104
+description = "CT Scanner - Room 3"
+tls_enabled = false
+
+[[nodes]]
+ae_title = "REMOTEPACS"
+host = "pacs.example.test"
+port = 11112
+tls_enabled = true
+```
+
+This is the simplest way to ship a ready-to-use whitelist in Docker, Helm, or a
+checked-in deployment config. Runtime node management via `POST /api/nodes`
+still works alongside it.
+
+> **Important:** startup seeding is additive/upsert-only. If you remove a node
+> from `config.toml`, pacsnode does not delete the existing row from
+> `dicom_nodes`; remove it explicitly via `DELETE /api/nodes/{ae_title}`.
 
 ---
 
@@ -288,7 +324,37 @@ Upload DICOM instances. Each multipart part contains one DICOM file. Returns a P
 
 #### Remote DICOM Nodes
 
-Nodes are the **AE whitelist** — the list of trusted remote DICOM Application Entities that pacsnode will accept C-STORE associations from and push instances to. They are stored in the `dicom_nodes` PostgreSQL table and **persist across restarts**.
+Nodes are the **AE whitelist** and remote-destination catalog. When
+`server.ae_whitelist_enabled = true`, pacsnode only accepts inbound DIMSE
+associations from calling AE titles that already exist in this list. The same
+registry is also used for outbound DIMSE destinations such as C-MOVE / C-STORE
+SCU operations. Nodes are stored in the `dicom_nodes` PostgreSQL table and
+**persist across restarts**.
+
+**Enable AE whitelisting:**
+
+```toml
+[server]
+ae_title = "PACSNODE"
+ae_whitelist_enabled = true
+```
+
+Or via environment:
+
+```bash
+export PACS_SERVER__AE_WHITELIST_ENABLED=true
+```
+
+**Setup flow:**
+
+1. Enable `server.ae_whitelist_enabled`.
+2. Add each trusted modality / PACS AE title either to `config.toml` via
+   `[[nodes]]` or to the runtime registry via `POST /api/nodes` before it opens
+   a DIMSE association to pacsnode.
+3. Verify the whitelist with `GET /api/nodes` or `GET /system`.
+
+> **Important:** If whitelisting is enabled and a modality or remote PACS AE
+> title is not present in `/api/nodes`, pacsnode rejects the DIMSE association.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -309,6 +375,24 @@ curl -s -X POST http://localhost:8042/api/nodes \
     "tls_enabled": false
   }'
 ```
+
+**Or seed nodes from `config.toml`:**
+
+```toml
+[server]
+ae_whitelist_enabled = true
+
+[[nodes]]
+ae_title = "MODALITY1"
+host = "192.168.1.10"
+port = 104
+description = "CT Scanner - Room 3"
+tls_enabled = false
+```
+
+Configured nodes are upserted into the same registry on startup, so they appear
+in `GET /api/nodes` and `GET /system` just like nodes added through the REST
+API.
 
 **List nodes:**
 

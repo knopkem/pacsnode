@@ -30,6 +30,7 @@
 use std::collections::HashMap;
 
 use config::{Config, ConfigError, Environment, File};
+use pacs_core::DicomNode;
 use serde::{Deserialize, Serialize};
 
 /// Top-level application configuration.
@@ -38,6 +39,9 @@ pub struct AppConfig {
     /// HTTP server settings.
     #[serde(default)]
     pub server: ServerConfig,
+    /// Optional DICOM nodes to upsert into the registry on startup.
+    #[serde(default)]
+    pub nodes: Vec<DicomNode>,
     /// PostgreSQL database settings.
     pub database: DatabaseConfig,
     /// S3-compatible object storage settings.
@@ -66,6 +70,15 @@ pub struct ServerConfig {
     /// Require inbound DIMSE callers to be registered in the node registry.
     #[serde(default)]
     pub ae_whitelist_enabled: bool,
+    /// Whether the DIMSE SCP accepts any offered transfer syntax by default.
+    #[serde(default = "default_true")]
+    pub accept_all_transfer_syntaxes: bool,
+    /// Explicit DIMSE SCP transfer syntax allow-list.
+    #[serde(default)]
+    pub accepted_transfer_syntaxes: Vec<String>,
+    /// Preferred DIMSE SCP transfer syntax order, highest priority first.
+    #[serde(default)]
+    pub preferred_transfer_syntaxes: Vec<String>,
     /// Maximum number of concurrent DIMSE associations.
     #[serde(default = "default_max_associations")]
     pub max_associations: usize,
@@ -222,6 +235,9 @@ impl Default for ServerConfig {
             dicom_port: default_dicom_port(),
             ae_title: default_ae_title(),
             ae_whitelist_enabled: false,
+            accept_all_transfer_syntaxes: default_true(),
+            accepted_transfer_syntaxes: Vec::new(),
+            preferred_transfer_syntaxes: Vec::new(),
             max_associations: default_max_associations(),
             dimse_timeout_secs: default_dimse_timeout_secs(),
         }
@@ -235,10 +251,20 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
+    fn clear_transfer_syntax_policy_env() {
+        std::env::remove_var("PACS_SERVER__ACCEPT_ALL_TRANSFER_SYNTAXES");
+        std::env::remove_var("PACS_SERVER__ACCEPTED_TRANSFER_SYNTAXES");
+        std::env::remove_var("PACS_SERVER__ACCEPTED_TRANSFER_SYNTAXES__0");
+        std::env::remove_var("PACS_SERVER__ACCEPTED_TRANSFER_SYNTAXES__1");
+        std::env::remove_var("PACS_SERVER__PREFERRED_TRANSFER_SYNTAXES");
+        std::env::remove_var("PACS_SERVER__PREFERRED_TRANSFER_SYNTAXES__0");
+    }
+
     /// All defaults should be sensible without any file or env vars.
     #[test]
     #[serial]
     fn defaults_are_sensible() {
+        clear_transfer_syntax_policy_env();
         // Minimal env to satisfy required fields.
         std::env::set_var("PACS_DATABASE__URL", "postgres://u:p@localhost/pacs");
         std::env::set_var("PACS_STORAGE__ENDPOINT", "http://localhost:9000");
@@ -251,7 +277,11 @@ mod tests {
         assert_eq!(cfg.server.dicom_port, 4242);
         assert_eq!(cfg.server.ae_title, "PACSNODE");
         assert!(!cfg.server.ae_whitelist_enabled);
+        assert!(cfg.server.accept_all_transfer_syntaxes);
+        assert!(cfg.server.accepted_transfer_syntaxes.is_empty());
+        assert!(cfg.server.preferred_transfer_syntaxes.is_empty());
         assert_eq!(cfg.server.max_associations, 64);
+        assert!(cfg.nodes.is_empty());
         assert!(cfg.database.run_migrations);
         assert_eq!(cfg.storage.region, "us-east-1");
         assert_eq!(cfg.logging.format, LogFormat::Json);
@@ -262,11 +292,13 @@ mod tests {
         std::env::remove_var("PACS_STORAGE__BUCKET");
         std::env::remove_var("PACS_STORAGE__ACCESS_KEY");
         std::env::remove_var("PACS_STORAGE__SECRET_KEY");
+        clear_transfer_syntax_policy_env();
     }
 
     #[test]
     #[serial]
     fn env_var_overrides_default_http_port() {
+        clear_transfer_syntax_policy_env();
         std::env::set_var("PACS_DATABASE__URL", "postgres://u:p@localhost/pacs");
         std::env::set_var("PACS_STORAGE__ENDPOINT", "http://localhost:9000");
         std::env::set_var("PACS_STORAGE__BUCKET", "dicom");
@@ -283,11 +315,13 @@ mod tests {
         std::env::remove_var("PACS_STORAGE__ACCESS_KEY");
         std::env::remove_var("PACS_STORAGE__SECRET_KEY");
         std::env::remove_var("PACS_SERVER__HTTP_PORT");
+        clear_transfer_syntax_policy_env();
     }
 
     #[test]
     #[serial]
     fn env_var_overrides_ae_whitelist_toggle() {
+        clear_transfer_syntax_policy_env();
         std::env::set_var("PACS_DATABASE__URL", "postgres://u:p@localhost/pacs");
         std::env::set_var("PACS_STORAGE__ENDPOINT", "http://localhost:9000");
         std::env::set_var("PACS_STORAGE__BUCKET", "dicom");
@@ -304,6 +338,117 @@ mod tests {
         std::env::remove_var("PACS_STORAGE__ACCESS_KEY");
         std::env::remove_var("PACS_STORAGE__SECRET_KEY");
         std::env::remove_var("PACS_SERVER__AE_WHITELIST_ENABLED");
+        clear_transfer_syntax_policy_env();
+    }
+
+    #[test]
+    #[serial]
+    fn env_var_overrides_transfer_syntax_policy() {
+        clear_transfer_syntax_policy_env();
+        std::env::set_var("PACS_DATABASE__URL", "postgres://u:p@localhost/pacs");
+        std::env::set_var("PACS_STORAGE__ENDPOINT", "http://localhost:9000");
+        std::env::set_var("PACS_STORAGE__BUCKET", "dicom");
+        std::env::set_var("PACS_STORAGE__ACCESS_KEY", "key");
+        std::env::set_var("PACS_STORAGE__SECRET_KEY", "secret");
+        std::env::set_var("PACS_SERVER__ACCEPT_ALL_TRANSFER_SYNTAXES", "false");
+
+        let cfg = AppConfig::load_from("nonexistent_config_file").expect("load failed");
+        assert!(!cfg.server.accept_all_transfer_syntaxes);
+        assert!(cfg.server.accepted_transfer_syntaxes.is_empty());
+        assert!(cfg.server.preferred_transfer_syntaxes.is_empty());
+
+        std::env::remove_var("PACS_DATABASE__URL");
+        std::env::remove_var("PACS_STORAGE__ENDPOINT");
+        std::env::remove_var("PACS_STORAGE__BUCKET");
+        std::env::remove_var("PACS_STORAGE__ACCESS_KEY");
+        std::env::remove_var("PACS_STORAGE__SECRET_KEY");
+        clear_transfer_syntax_policy_env();
+    }
+
+    #[test]
+    fn transfer_syntax_policy_deserializes_from_toml() {
+        let toml = r#"
+            [server]
+            http_port = 8042
+            dicom_port = 4242
+            ae_title = "PACSNODE"
+            accept_all_transfer_syntaxes = false
+            accepted_transfer_syntaxes = ["1.2.840.10008.1.2.1", "1.2.840.10008.1.2.4.50"]
+            preferred_transfer_syntaxes = ["1.2.840.10008.1.2.4.50"]
+            [database]
+            url = "postgres://u:p@h/db"
+            [storage]
+            endpoint = "http://localhost:9000"
+            bucket = "dicom"
+            access_key = "k"
+            secret_key = "s"
+        "#;
+        let cfg: AppConfig = config::Config::builder()
+            .add_source(config::File::from_str(toml, config::FileFormat::Toml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+        assert!(!cfg.server.accept_all_transfer_syntaxes);
+        assert_eq!(
+            cfg.server.accepted_transfer_syntaxes,
+            vec![
+                "1.2.840.10008.1.2.1".to_string(),
+                "1.2.840.10008.1.2.4.50".to_string(),
+            ]
+        );
+        assert_eq!(
+            cfg.server.preferred_transfer_syntaxes,
+            vec!["1.2.840.10008.1.2.4.50".to_string()]
+        );
+    }
+
+    #[test]
+    fn configured_nodes_deserialize_from_toml() {
+        let toml = r#"
+            [server]
+            http_port = 8042
+            dicom_port = 4242
+            ae_title = "PACSNODE"
+            [database]
+            url = "postgres://u:p@h/db"
+            [storage]
+            endpoint = "http://localhost:9000"
+            bucket = "dicom"
+            access_key = "k"
+            secret_key = "s"
+
+            [[nodes]]
+            ae_title = "MODALITY1"
+            host = "192.168.1.10"
+            port = 104
+            description = "CT Scanner"
+
+            [[nodes]]
+            ae_title = "REMOTEPACS"
+            host = "pacs.example.test"
+            port = 11112
+            tls_enabled = true
+        "#;
+        let cfg: AppConfig = config::Config::builder()
+            .add_source(config::File::from_str(toml, config::FileFormat::Toml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+
+        assert_eq!(cfg.nodes.len(), 2);
+        assert_eq!(cfg.nodes[0].ae_title, "MODALITY1");
+        assert_eq!(cfg.nodes[0].host, "192.168.1.10");
+        assert_eq!(cfg.nodes[0].port, 104);
+        assert_eq!(cfg.nodes[0].description.as_deref(), Some("CT Scanner"));
+        assert!(!cfg.nodes[0].tls_enabled);
+
+        assert_eq!(cfg.nodes[1].ae_title, "REMOTEPACS");
+        assert_eq!(cfg.nodes[1].host, "pacs.example.test");
+        assert_eq!(cfg.nodes[1].port, 11112);
+        assert!(cfg.nodes[1].description.is_none());
+        assert!(cfg.nodes[1].tls_enabled);
     }
 
     #[test]

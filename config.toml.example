@@ -23,11 +23,39 @@ ae_title = "PACSNODE"
 # When enabled, unknown calling AE titles are rejected after association negotiation
 ae_whitelist_enabled = false
 
+# Accept any DIMSE transfer syntax offered by the peer.
+# Set this to false to enforce the allow-list below.
+accept_all_transfer_syntaxes = true
+
+# Optional DIMSE transfer syntax allow-list used when
+# accept_all_transfer_syntaxes = false. Leave empty to fall back to the toolkit's
+# default uncompressed negotiation order.
+accepted_transfer_syntaxes = []
+
+# Preferred DIMSE transfer syntax order, highest priority first.
+# This biases presentation-context selection when the peer offers multiple
+# syntaxes that pacsnode is willing to accept.
+preferred_transfer_syntaxes = []
+
 # Maximum concurrent DIMSE associations
 max_associations = 64
 
 # DIMSE operation timeout in seconds
 dimse_timeout_secs = 30
+
+# ── Bootstrap DICOM Nodes ──────────────────────────────────────────────────────
+#
+# Optional `[[nodes]]` entries are upserted into the node registry on startup.
+# Use this to pre-seed the AE whitelist and known DIMSE destinations from TOML.
+# Removing an entry from this file does not delete an existing DB row; use the
+# REST API (`DELETE /api/nodes/{ae_title}`) if you need to remove it.
+#
+# [[nodes]]
+# ae_title = "MODALITY1"
+# host = "192.168.1.10"
+# port = 104
+# description = "CT Scanner - Room 3"
+# tls_enabled = false
 
 # ── Database ──────────────────────────────────────────────────────────────────
 

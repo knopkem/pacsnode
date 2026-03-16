@@ -11,6 +11,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use pacs_audit_plugin::AUDIT_LOGGER_PLUGIN_ID;
 use pacs_auth_plugin::BASIC_AUTH_PLUGIN_ID;
+use pacs_core::{DicomNode, MetadataStore};
 use pacs_plugin::{PluginRegistry, ServerInfo};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -75,6 +76,7 @@ async fn main() -> Result<()> {
     let blob_store = registry
         .blob_store()
         .ok_or_else(|| anyhow!("no BlobStore plugin is active"))?;
+    bootstrap_configured_nodes(meta_store.as_ref(), &cfg.nodes).await?;
 
     // ── HTTP server ───────────────────────────────────────────────────────────
     let app_state = pacs_api::AppState {
@@ -98,6 +100,9 @@ async fn main() -> Result<()> {
         ae_title: cfg.server.ae_title.clone(),
         port: cfg.server.dicom_port,
         ae_whitelist_enabled: cfg.server.ae_whitelist_enabled,
+        accept_all_transfer_syntaxes: cfg.server.accept_all_transfer_syntaxes,
+        accepted_transfer_syntaxes: cfg.server.accepted_transfer_syntaxes.clone(),
+        preferred_transfer_syntaxes: cfg.server.preferred_transfer_syntaxes.clone(),
         max_associations: cfg.server.max_associations,
         timeout_secs: cfg.server.dimse_timeout_secs,
     };
@@ -180,6 +185,45 @@ fn merge_json(base: &mut serde_json::Value, overlay: serde_json::Value) {
     }
 }
 
+async fn bootstrap_configured_nodes(store: &dyn MetadataStore, nodes: &[DicomNode]) -> Result<()> {
+    validate_configured_nodes(nodes)?;
+
+    if nodes.is_empty() {
+        return Ok(());
+    }
+
+    for node in nodes {
+        store
+            .upsert_node(node)
+            .await
+            .with_context(|| format!("failed to upsert configured DICOM node {}", node.ae_title))?;
+    }
+
+    info!(
+        count = nodes.len(),
+        "Upserted configured DICOM nodes from configuration"
+    );
+    Ok(())
+}
+
+fn validate_configured_nodes(nodes: &[DicomNode]) -> Result<()> {
+    let mut seen = BTreeSet::new();
+
+    for node in nodes {
+        let ae_title = node.ae_title.trim();
+        if ae_title.is_empty() {
+            return Err(anyhow!("configured DICOM node AE title must not be empty"));
+        }
+        if !seen.insert(ae_title) {
+            return Err(anyhow!(
+                "duplicate configured DICOM node AE title: {ae_title}"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 /// Initialise the global [`tracing`] subscriber.
 fn init_tracing(level: &str, format: &LogFormat) {
     use tracing_subscriber::{fmt, EnvFilter};
@@ -243,6 +287,7 @@ mod tests {
     fn make_config(enabled: &[&str], configs: HashMap<String, serde_json::Value>) -> AppConfig {
         AppConfig {
             server: ServerConfig::default(),
+            nodes: Vec::new(),
             database: DatabaseConfig {
                 url: "postgres://u:p@localhost/pacs".into(),
                 max_connections: 20,
@@ -290,5 +335,46 @@ mod tests {
 
         assert!(!audit_auto_enabled);
         assert!(!enabled.contains(&AUDIT_LOGGER_PLUGIN_ID.to_string()));
+    }
+
+    #[test]
+    fn validate_configured_nodes_rejects_duplicate_ae_titles() {
+        let nodes = vec![
+            DicomNode {
+                ae_title: "MODALITY1".into(),
+                host: "192.168.1.10".into(),
+                port: 104,
+                description: None,
+                tls_enabled: false,
+            },
+            DicomNode {
+                ae_title: "MODALITY1".into(),
+                host: "192.168.1.11".into(),
+                port: 105,
+                description: None,
+                tls_enabled: false,
+            },
+        ];
+
+        let error = validate_configured_nodes(&nodes).expect_err("duplicates should fail");
+        assert!(error
+            .to_string()
+            .contains("duplicate configured DICOM node AE title"));
+    }
+
+    #[test]
+    fn validate_configured_nodes_rejects_blank_ae_title() {
+        let nodes = vec![DicomNode {
+            ae_title: "   ".into(),
+            host: "192.168.1.10".into(),
+            port: 104,
+            description: None,
+            tls_enabled: false,
+        }];
+
+        let error = validate_configured_nodes(&nodes).expect_err("blank AE title should fail");
+        assert!(error
+            .to_string()
+            .contains("configured DICOM node AE title must not be empty"));
     }
 }

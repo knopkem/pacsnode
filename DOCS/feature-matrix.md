@@ -37,7 +37,7 @@
 | **Storage Commitment** (N-EVENT-REPORT) | ❌ | ✅ (plugin) | Not implemented |
 | **Modality Worklist** (MWL SCP) | ❌ | ✅ (plugin) | No worklist management |
 | **Modality Performed Procedure Step** (MPPS) | ❌ | ❌ | Neither implements natively |
-| **Association negotiation** | ✅ | ✅ | Accepts all transfer syntaxes, but cannot yet enforce an SCP-side transfer-syntax allow-list/preference order |
+| **Association negotiation** | ✅ | ✅ | Configurable SCP-side transfer-syntax allow-list/preference order via `accept_all_transfer_syntaxes`, `accepted_transfer_syntaxes`, and `preferred_transfer_syntaxes` |
 | **Max concurrent associations** | ✅ | ✅ | Configurable (default 64), semaphore-based |
 | **DIMSE timeout** | ✅ | ✅ | Configurable (default 30s) |
 | **AE title validation** | ✅ | ✅ | Optional registered-node whitelist rejects unknown calling AEs before DIMSE requests are handled |
@@ -108,12 +108,12 @@
 | **Explicit VR Big Endian** (1.2.840.10008.1.2.2) | ✅ | ✅ | Big-endian retrieve-time transcode and rendering path covered |
 | **Deflated Explicit VR LE** (1.2.840.10008.1.2.1.99) | ✅ | ✅ | Read/write plus WADO retrieve-time transcode verified |
 | **JPEG Baseline** (1.2.840.10008.1.2.4.50) | ✅ | ✅ | Toolkit-backed decode plus retrieve-time transcode/output exercised in tests |
-| **JPEG Lossless** (1.2.840.10008.1.2.4.57/70) | ⚠️ | ✅ | Decode/retrieve path is available, but pacsnode cannot yet emit JPEG Lossless output on retrieve |
+| **JPEG Lossless** (1.2.840.10008.1.2.4.57/70) | ✅ | ✅ | Toolkit-backed decode plus retrieve-time transcode/output verified for both classic JPEG Lossless UIDs |
 | **JPEG 2000 Lossless** (1.2.840.10008.1.2.4.90) | ✅ | ✅ | Toolkit-backed decode plus lossless retrieve-time transcode verified |
 | **JPEG 2000 Lossy** (1.2.840.10008.1.2.4.91) | ⚠️ | ✅ | Retrieve-time output path is wired, but lossy quality/interoperability coverage is still thin |
 | **RLE Lossless** (1.2.840.10008.1.2.5) | ✅ | ✅ | Toolkit-backed decode plus retrieve-time transcode verified |
 | **MPEG-2/4** | ❌ | ⚠️ | Neither fully supports |
-| **Server-side transcoding** | ✅ | ✅ | WADO-RS and WADO-URI can transcode on retrieve across the supported output syntaxes |
+| **Server-side transcoding** | ✅ | ✅ | WADO-RS/WADO-URI retrieve plus DIMSE C-GET/C-MOVE can transcode into the supported output syntaxes, including classic JPEG Lossless |
 | **`Accept` header negotiation** | ✅ | ✅ | WADO-RS retrieve honors `Accept` transfer-syntax requests for DICOM object retrieval |
 
 ---
@@ -248,10 +248,10 @@ Listed here for completeness and long-term roadmap consideration.
 
 | Category | pacsnode | Orthanc | Gap |
 |----------|:--------:|:-------:|:---:|
-| **DIMSE Services** | 85% | 95% | C-CANCEL, Storage Commitment, MWL |
+| **DIMSE Services** | 88% | 95% | C-CANCEL, Storage Commitment, MWL |
 | **DICOMweb** | 95% | 95% | Main remaining gap is UPS-RS/worklist surface, which Orthanc also lacks natively |
 | **REST API** | 65% | 90% | Biggest gaps are anonymize/modify/merge/split/export/jobs plus real user management |
-| **Transfer Syntax / Codecs** | 75% | 85% | Main remaining gaps are JPEG Lossless output, lossy J2K hardening, MPEG, and DIMSE TS policy |
+| **Transfer Syntax / Codecs** | 80% | 85% | Main remaining gaps are classic JPEG Lossless encode support, lossy J2K hardening, and MPEG |
 | **Storage** | 85% | 85% | Main remaining gaps are storage commitment, compression-at-rest, and lifecycle/retention tooling |
 | **Database** | 95% | 85% | pacsnode ahead: JSONB, GIN, sqlx compile-time |
 | **Security** | 45% | 60% | Main remaining gaps are RBAC, OIDC/API keys, TLS, CORS hardening, and PHI log filtering |
@@ -272,7 +272,7 @@ Listed here for completeness and long-term roadmap consideration.
 
 ### 🟡 High (important for interoperability)
 
-5. **DIMSE transfer-syntax policy wiring + JPEG Lossless output** — retrieve transcoding exists now, but SCP-side syntax policy adoption and true JPEG Lossless emission still need work
+5. **Classic JPEG Lossless output** — DIMSE transfer-syntax policy wiring is done, but pacsnode still needs upstream classic JPEG Lossless encode support to emit 1.2.840.10008.1.2.4.57/70 on retrieve
 6. **Anonymization API** — essential for research, sharing, and compliance
 7. **Clinical worklist / bundled UI on top of OHIF hosting** — the viewer host exists, but a user-facing study/worklist shell is still missing
 8. **Modality Worklist (MWL)** — required for integration with modalities/RIS

@@ -30,6 +30,7 @@
 use std::collections::HashMap;
 
 use config::{Config, ConfigError, Environment, File};
+use pacs_core::DicomNode;
 use serde::{Deserialize, Serialize};
 
 /// Top-level application configuration.
@@ -38,6 +39,9 @@ pub struct AppConfig {
     /// HTTP server settings.
     #[serde(default)]
     pub server: ServerConfig,
+    /// Optional DICOM nodes to upsert into the registry on startup.
+    #[serde(default)]
+    pub nodes: Vec<DicomNode>,
     /// PostgreSQL database settings.
     pub database: DatabaseConfig,
     /// S3-compatible object storage settings.
@@ -277,6 +281,7 @@ mod tests {
         assert!(cfg.server.accepted_transfer_syntaxes.is_empty());
         assert!(cfg.server.preferred_transfer_syntaxes.is_empty());
         assert_eq!(cfg.server.max_associations, 64);
+        assert!(cfg.nodes.is_empty());
         assert!(cfg.database.run_migrations);
         assert_eq!(cfg.storage.region, "us-east-1");
         assert_eq!(cfg.logging.format, LogFormat::Json);
@@ -396,6 +401,54 @@ mod tests {
             cfg.server.preferred_transfer_syntaxes,
             vec!["1.2.840.10008.1.2.4.50".to_string()]
         );
+    }
+
+    #[test]
+    fn configured_nodes_deserialize_from_toml() {
+        let toml = r#"
+            [server]
+            http_port = 8042
+            dicom_port = 4242
+            ae_title = "PACSNODE"
+            [database]
+            url = "postgres://u:p@h/db"
+            [storage]
+            endpoint = "http://localhost:9000"
+            bucket = "dicom"
+            access_key = "k"
+            secret_key = "s"
+
+            [[nodes]]
+            ae_title = "MODALITY1"
+            host = "192.168.1.10"
+            port = 104
+            description = "CT Scanner"
+
+            [[nodes]]
+            ae_title = "REMOTEPACS"
+            host = "pacs.example.test"
+            port = 11112
+            tls_enabled = true
+        "#;
+        let cfg: AppConfig = config::Config::builder()
+            .add_source(config::File::from_str(toml, config::FileFormat::Toml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+
+        assert_eq!(cfg.nodes.len(), 2);
+        assert_eq!(cfg.nodes[0].ae_title, "MODALITY1");
+        assert_eq!(cfg.nodes[0].host, "192.168.1.10");
+        assert_eq!(cfg.nodes[0].port, 104);
+        assert_eq!(cfg.nodes[0].description.as_deref(), Some("CT Scanner"));
+        assert!(!cfg.nodes[0].tls_enabled);
+
+        assert_eq!(cfg.nodes[1].ae_title, "REMOTEPACS");
+        assert_eq!(cfg.nodes[1].host, "pacs.example.test");
+        assert_eq!(cfg.nodes[1].port, 11112);
+        assert!(cfg.nodes[1].description.is_none());
+        assert!(cfg.nodes[1].tls_enabled);
     }
 
     #[test]

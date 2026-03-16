@@ -46,6 +46,29 @@ After restarting `pacsnode`, the viewer will be reachable at `http://<host>:8042
 
 Set `redirect_root = true` to make `http://<host>:8042/` redirect to the viewer, or `false` if another route/plugin should own `/`.
 
+## Updating the OHIF viewer version yourself
+
+When you want to move to a newer OHIF release, you usually do **not** need to change
+the pacsnode plugin configuration. The normal upgrade flow is:
+
+1. Check out or download the OHIF version you want to deploy.
+2. Build its static distribution.
+3. Replace the files inside the configured `static_dir`.
+4. Restart `pacsnode`.
+5. Open `http://<host>:8042/viewer/` and verify the viewer loads and can still
+   query the pacsnode DICOMweb endpoints.
+
+Example:
+
+```bash
+rm -rf /opt/pacsnode/viewer/*
+cp -R /path/to/new-ohif-build/* /opt/pacsnode/viewer/
+systemctl restart pacsnode
+```
+
+If the new viewer bundle changes asset names aggressively, clear the browser cache
+or do a hard refresh after deployment.
+
 ## Authentication note
 
 If `basic-auth` is enabled at the same time, allow the viewer shell to load before it starts making authenticated API requests:

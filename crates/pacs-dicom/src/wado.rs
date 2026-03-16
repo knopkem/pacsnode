@@ -6,8 +6,9 @@ use dicom_toolkit_codec::{
     supported_encode_transfer_syntaxes,
 };
 use dicom_toolkit_data::{
-    element_value_bytes, encapsulated_frames, parse_attribute_path, AttributePathSegment, DataSet,
-    DicomReader, Element, FileFormat, PixelData, Value,
+    element_value_bytes, encapsulated_frames, encapsulated_pixel_data_from_frames,
+    parse_attribute_path, AttributePathSegment, DataSet, DicomReader, Element, FileFormat,
+    PixelData, Value,
 };
 use dicom_toolkit_dict::{tags, ts::transfer_syntaxes, Tag, Vr};
 use dicom_toolkit_image::{render_frame_u8, DicomImage, RenderedFrameOptions, RenderedRegion};
@@ -660,37 +661,23 @@ fn encode_frames_for_transfer_syntax(
     })?;
     let frame_numbers: Vec<u32> = (1..=total_frames(file)).collect();
     let frames = decoded_frames_for_processing(file, &frame_numbers)?;
+    let encoded_frames = frames
+        .into_iter()
+        .map(|frame| {
+            encode_frame_for_transfer_syntax(
+                target_ts_uid,
+                frame.as_ref(),
+                rows,
+                cols,
+                samples_u8,
+                bits_allocated_u8,
+                bits_stored_u8,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-    let mut offset_table = Vec::with_capacity(frames.len());
-    let mut fragments = Vec::with_capacity(frames.len());
-    let mut offset = 0u32;
-    for frame in frames {
-        let encoded = encode_frame_for_transfer_syntax(
-            target_ts_uid,
-            frame.as_ref(),
-            rows,
-            cols,
-            samples_u8,
-            bits_allocated_u8,
-            bits_stored_u8,
-        )?;
-        let encoded_len = u32::try_from(encoded.len()).map_err(|_| DicomError::Unsupported {
-            message: "encoded frame exceeds DICOM offset-table limits".into(),
-        })?;
-        offset_table.push(offset);
-        offset = offset
-            .checked_add(encoded_len)
-            .and_then(|value| value.checked_add(8))
-            .ok_or_else(|| DicomError::Unsupported {
-                message: "offset table overflow for encapsulated PixelData".into(),
-            })?;
-        fragments.push(encoded);
-    }
-
-    Ok(PixelData::Encapsulated {
-        offset_table,
-        fragments,
-    })
+    encapsulated_pixel_data_from_frames(&encoded_frames)
+        .map_err(|e| DicomError::Toolkit(e.to_string()))
 }
 
 fn encode_frame_for_transfer_syntax(

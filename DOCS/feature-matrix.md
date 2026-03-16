@@ -61,9 +61,9 @@
 | **WADO-RS** — Series Metadata | ✅ | ✅ (plugin) | |
 | **WADO-RS** — Instance Metadata | ✅ | ✅ (plugin) | |
 | **WADO-RS** — Frame Retrieval | ✅ | ✅ (plugin) | `/frames/{n[,m...]}` returns native frame bytes |
-| **WADO-RS** — Rendered (thumbnail/preview) | ⚠️ | ✅ (plugin) | PNG rendered previews for study/series/instance/frame; no JPEG or `Accept` negotiation |
-| **WADO-RS** — Bulk Data | ⚠️ | ✅ (plugin) | Instance bulk-data endpoint plus Pixel Data `BulkDataURI`; broader tag-path coverage can expand later |
-| **WADO-URI** (legacy) | ⚠️ | ✅ (plugin) | Supports classic single-object retrieval and PNG rendering via `contentType=image/png` |
+| **WADO-RS** — Rendered (thumbnail/preview) | ✅ | ✅ (plugin) | PNG/JPEG rendered responses, `Accept` negotiation, rendered query parameters, and multipart rendered frame responses |
+| **WADO-RS** — Bulk Data | ✅ | ✅ (plugin) | Nested attribute-path bulk-data retrieval, multipart `Content-Location`, and `BulkDataURI` coverage for eligible binary attributes |
+| **WADO-URI** (legacy) | ✅ | ✅ (plugin) | Supports `application/dicom` plus rendered PNG/JPEG responses, rendered query parameters, and WADO-URI transfer-syntax rules |
 | **STOW-RS** — Store Instances | ✅ | ✅ (plugin) | Multipart DICOM upload, PS3.18 response |
 | **UPS-RS** (Worklist) | ❌ | ❌ | Neither implements natively |
 | **Capabilities / Conformance** | ✅ | ✅ | `GET /system` returns AE, ports, nodes |
@@ -181,12 +181,12 @@
 
 | Feature | pacsnode | Orthanc | Notes |
 |---------|:--------:|:-------:|-------|
-| **Built-in web UI** | ❌ 🔮 | ✅ | Orthanc Explorer (basic); pacsnode plans OHIF |
-| **OHIF Viewer integration** | ❌ 🔮 | ✅ (plugin) | Planned: custom mode + extension |
+| **Built-in web UI** | ⚠️ | ✅ | Optional `ohif-viewer` plugin can host a user-supplied OHIF build, but pacsnode does not ship a bundled UI distribution |
+| **OHIF Viewer integration** | ✅ | ✅ (plugin) | Optional `ohif-viewer` plugin serves a pre-built OHIF distribution with SPA fallback and optional root redirect |
 | **Stone Web Viewer** | ❌ | ✅ (plugin) | Orthanc-specific advanced viewer |
 | **Custom study list / worklist UI** | ❌ 🔮 | ❌ | Planned: `@pacsnode/extension-worklist` |
-| **Static file serving** | ❌ 🔮 | ✅ | Planned: `tower-http::ServeDir` |
-| **Server-side rendering** (thumbnails) | ⚠️ | ✅ | DICOMweb rendered PNG endpoints now exist; no integrated web UI/worklist thumbnail flow yet |
+| **Static file serving** | ✅ | ✅ | `ohif-viewer` plugin validates and serves static SPA assets from a configured directory |
+| **Server-side rendering** (thumbnails) | ⚠️ | ✅ | DICOMweb rendered PNG/JPEG endpoints exist; no integrated study list/worklist thumbnail flow yet |
 
 ---
 
@@ -249,13 +249,13 @@ Listed here for completeness and long-term roadmap consideration.
 | Category | pacsnode | Orthanc | Gap |
 |----------|:--------:|:-------:|:---:|
 | **DIMSE Services** | 85% | 95% | C-CANCEL, Storage Commitment, MWL |
-| **DICOMweb** | 90% | 90% | Remaining gaps are mainly content negotiation and broader bulk-data/media coverage |
+| **DICOMweb** | 95% | 95% | Main remaining gap is UPS-RS/worklist surface, which Orthanc also lacks natively |
 | **REST API** | 60% | 90% | Biggest gaps are anonymize/modify/merge/split/export/jobs plus real user management |
 | **Transfer Syntax / Codecs** | 75% | 85% | Main remaining gaps are JPEG Lossless output, lossy J2K hardening, MPEG, and DIMSE TS policy |
 | **Storage** | 80% | 85% | Blob cleanup, commitment, compression |
 | **Database** | 95% | 85% | pacsnode ahead: JSONB, GIN, sqlx compile-time |
 | **Security** | 35% | 60% | Main remaining gaps are RBAC, OIDC/API keys, TLS, CORS hardening, and PHI log filtering |
-| **Viewer / UI** | 10% | 70% | Rendered DICOMweb previews exist, but OHIF/static UI hosting is still missing |
+| **Viewer / UI** | 45% | 70% | OHIF hosting now exists, but bundled assets and a dedicated study/worklist shell are still missing |
 | **System / Ops** | 95% | 85% | Main remaining gaps are async jobs, HA/federation work, and hot reload |
 | **Enterprise Features** | 5% | 25% | Long-term roadmap items |
 
@@ -273,32 +273,31 @@ Listed here for completeness and long-term roadmap consideration.
 
 ### 🟡 High (important for interoperability)
 
-6. **DICOMweb rendered negotiation / richer bulk-data coverage** — rendered output is still PNG-only and bulk-data support is conservative
-7. **DIMSE transfer-syntax policy + JPEG Lossless output** — retrieve transcoding exists now, but SCP-side syntax policy and true JPEG Lossless emission still need work
-8. **Anonymization API** — essential for research, sharing, and compliance
-9. **OHIF viewer integration** — web-based viewing is table stakes
-10. **Modality Worklist (MWL)** — required for integration with modalities/RIS
-11. **DICOM Conformance Statement** — required for hospital procurement
+6. **DIMSE transfer-syntax policy wiring + JPEG Lossless output** — retrieve transcoding exists now, but SCP-side syntax policy adoption and true JPEG Lossless emission still need work
+7. **Anonymization API** — essential for research, sharing, and compliance
+8. **Clinical worklist / bundled UI on top of OHIF hosting** — the viewer host exists, but a user-facing study/worklist shell is still missing
+9. **Modality Worklist (MWL)** — required for integration with modalities/RIS
+10. **DICOM Conformance Statement** — required for hospital procurement
 
 ### 🟢 Medium (quality of life / enterprise)
 
-12. **ZIP/DICOMDIR export** — downloading studies for CD/USB
-13. **Async job queue** — long-running ops (anonymize, export) shouldn't block
-14. **Metrics dashboards / deeper instrumentation** — the `/metrics` endpoint exists, but production dashboards and broader coverage are still needed
-15. **HL7/FHIR integration** — hospital system interop
-16. **Prior study prefetch** — radiology workflow optimization
-17. **Full-text search** — PostgreSQL tsvector for patient/study search
-18. **Server-side thumbnails** — faster study browsing in viewer
-19. **Study sharing URLs** — secure links for referring physicians
+11. **ZIP/DICOMDIR export** — downloading studies for CD/USB
+12. **Async job queue** — long-running ops (anonymize, export) shouldn't block
+13. **Metrics dashboards / deeper instrumentation** — the `/metrics` endpoint exists, but production dashboards and broader coverage are still needed
+14. **HL7/FHIR integration** — hospital system interop
+15. **Prior study prefetch** — radiology workflow optimization
+16. **Full-text search** — PostgreSQL tsvector for patient/study search
+17. **Server-side thumbnails** — faster study browsing in viewer
+18. **Study sharing URLs** — secure links for referring physicians
 
 ### 🔵 Low (nice to have / long-term)
 
-20. **Storage commitment** (N-EVENT-REPORT)
-21. **Multi-site federation / peer sync**
-22. **AI/ML integration pipeline**
-23. **Plugin ecosystem expansion** (viewer, anonymization, codecs, HL7, export)
-24. **Teaching file management**
-25. **Patient merge / reconciliation**
+19. **Storage commitment** (N-EVENT-REPORT)
+20. **Multi-site federation / peer sync**
+21. **AI/ML integration pipeline**
+22. **Plugin ecosystem expansion** (anonymization, codecs, HL7, export)
+23. **Teaching file management**
+24. **Patient merge / reconciliation**
 
 ---
 

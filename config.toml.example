@@ -75,6 +75,7 @@ format = "json"
 #   - "basic-auth"
 #   - "audit-logger"
 #   - "prometheus-metrics"
+#   - "ohif-viewer"
 
 [plugins]
 enabled = []
@@ -94,3 +95,15 @@ enabled = []
 # Example Prometheus metrics config:
 # [plugins.prometheus-metrics]
 # endpoint = "/metrics"
+#
+# Example OHIF/static viewer config:
+# [plugins.ohif-viewer]
+# static_dir = "/opt/pacsnode/viewer"
+# route_prefix = "/viewer"
+# redirect_root = true
+# index_file = "index.html"
+# fallback_file = "index.html"
+#
+# If basic-auth and ohif-viewer are both enabled, add "/" and "/viewer" to
+# [plugins.basic-auth].public_paths so the viewer shell can load before it makes
+# authenticated API requests.

@@ -1,6 +1,7 @@
 //! [`PgMetadataStore`] — PostgreSQL implementation of [`MetadataStore`].
 //!
-//! All public methods delegate to the SQL helpers in [`crate::queries`].
+//! All public methods delegate to the internal SQL helper modules under
+//! `crate::queries`.
 //!
 //! # Integration Tests
 //!

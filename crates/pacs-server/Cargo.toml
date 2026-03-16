@@ -24,6 +24,7 @@ pacs-storage = { workspace = true }
 pacs-dicom   = { workspace = true }
 pacs-dimse   = { workspace = true }
 pacs-metrics-plugin = { workspace = true }
+pacs-viewer-plugin = { workspace = true }
 pacs-api     = { workspace = true }
 anyhow       = { workspace = true }
 config       = { workspace = true }

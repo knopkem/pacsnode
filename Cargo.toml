@@ -10,6 +10,7 @@ members = [
     "crates/pacs-storage",
     "crates/pacs-dimse",
     "crates/pacs-metrics-plugin",
+    "crates/pacs-viewer-plugin",
     "crates/pacs-api",
     "crates/pacs-server",
 ]
@@ -33,6 +34,7 @@ pacs-store   = { path = "crates/pacs-store" }
 pacs-storage = { path = "crates/pacs-storage" }
 pacs-dimse   = { path = "crates/pacs-dimse" }
 pacs-metrics-plugin = { path = "crates/pacs-metrics-plugin" }
+pacs-viewer-plugin = { path = "crates/pacs-viewer-plugin" }
 pacs-api     = { path = "crates/pacs-api" }
 
 # ── dicom-toolkit-rs (git dep — not yet published to crates.io) ───────────────
@@ -50,7 +52,7 @@ tokio-util   = { version = "0.7", features = ["rt"] }
 # ── HTTP ──────────────────────────────────────────────────────────────────────
 axum         = { version = "0.8", features = ["multipart", "macros"] }
 tower        = { version = "0.5", features = ["full"] }
-tower-http   = { version = "0.6", features = ["trace", "cors", "timeout", "limit", "request-id", "compression-full"] }
+tower-http   = { version = "0.6", features = ["trace", "cors", "timeout", "limit", "request-id", "compression-full", "fs"] }
 http         = "1"
 mime         = "0.3"
 multer       = "3"

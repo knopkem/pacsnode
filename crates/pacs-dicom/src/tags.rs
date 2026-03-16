@@ -45,8 +45,9 @@ pub fn optional_string(ds: &DataSet, tag: Tag) -> Option<String> {
 /// Returns the first date value for `tag` as a raw `YYYYMMDD` string.
 ///
 /// Works for both `Value::Strings` (in-memory construction) and
-/// `Value::Date` (the variant produced by [`DicomReader`] after a file
-/// round-trip).  Returns `None` when the tag is absent or produces an
+/// `Value::Date` (the variant produced by
+/// [`dicom_toolkit_data::DicomReader`] after a file round-trip). Returns `None`
+/// when the tag is absent or produces an
 /// empty display string.
 pub fn date_display_string(ds: &DataSet, tag: Tag) -> Option<String> {
     let s = ds.get(tag)?.value.to_display_string();

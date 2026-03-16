@@ -19,6 +19,7 @@ use pacs_auth_plugin as _;
 use pacs_metrics_plugin as _;
 use pacs_storage as _;
 use pacs_store as _;
+use pacs_viewer_plugin as _;
 
 #[tokio::main]
 async fn main() -> Result<()> {

@@ -1,0 +1,22 @@
+[package]
+name = "pacs-viewer-plugin"
+description = "pacsnode static web viewer plugin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+axum = { workspace = true }
+pacs-plugin = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+bytes = { workspace = true }
+pacs-core = { workspace = true }

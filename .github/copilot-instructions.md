@@ -5,6 +5,22 @@ All generated code must meet the standards below without exception.
 
 ---
 
+## CI Readiness
+
+- When a coding task is complete, always check whether the CI pipeline would pass before handing work off.
+- Prefer `bash scripts/simulate-ci.sh` for the local CI simulation before falling back to individual commands.
+- Use the local equivalents of `.github/workflows/ci.yml` unless you are explicitly blocked:
+  - `cargo check --workspace --all-targets`
+  - `cargo test --workspace --all-targets --exclude pacs-store && cargo test -p pacs-store --lib`
+  - `cargo test --workspace` (requires Docker for `pacs-store` integration tests)
+  - `cargo fmt --all -- --check`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+  - `RUSTDOCFLAGS="-Dwarnings" cargo doc --workspace --no-deps`
+  - `cargo deny check`
+- If a CI-equivalent step cannot be run locally, say so explicitly and explain why.
+
+---
+
 ## Code Quality
 
 - Write **production-ready Rust** — no placeholder logic, no `todo!()` left in non-test code, no `unwrap()` or `expect()` outside of tests or `main` startup validation where a panic is acceptable.

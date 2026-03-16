@@ -30,11 +30,28 @@ instead of pacsnode-specific patching where possible:
 
 ## Current remaining upstream work
 
-No unresolved `dicom-toolkit-rs` requirements are currently tracked for this
-DICOMweb follow-up.
+### `handle_find_rq` hardcodes Explicit VR LE for response dataset encoding
 
-If future pacsnode work uncovers a new toolkit bug, missing feature, or cleanup
-opportunity, add it here and remove it again once the upstream change lands.
+**Toolkit file:** `crates/dicom-toolkit-net/src/services/find.rs` — `encode_dataset()`
+
+The private helper always encodes C-FIND response datasets as Explicit VR Little
+Endian (`1.2.840.10008.1.2.1`), regardless of the transfer syntax that was
+negotiated for the presentation context.  When a client offers Implicit VR LE
+(`1.2.840.10008.1.2`) as its first or only transfer syntax the SCP will negotiate
+that context but then send back Explicit VR LE bytes, causing the client to send
+an A-ABORT (`source=0, reason=1`).
+
+**pacsnode workaround** (`crates/pacs-dimse/src/server/mod.rs`): the
+`AssociationConfig` now sets `preferred_transfer_syntaxes` to
+`["1.2.840.10008.1.2.1"]` so the server always negotiates Explicit VR LE when
+the client offers it.  Clients that offer *only* Implicit VR LE will still hit
+this bug until it is fixed upstream.
+
+**Upstream fix needed:** `encode_dataset` (or the call site inside
+`handle_find_rq`) should accept the negotiated transfer syntax string as a
+parameter and pass it to `DicomWriter::write_dataset` instead of the constant.
+The same issue likely exists in `handle_get_rq` and `handle_move_rq` response
+encoding.
 
 ---
 

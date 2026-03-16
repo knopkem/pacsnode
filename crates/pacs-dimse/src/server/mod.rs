@@ -331,12 +331,20 @@ impl DicomServer {
         peer_addr: std::net::SocketAddr,
         server: Arc<DicomServer>,
     ) {
+        // Prefer Explicit VR Little Endian so that the negotiated transfer
+        // syntax matches what dicom-toolkit-net hardcodes when encoding
+        // C-FIND / C-GET / C-MOVE response datasets.  Without this, clients
+        // that offer Implicit VR LE as their first (or only) transfer syntax
+        // would receive misencoded response datasets and abort the association.
         let assoc_config = AssociationConfig {
             local_ae_title: server.config.ae_title.clone(),
             max_pdu_length: 65_536,
             dimse_timeout_secs: server.config.timeout_secs,
             accept_all_transfer_syntaxes: true,
             accepted_abstract_syntaxes: Vec::new(),
+            preferred_transfer_syntaxes: vec![
+                "1.2.840.10008.1.2.1".to_string(), // Explicit VR Little Endian
+            ],
             ..AssociationConfig::default()
         };
 

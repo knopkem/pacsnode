@@ -7,6 +7,7 @@ use tracing::warn;
 
 use crate::{error::ApiError, state::AppState};
 
+pub mod audit;
 pub mod instances;
 pub mod nodes;
 pub mod series;

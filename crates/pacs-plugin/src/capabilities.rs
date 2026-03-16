@@ -113,6 +113,8 @@ pub enum EventKind {
     ResourceDeleted,
     /// A DIMSE association was accepted.
     AssociationOpened,
+    /// A DIMSE association was rejected after negotiation.
+    AssociationRejected,
     /// A DIMSE association ended.
     AssociationClosed,
     /// A QIDO-RS or C-FIND query was executed.

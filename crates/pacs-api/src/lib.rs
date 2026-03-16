@@ -25,9 +25,9 @@ pub(crate) mod test_support {
     use bytes::Bytes;
     use mockall::mock;
     use pacs_core::{
-        BlobStore, DicomJson, DicomNode, Instance, InstanceQuery, MetadataStore, PacsResult,
-        PacsStatistics, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery,
-        StudyUid,
+        AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson, DicomNode, Instance,
+        InstanceQuery, MetadataStore, PacsResult, PacsStatistics, Series, SeriesQuery, SeriesUid,
+        SopInstanceUid, Study, StudyQuery, StudyUid,
     };
 
     use pacs_plugin::PluginRegistry;
@@ -56,6 +56,8 @@ pub(crate) mod test_support {
             async fn list_nodes(&self) -> PacsResult<Vec<DicomNode>>;
             async fn upsert_node(&self, node: &DicomNode) -> PacsResult<()>;
             async fn delete_node(&self, ae_title: &str) -> PacsResult<()>;
+            async fn search_audit_logs(&self, q: &AuditLogQuery) -> PacsResult<AuditLogPage>;
+            async fn get_audit_log(&self, id: i64) -> PacsResult<AuditLogEntry>;
         }
     }
 

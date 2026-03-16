@@ -3,9 +3,14 @@
 //! ⚠️ **NOT FOR CLINICAL USE** — This software has not been validated for
 //! diagnostic or therapeutic purposes.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::Arc,
+};
 
 use anyhow::{anyhow, Context, Result};
+use pacs_audit_plugin::AUDIT_LOGGER_PLUGIN_ID;
+use pacs_auth_plugin::BASIC_AUTH_PLUGIN_ID;
 use pacs_plugin::{PluginRegistry, ServerInfo};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -35,9 +40,17 @@ async fn main() -> Result<()> {
         ae_title   = %cfg.server.ae_title,
         "pacsnode starting"
     );
+    let (enabled_plugins, audit_auto_enabled) = effective_enabled_plugins(&cfg);
+    if audit_auto_enabled {
+        info!(
+            plugin_id = AUDIT_LOGGER_PLUGIN_ID,
+            secured_by = BASIC_AUTH_PLUGIN_ID,
+            "Auto-enabling audit logging for secured deployment"
+        );
+    }
     let mut registry = PluginRegistry::new();
-    if !cfg.plugins.enabled.is_empty() {
-        registry.set_enabled(cfg.plugins.enabled.clone());
+    if !enabled_plugins.is_empty() {
+        registry.set_enabled(enabled_plugins);
     }
     registry
         .register_all_discovered()
@@ -84,6 +97,7 @@ async fn main() -> Result<()> {
     let dimse_config = pacs_dimse::DimseConfig {
         ae_title: cfg.server.ae_title.clone(),
         port: cfg.server.dicom_port,
+        ae_whitelist_enabled: cfg.server.ae_whitelist_enabled,
         max_associations: cfg.server.max_associations,
         timeout_secs: cfg.server.dimse_timeout_secs,
     };
@@ -195,4 +209,86 @@ async fn ctrl_c_signal() {
     tokio::signal::ctrl_c()
         .await
         .expect("failed to install Ctrl+C handler");
+}
+
+fn effective_enabled_plugins(cfg: &AppConfig) -> (Vec<String>, bool) {
+    let mut enabled: BTreeSet<String> = cfg.plugins.enabled.iter().cloned().collect();
+    let audit_auto_enabled = enabled.contains(BASIC_AUTH_PLUGIN_ID)
+        && !enabled.contains(AUDIT_LOGGER_PLUGIN_ID)
+        && audit_auto_enable_in_secure_deployments(cfg);
+
+    if audit_auto_enabled {
+        enabled.insert(AUDIT_LOGGER_PLUGIN_ID.into());
+    }
+
+    (enabled.into_iter().collect(), audit_auto_enabled)
+}
+
+fn audit_auto_enable_in_secure_deployments(cfg: &AppConfig) -> bool {
+    cfg.plugins
+        .configs
+        .get(AUDIT_LOGGER_PLUGIN_ID)
+        .and_then(|config| config.get("auto_enable_in_secure_deployments"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{
+        DatabaseConfig, LoggingConfig, PluginsConfig, ServerConfig, StorageConfig,
+    };
+
+    fn make_config(enabled: &[&str], configs: HashMap<String, serde_json::Value>) -> AppConfig {
+        AppConfig {
+            server: ServerConfig::default(),
+            database: DatabaseConfig {
+                url: "postgres://u:p@localhost/pacs".into(),
+                max_connections: 20,
+                run_migrations: true,
+            },
+            storage: StorageConfig {
+                endpoint: "http://localhost:9000".into(),
+                bucket: "dicom".into(),
+                access_key: "key".into(),
+                secret_key: "secret".into(),
+                region: "us-east-1".into(),
+            },
+            logging: LoggingConfig {
+                level: "info".into(),
+                format: LogFormat::Json,
+            },
+            plugins: PluginsConfig {
+                enabled: enabled.iter().map(|id| (*id).to_string()).collect(),
+                configs,
+            },
+        }
+    }
+
+    #[test]
+    fn auto_enables_audit_for_basic_auth() {
+        let (enabled, audit_auto_enabled) =
+            effective_enabled_plugins(&make_config(&[BASIC_AUTH_PLUGIN_ID], HashMap::new()));
+
+        assert!(audit_auto_enabled);
+        assert!(enabled.contains(&AUDIT_LOGGER_PLUGIN_ID.to_string()));
+    }
+
+    #[test]
+    fn audit_opt_out_disables_secure_auto_enable() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            AUDIT_LOGGER_PLUGIN_ID.into(),
+            serde_json::json!({
+                "auto_enable_in_secure_deployments": false,
+            }),
+        );
+
+        let (enabled, audit_auto_enabled) =
+            effective_enabled_plugins(&make_config(&[BASIC_AUTH_PLUGIN_ID], configs));
+
+        assert!(!audit_auto_enabled);
+        assert!(!enabled.contains(&AUDIT_LOGGER_PLUGIN_ID.to_string()));
+    }
 }

@@ -19,6 +19,10 @@ dicom_port = 4242
 # Application Entity Title — identifies this PACS on the DICOM network
 ae_title = "PACSNODE"
 
+# Require inbound DIMSE callers to be registered in the node registry first
+# When enabled, unknown calling AE titles are rejected after association negotiation
+ae_whitelist_enabled = false
+
 # Maximum concurrent DIMSE associations
 max_associations = 64
 
@@ -88,9 +92,13 @@ enabled = []
 # token_ttl_secs = 3600
 # public_paths = ["/health", "/metrics"]
 #
+# When basic-auth is enabled, pacsnode auto-enables audit-logger by default for
+# secured deployments unless you explicitly opt out below.
+#
 # Example audit logger config:
 # [plugins.audit-logger]
 # max_connections = 5
+# auto_enable_in_secure_deployments = true
 #
 # Example Prometheus metrics config:
 # [plugins.prometheus-metrics]

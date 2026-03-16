@@ -23,6 +23,10 @@ pub enum PacsError {
     #[error("invalid uid: {0}")]
     InvalidUid(String),
 
+    /// A generic request parameter or payload value was invalid.
+    #[error("invalid request: {0}")]
+    InvalidRequest(String),
+
     /// A configuration value was invalid or missing.
     #[error("configuration error: {0}")]
     Config(String),
@@ -60,6 +64,15 @@ mod tests {
     fn test_invalid_uid_display() {
         let e = PacsError::InvalidUid("bad.uid".into());
         assert_eq!(e.to_string(), "invalid uid: bad.uid");
+    }
+
+    #[test]
+    fn test_invalid_request_display() {
+        let e = PacsError::InvalidRequest("limit must be greater than zero".into());
+        assert_eq!(
+            e.to_string(),
+            "invalid request: limit must be greater than zero"
+        );
     }
 
     #[test]

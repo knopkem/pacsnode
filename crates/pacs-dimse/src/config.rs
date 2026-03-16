@@ -7,6 +7,8 @@ pub struct DimseConfig {
     pub ae_title: String,
     /// TCP port on which the SCP listens.
     pub port: u16,
+    /// Whether inbound calling AE titles must exist in the registered node list.
+    pub ae_whitelist_enabled: bool,
     /// Maximum number of concurrent associations.
     pub max_associations: usize,
     /// Timeout in seconds for DIMSE operations and association negotiation.
@@ -18,6 +20,7 @@ impl Default for DimseConfig {
         Self {
             ae_title: "PACSNODE".into(),
             port: 4242,
+            ae_whitelist_enabled: false,
             max_associations: 64,
             timeout_secs: 30,
         }
@@ -44,6 +47,11 @@ mod tests {
     }
 
     #[test]
+    fn default_ae_whitelist_disabled() {
+        assert!(!DimseConfig::default().ae_whitelist_enabled);
+    }
+
+    #[test]
     fn default_timeout() {
         assert_eq!(DimseConfig::default().timeout_secs, 30);
     }
@@ -53,12 +61,14 @@ mod tests {
         let cfg = DimseConfig {
             ae_title: "TEST".into(),
             port: 104,
+            ae_whitelist_enabled: true,
             max_associations: 10,
             timeout_secs: 60,
         };
         let cloned = cfg.clone();
         assert_eq!(cfg.ae_title, cloned.ae_title);
         assert_eq!(cfg.port, cloned.port);
+        assert_eq!(cfg.ae_whitelist_enabled, cloned.ae_whitelist_enabled);
         assert_eq!(cfg.max_associations, cloned.max_associations);
         assert_eq!(cfg.timeout_secs, cloned.timeout_secs);
     }

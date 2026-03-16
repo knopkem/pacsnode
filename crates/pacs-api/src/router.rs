@@ -95,6 +95,9 @@ pub fn build_router_without_state() -> Router<AppState> {
             "/api/studies/{study_uid}",
             get(rest::studies::get_study).delete(rest::studies::delete_study),
         )
+        // ── REST: audit log ─────────────────────────────────────────────────────
+        .route("/api/audit/logs", get(rest::audit::search_audit_logs))
+        .route("/api/audit/logs/{id}", get(rest::audit::get_audit_log))
         // ── REST: series ──────────────────────────────────────────────────────
         .route(
             "/api/studies/{study_uid}/series",

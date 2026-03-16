@@ -63,6 +63,9 @@ pub struct ServerConfig {
     /// DICOM Application Entity title for this PACS node.
     #[serde(default = "default_ae_title")]
     pub ae_title: String,
+    /// Require inbound DIMSE callers to be registered in the node registry.
+    #[serde(default)]
+    pub ae_whitelist_enabled: bool,
     /// Maximum number of concurrent DIMSE associations.
     #[serde(default = "default_max_associations")]
     pub max_associations: usize,
@@ -218,6 +221,7 @@ impl Default for ServerConfig {
             http_port: default_http_port(),
             dicom_port: default_dicom_port(),
             ae_title: default_ae_title(),
+            ae_whitelist_enabled: false,
             max_associations: default_max_associations(),
             dimse_timeout_secs: default_dimse_timeout_secs(),
         }
@@ -246,6 +250,7 @@ mod tests {
         assert_eq!(cfg.server.http_port, 8042);
         assert_eq!(cfg.server.dicom_port, 4242);
         assert_eq!(cfg.server.ae_title, "PACSNODE");
+        assert!(!cfg.server.ae_whitelist_enabled);
         assert_eq!(cfg.server.max_associations, 64);
         assert!(cfg.database.run_migrations);
         assert_eq!(cfg.storage.region, "us-east-1");
@@ -278,6 +283,27 @@ mod tests {
         std::env::remove_var("PACS_STORAGE__ACCESS_KEY");
         std::env::remove_var("PACS_STORAGE__SECRET_KEY");
         std::env::remove_var("PACS_SERVER__HTTP_PORT");
+    }
+
+    #[test]
+    #[serial]
+    fn env_var_overrides_ae_whitelist_toggle() {
+        std::env::set_var("PACS_DATABASE__URL", "postgres://u:p@localhost/pacs");
+        std::env::set_var("PACS_STORAGE__ENDPOINT", "http://localhost:9000");
+        std::env::set_var("PACS_STORAGE__BUCKET", "dicom");
+        std::env::set_var("PACS_STORAGE__ACCESS_KEY", "key");
+        std::env::set_var("PACS_STORAGE__SECRET_KEY", "secret");
+        std::env::set_var("PACS_SERVER__AE_WHITELIST_ENABLED", "true");
+
+        let cfg = AppConfig::load_from("nonexistent_config_file").expect("load failed");
+        assert!(cfg.server.ae_whitelist_enabled);
+
+        std::env::remove_var("PACS_DATABASE__URL");
+        std::env::remove_var("PACS_STORAGE__ENDPOINT");
+        std::env::remove_var("PACS_STORAGE__BUCKET");
+        std::env::remove_var("PACS_STORAGE__ACCESS_KEY");
+        std::env::remove_var("PACS_STORAGE__SECRET_KEY");
+        std::env::remove_var("PACS_SERVER__AE_WHITELIST_ENABLED");
     }
 
     #[test]

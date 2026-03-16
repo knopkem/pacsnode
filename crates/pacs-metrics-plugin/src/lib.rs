@@ -176,6 +176,7 @@ impl EventPlugin for PrometheusMetricsPlugin {
             PacsEvent::AssociationOpened { .. } => {
                 runtime.associations_active.fetch_add(1, Ordering::Relaxed);
             }
+            PacsEvent::AssociationRejected { .. } => {}
             PacsEvent::AssociationClosed { .. } => decrement_gauge(&runtime.associations_active),
             PacsEvent::QueryPerformed { level, source, .. } => {
                 let mut query_totals = runtime.query_totals.lock().await;
@@ -386,9 +387,9 @@ mod tests {
     use axum::{body::to_bytes, http::Request, routing::get};
     use bytes::Bytes;
     use pacs_core::{
-        BlobStore, DicomJson, DicomNode, Instance, InstanceQuery, MetadataStore, PacsError,
-        PacsResult, PacsStatistics, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study,
-        StudyQuery, StudyUid,
+        AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson, DicomNode, Instance,
+        InstanceQuery, MetadataStore, PacsError, PacsResult, PacsStatistics, Series, SeriesQuery,
+        SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
     };
     use tower::ServiceExt;
 
@@ -464,6 +465,20 @@ mod tests {
         }
         async fn delete_node(&self, _ae_title: &str) -> PacsResult<()> {
             Ok(())
+        }
+        async fn search_audit_logs(&self, _q: &AuditLogQuery) -> PacsResult<AuditLogPage> {
+            Ok(AuditLogPage {
+                entries: vec![],
+                total: 0,
+                limit: 100,
+                offset: 0,
+            })
+        }
+        async fn get_audit_log(&self, _id: i64) -> PacsResult<AuditLogEntry> {
+            Err(PacsError::NotFound {
+                resource: "audit_log",
+                uid: "0".into(),
+            })
         }
     }
 

@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod instance;
 pub mod json;
 pub mod node;
@@ -6,6 +7,7 @@ pub mod series;
 pub mod stats;
 pub mod study;
 
+pub use audit::{AuditLogEntry, AuditLogPage, AuditLogQuery};
 pub use instance::{blob_key_for, Instance, SopInstanceUid};
 pub use json::DicomJson;
 pub use node::DicomNode;

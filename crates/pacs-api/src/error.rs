@@ -21,9 +21,9 @@ impl IntoResponse for ApiError {
             PacsError::NotFound { resource, uid } => {
                 (StatusCode::NOT_FOUND, format!("{resource} {uid} not found"))
             }
-            PacsError::DicomParse(msg) | PacsError::InvalidUid(msg) => {
-                (StatusCode::BAD_REQUEST, msg.clone())
-            }
+            PacsError::DicomParse(msg)
+            | PacsError::InvalidUid(msg)
+            | PacsError::InvalidRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             PacsError::NotAcceptable(msg) => (StatusCode::NOT_ACCEPTABLE, msg.clone()),
             PacsError::UnsupportedMediaType(msg) => {
                 (StatusCode::UNSUPPORTED_MEDIA_TYPE, msg.clone())
@@ -65,6 +65,12 @@ mod tests {
     #[test]
     fn test_invalid_uid_is_400() {
         let err = ApiError(PacsError::InvalidUid("bad uid".into()));
+        assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_invalid_request_is_400() {
+        let err = ApiError(PacsError::InvalidRequest("bad request".into()));
         assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
     }
 

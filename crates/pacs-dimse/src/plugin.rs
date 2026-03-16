@@ -190,9 +190,9 @@ register_plugin!(PacsQueryScpPlugin::default);
 mod tests {
     use bytes::Bytes;
     use pacs_core::{
-        BlobStore, DicomJson, DicomNode, Instance, InstanceQuery, MetadataStore, PacsError,
-        PacsResult, PacsStatistics, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study,
-        StudyQuery, StudyUid,
+        AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson, DicomNode, Instance,
+        InstanceQuery, MetadataStore, PacsError, PacsResult, PacsStatistics, Series, SeriesQuery,
+        SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
     };
     use pacs_plugin::{EventBus, ServerInfo};
 
@@ -286,6 +286,22 @@ mod tests {
 
         async fn delete_node(&self, _ae_title: &str) -> PacsResult<()> {
             Ok(())
+        }
+
+        async fn search_audit_logs(&self, _q: &AuditLogQuery) -> PacsResult<AuditLogPage> {
+            Ok(AuditLogPage {
+                entries: vec![],
+                total: 0,
+                limit: 100,
+                offset: 0,
+            })
+        }
+
+        async fn get_audit_log(&self, _id: i64) -> PacsResult<AuditLogEntry> {
+            Err(PacsError::NotFound {
+                resource: "audit_log",
+                uid: "0".into(),
+            })
         }
     }
 

@@ -95,6 +95,7 @@ impl EventPlugin for AuditLoggerPlugin {
             EventKind::StudyComplete,
             EventKind::ResourceDeleted,
             EventKind::AssociationOpened,
+            EventKind::AssociationRejected,
             EventKind::AssociationClosed,
             EventKind::QueryPerformed,
         ]
@@ -190,6 +191,22 @@ fn audit_record_from_event(event: &PacsEvent) -> Option<AuditRecord> {
             status: "ok",
             details: serde_json::json!({
                 "calling_ae": calling_ae,
+            }),
+        }),
+        PacsEvent::AssociationRejected {
+            calling_ae,
+            peer_addr,
+            reason,
+        } => Some(AuditRecord {
+            user_id: None,
+            action: "ASSOCIATION_REJECT",
+            resource: "association",
+            resource_uid: None,
+            source_ip: Some(peer_addr.ip().to_string()),
+            status: "rejected",
+            details: serde_json::json!({
+                "calling_ae": calling_ae,
+                "reason": reason,
             }),
         }),
         PacsEvent::AssociationClosed { calling_ae } => Some(AuditRecord {
@@ -303,5 +320,22 @@ mod tests {
         .unwrap();
         assert_eq!(record.action, "ASSOCIATION_OPEN");
         assert_eq!(record.source_ip.as_deref(), Some("127.0.0.1"));
+    }
+
+    #[test]
+    fn maps_association_reject_to_rejected_status() {
+        let record = audit_record_from_event(&PacsEvent::AssociationRejected {
+            calling_ae: "UNKNOWN".into(),
+            peer_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4242),
+            reason: "calling AE title is not registered".into(),
+        })
+        .unwrap();
+
+        assert_eq!(record.action, "ASSOCIATION_REJECT");
+        assert_eq!(record.status, "rejected");
+        assert_eq!(
+            record.details["reason"],
+            serde_json::json!("calling AE title is not registered")
+        );
     }
 }

@@ -40,7 +40,7 @@
 | **Association negotiation** | ✅ | ✅ | Accepts all transfer syntaxes, but cannot yet enforce an SCP-side transfer-syntax allow-list/preference order |
 | **Max concurrent associations** | ✅ | ✅ | Configurable (default 64), semaphore-based |
 | **DIMSE timeout** | ✅ | ✅ | Configurable (default 30s) |
-| **AE title validation** | ⚠️ | ✅ | Accepts all callers; no whitelist filtering |
+| **AE title validation** | ✅ | ✅ | Optional registered-node whitelist rejects unknown calling AEs before DIMSE requests are handled |
 | **TLS for DIMSE** | ❌ | ✅ | Plaintext TCP only |
 
 ---
@@ -95,7 +95,7 @@
 | **Peer-to-Peer Sync** | ❌ | ✅ | Orthanc: replicate between Orthanc instances |
 | **Plugin System** | ✅ | ✅ | Compile-time trait-based plugin system with built-in storage/DIMSE plugins and optional auth/audit/metrics plugins |
 | **User Management** | ⚠️ 🔮 | ✅ (plugin) | Optional `basic-auth` plugin supports a configured local credential + JWTs; no user CRUD, groups, or roles yet |
-| **Audit Log API** | ❌ | ✅ (plugin) | Optional audit plugin writes `audit_log` rows, but no REST API exists to browse/search them yet |
+| **Audit Log API** | ✅ | ✅ (plugin) | `GET /api/audit/logs` and `GET /api/audit/logs/{id}` provide filtered review/search over the append-only audit trail |
 
 ---
 
@@ -166,7 +166,7 @@
 | **JWT token validation** | ✅ | ❌ | `basic-auth` plugin issues and validates JWT bearer tokens |
 | **OIDC / OAuth2** | ❌ 🔮 | ✅ (plugin) | Planned |
 | **API key auth** | ❌ 🔮 | ✅ | Planned as Phase 1 |
-| **Audit logging** | ✅ | ✅ (plugin) | Optional `audit-logger` plugin persists store/query/delete/study-complete/association events to `audit_log` |
+| **Audit logging** | ✅ | ✅ (plugin) | `audit-logger` persists store/query/delete/study-complete/association events to `audit_log` and auto-enables for secured `basic-auth` deployments unless explicitly opted out |
 | **PHI redaction in logs** | ⚠️ | ✅ | Policy stated but no filter enforced |
 | **Encryption at rest** | ❌ | ❌ | Neither implements natively (delegate to infra) |
 | **CORS configuration** | ⚠️ | ✅ | Currently `permissive()`; needs tightening |
@@ -250,11 +250,11 @@ Listed here for completeness and long-term roadmap consideration.
 |----------|:--------:|:-------:|:---:|
 | **DIMSE Services** | 85% | 95% | C-CANCEL, Storage Commitment, MWL |
 | **DICOMweb** | 95% | 95% | Main remaining gap is UPS-RS/worklist surface, which Orthanc also lacks natively |
-| **REST API** | 60% | 90% | Biggest gaps are anonymize/modify/merge/split/export/jobs plus real user management |
+| **REST API** | 65% | 90% | Biggest gaps are anonymize/modify/merge/split/export/jobs plus real user management |
 | **Transfer Syntax / Codecs** | 75% | 85% | Main remaining gaps are JPEG Lossless output, lossy J2K hardening, MPEG, and DIMSE TS policy |
 | **Storage** | 85% | 85% | Main remaining gaps are storage commitment, compression-at-rest, and lifecycle/retention tooling |
 | **Database** | 95% | 85% | pacsnode ahead: JSONB, GIN, sqlx compile-time |
-| **Security** | 35% | 60% | Main remaining gaps are RBAC, OIDC/API keys, TLS, CORS hardening, and PHI log filtering |
+| **Security** | 45% | 60% | Main remaining gaps are RBAC, OIDC/API keys, TLS, CORS hardening, and PHI log filtering |
 | **Viewer / UI** | 45% | 70% | OHIF hosting now exists, but bundled assets and a dedicated study/worklist shell are still missing |
 | **System / Ops** | 95% | 85% | Main remaining gaps are async jobs, HA/federation work, and hot reload |
 | **Enterprise Features** | 5% | 25% | Long-term roadmap items |
@@ -267,8 +267,8 @@ Listed here for completeness and long-term roadmap consideration.
 
 1. **Authentication & RBAC** — no patient data should be accessible without login
 2. **TLS termination** — at minimum via reverse proxy (Nginx/Caddy), ideally native
-3. **Operationalize audit logging** — enable/configure it by default in secured deployments and add review/search APIs
-4. **CORS tightening** — replace `permissive()` with configured origins
+3. **CORS tightening** — replace `permissive()` with configured origins
+4. **PHI log filtering** — enforce the stated “no PHI in logs” policy at the logging boundary
 
 ### 🟡 High (important for interoperability)
 

@@ -12,7 +12,7 @@ use dicom_toolkit_net::{
     },
     Association, AssociationConfig, DicomServer as NetDicomServer, StaticDestinationLookup,
 };
-use pacs_core::{BlobStore, MetadataStore};
+use pacs_core::{BlobStore, MetadataStore, PacsError};
 use pacs_plugin::{
     FindScpHandler, GetScpHandler, MoveScpHandler, PacsEvent, PluginError, PluginRegistry,
     StoreScpHandler,
@@ -230,6 +230,26 @@ impl DicomServer {
         )))
     }
 
+    async fn validate_calling_ae(&self, calling_ae: &str) -> Result<(), PacsError> {
+        if !self.config.ae_whitelist_enabled {
+            return Ok(());
+        }
+
+        let calling_ae = calling_ae.trim();
+        let known_nodes = self.store.list_nodes().await?;
+        if known_nodes
+            .iter()
+            .any(|node| node.ae_title.trim() == calling_ae)
+        {
+            return Ok(());
+        }
+
+        Err(PacsError::NotFound {
+            resource: "calling_ae",
+            uid: calling_ae.to_string(),
+        })
+    }
+
     /// Start listening on the configured DICOM port.
     ///
     /// Spawns a tokio task per association. Runs until the cancellation token
@@ -327,11 +347,38 @@ impl DicomServer {
                 return;
             }
         };
+        let calling_ae = assoc.calling_ae.trim().to_string();
+
+        if let Err(error) = server.validate_calling_ae(&calling_ae).await {
+            let reason = match error {
+                PacsError::NotFound { .. } => "calling AE title is not registered",
+                _ => "failed to load AE whitelist",
+            };
+            warn!(
+                calling_ae = %calling_ae,
+                peer = %peer_addr,
+                reason,
+                "Rejecting DIMSE association"
+            );
+
+            if let Some(plugins) = &server.plugins {
+                plugins
+                    .emit_event(PacsEvent::AssociationRejected {
+                        calling_ae: calling_ae.clone(),
+                        peer_addr,
+                        reason: reason.into(),
+                    })
+                    .await;
+            }
+
+            let _ = assoc.abort().await;
+            return;
+        }
 
         if let Some(plugins) = &server.plugins {
             plugins
                 .emit_event(PacsEvent::AssociationOpened {
-                    calling_ae: assoc.calling_ae.clone(),
+                    calling_ae: calling_ae.clone(),
                     peer_addr,
                 })
                 .await;
@@ -446,9 +493,7 @@ impl DicomServer {
 
         if let Some(plugins) = &server.plugins {
             plugins
-                .emit_event(PacsEvent::AssociationClosed {
-                    calling_ae: assoc.calling_ae.clone(),
-                })
+                .emit_event(PacsEvent::AssociationClosed { calling_ae })
                 .await;
         }
     }
@@ -520,13 +565,202 @@ pub async fn build_dicom_server(
 }
 
 #[cfg(test)]
+mod ae_whitelist_tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use bytes::Bytes;
+    use pacs_core::{
+        AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson,
+        DicomNode as RegisteredDicomNode, Instance, InstanceQuery, MetadataStore, PacsResult,
+        PacsStatistics, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery,
+        StudyUid,
+    };
+
+    use super::*;
+
+    struct NoopBlobStore;
+
+    #[async_trait]
+    impl BlobStore for NoopBlobStore {
+        async fn put(&self, _key: &str, _data: Bytes) -> PacsResult<()> {
+            Ok(())
+        }
+
+        async fn get(&self, _key: &str) -> PacsResult<Bytes> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn delete(&self, _key: &str) -> PacsResult<()> {
+            Ok(())
+        }
+
+        async fn exists(&self, _key: &str) -> PacsResult<bool> {
+            Ok(false)
+        }
+
+        async fn presigned_url(&self, _key: &str, _ttl_secs: u32) -> PacsResult<String> {
+            Err(PacsError::Internal("unused".into()))
+        }
+    }
+
+    struct TestMetadataStore {
+        nodes: Vec<RegisteredDicomNode>,
+        fail_list_nodes: bool,
+    }
+
+    #[async_trait]
+    impl MetadataStore for TestMetadataStore {
+        async fn store_study(&self, _study: &Study) -> PacsResult<()> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn store_series(&self, _series: &Series) -> PacsResult<()> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn store_instance(&self, _instance: &Instance) -> PacsResult<()> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn query_studies(&self, _q: &StudyQuery) -> PacsResult<Vec<Study>> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn query_series(&self, _q: &SeriesQuery) -> PacsResult<Vec<Series>> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn query_instances(&self, _q: &InstanceQuery) -> PacsResult<Vec<Instance>> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn get_study(&self, _uid: &StudyUid) -> PacsResult<Study> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn get_series(&self, _uid: &SeriesUid) -> PacsResult<Series> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn get_instance(&self, _uid: &SopInstanceUid) -> PacsResult<Instance> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn get_instance_metadata(&self, _uid: &SopInstanceUid) -> PacsResult<DicomJson> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn delete_study(&self, _uid: &StudyUid) -> PacsResult<()> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn delete_series(&self, _uid: &SeriesUid) -> PacsResult<()> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn delete_instance(&self, _uid: &SopInstanceUid) -> PacsResult<()> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn get_statistics(&self) -> PacsResult<PacsStatistics> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn list_nodes(&self) -> PacsResult<Vec<RegisteredDicomNode>> {
+            if self.fail_list_nodes {
+                Err(PacsError::Internal("should not query".into()))
+            } else {
+                Ok(self.nodes.clone())
+            }
+        }
+
+        async fn upsert_node(&self, _node: &RegisteredDicomNode) -> PacsResult<()> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn delete_node(&self, _ae_title: &str) -> PacsResult<()> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn search_audit_logs(&self, _q: &AuditLogQuery) -> PacsResult<AuditLogPage> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn get_audit_log(&self, _id: i64) -> PacsResult<AuditLogEntry> {
+            Err(PacsError::Internal("unused".into()))
+        }
+    }
+
+    fn make_server(
+        ae_whitelist_enabled: bool,
+        nodes: Vec<RegisteredDicomNode>,
+        fail_list_nodes: bool,
+    ) -> DicomServer {
+        DicomServer::new(
+            DimseConfig {
+                ae_title: "PACSNODE".into(),
+                port: 4242,
+                ae_whitelist_enabled,
+                max_associations: 64,
+                timeout_secs: 30,
+            },
+            Arc::new(TestMetadataStore {
+                nodes,
+                fail_list_nodes,
+            }),
+            Arc::new(NoopBlobStore),
+        )
+    }
+
+    #[tokio::test]
+    async fn validate_calling_ae_allows_anything_when_whitelist_disabled() {
+        let server = make_server(false, vec![], true);
+        assert!(server.validate_calling_ae("UNKNOWN").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn validate_calling_ae_accepts_registered_node() {
+        let server = make_server(
+            true,
+            vec![RegisteredDicomNode {
+                ae_title: "SCU1".into(),
+                host: "127.0.0.1".into(),
+                port: 104,
+                description: None,
+                tls_enabled: false,
+            }],
+            false,
+        );
+
+        assert!(server.validate_calling_ae("SCU1").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn validate_calling_ae_rejects_unknown_node() {
+        let server = make_server(true, Vec::new(), false);
+        let error = server.validate_calling_ae("UNKNOWN").await.unwrap_err();
+
+        assert!(matches!(
+            error,
+            PacsError::NotFound {
+                resource: "calling_ae",
+                uid
+            } if uid == "UNKNOWN"
+        ));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::DimseConfig;
     use mockall::mock;
     use pacs_core::{
-        BlobStore, DicomJson, Instance, InstanceQuery, MetadataStore, PacsResult, PacsStatistics,
-        Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
+        AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson,
+        DicomNode as RegisteredDicomNode, Instance, InstanceQuery, MetadataStore, PacsResult,
+        PacsStatistics, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery,
+        StudyUid,
     };
 
     mock! {
@@ -547,9 +781,11 @@ mod tests {
             async fn delete_series(&self, uid: &SeriesUid) -> PacsResult<()>;
             async fn delete_instance(&self, uid: &SopInstanceUid) -> PacsResult<()>;
             async fn get_statistics(&self) -> PacsResult<PacsStatistics>;
-            async fn list_nodes(&self) -> PacsResult<Vec<pacs_core::DicomNode>>;
-            async fn upsert_node(&self, node: &pacs_core::DicomNode) -> PacsResult<()>;
+            async fn list_nodes(&self) -> PacsResult<Vec<RegisteredDicomNode>>;
+            async fn upsert_node(&self, node: &RegisteredDicomNode) -> PacsResult<()>;
             async fn delete_node(&self, ae_title: &str) -> PacsResult<()>;
+            async fn search_audit_logs(&self, q: &AuditLogQuery) -> PacsResult<AuditLogPage>;
+            async fn get_audit_log(&self, id: i64) -> PacsResult<AuditLogEntry>;
         }
     }
     mock! {
@@ -625,6 +861,7 @@ mod tests {
         let config = DimseConfig {
             ae_title: "TESTPACS".into(),
             port: 0, // let OS pick a free port
+            ae_whitelist_enabled: false,
             max_associations: 2,
             timeout_secs: 5,
         };

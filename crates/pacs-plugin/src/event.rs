@@ -68,6 +68,15 @@ pub enum PacsEvent {
         /// Peer socket address.
         peer_addr: SocketAddr,
     },
+    /// A DIMSE association was rejected after AE validation.
+    AssociationRejected {
+        /// Calling AE title.
+        calling_ae: String,
+        /// Peer socket address.
+        peer_addr: SocketAddr,
+        /// Rejection reason.
+        reason: String,
+    },
     /// A DIMSE association was closed.
     AssociationClosed {
         /// Calling AE title.
@@ -94,6 +103,7 @@ impl PacsEvent {
             Self::StudyComplete { .. } => EventKind::StudyComplete,
             Self::ResourceDeleted { .. } => EventKind::ResourceDeleted,
             Self::AssociationOpened { .. } => EventKind::AssociationOpened,
+            Self::AssociationRejected { .. } => EventKind::AssociationRejected,
             Self::AssociationClosed { .. } => EventKind::AssociationClosed,
             Self::QueryPerformed { .. } => EventKind::QueryPerformed,
         }

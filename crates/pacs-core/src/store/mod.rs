@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 
 use crate::domain::{
-    DicomJson, DicomNode, Instance, InstanceQuery, PacsStatistics, Series, SeriesQuery, SeriesUid,
-    SopInstanceUid, Study, StudyQuery, StudyUid,
+    AuditLogEntry, AuditLogPage, AuditLogQuery, DicomJson, DicomNode, Instance, InstanceQuery,
+    PacsStatistics, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
 };
 use crate::error::PacsResult;
 
@@ -86,6 +86,16 @@ pub trait MetadataStore: Send + Sync {
     ///
     /// Returns [`crate::error::PacsError::NotFound`] if no node with the given AE title exists.
     async fn delete_node(&self, ae_title: &str) -> PacsResult<()>;
+
+    /// Searches the append-only audit log using the supplied filters.
+    async fn search_audit_logs(&self, q: &AuditLogQuery) -> PacsResult<AuditLogPage>;
+
+    /// Retrieves a single audit log row by its numeric identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::PacsError::NotFound`] if no audit row with `id` exists.
+    async fn get_audit_log(&self, id: i64) -> PacsResult<AuditLogEntry>;
 }
 
 #[cfg(test)]

@@ -27,6 +27,14 @@ pub enum PacsError {
     #[error("configuration error: {0}")]
     Config(String),
 
+    /// The requested representation cannot be produced for the given resource.
+    #[error("not acceptable: {0}")]
+    NotAcceptable(String),
+
+    /// The supplied media type or representation request is unsupported.
+    #[error("unsupported media type: {0}")]
+    UnsupportedMediaType(String),
+
     /// An internal, unexpected error occurred.
     #[error("internal error: {0}")]
     Internal(String),
@@ -64,6 +72,18 @@ mod tests {
     fn test_config_display() {
         let e = PacsError::Config("missing db url".into());
         assert_eq!(e.to_string(), "configuration error: missing db url");
+    }
+
+    #[test]
+    fn test_not_acceptable_display() {
+        let e = PacsError::NotAcceptable("image/jpeg".into());
+        assert_eq!(e.to_string(), "not acceptable: image/jpeg");
+    }
+
+    #[test]
+    fn test_unsupported_media_type_display() {
+        let e = PacsError::UnsupportedMediaType("image/tiff".into());
+        assert_eq!(e.to_string(), "unsupported media type: image/tiff");
     }
 
     #[test]

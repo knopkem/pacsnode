@@ -96,9 +96,9 @@ function Get-HttpStatus([string]$Uri, [string]$Method = "GET", $Body = $null) {
     }
 }
 
-function Get-HttpResponse([string]$Uri, [string]$Method = "GET") {
+function Get-HttpResponse([string]$Uri, [string]$Method = "GET", [hashtable]$Headers = @{}) {
     try {
-        return Invoke-WebRequest -Uri $Uri -Method $Method -ErrorAction Stop -UseBasicParsing
+        return Invoke-WebRequest -Uri $Uri -Method $Method -Headers $Headers -ErrorAction Stop -UseBasicParsing
     } catch {
         return $null
     }
@@ -447,6 +447,15 @@ if ($studyUid -ne "") {
             Write-Fail "WADO-RS retrieve returned HTTP $code"
         }
 
+        $negotiatedResp = Get-HttpResponse `
+            "$HttpBase/wado/studies/$studyUid/series/$seriesUid/instances/$instanceUid" `
+            @{ Accept = 'multipart/related; type="application/dicom"; transfer-syntax=1.2.840.10008.1.2.1.99' }
+        if ($negotiatedResp -and $negotiatedResp.StatusCode -eq 200 -and [string]$negotiatedResp.Headers["Content-Type"] -like "*transfer-syntax=1.2.840.10008.1.2.1.99*") {
+            Write-Ok "WADO-RS retrieve honored Accept transfer-syntax negotiation"
+        } else {
+            Write-Fail "WADO-RS retrieve negotiation failed"
+        }
+
         $frameResp = Get-HttpResponse "$HttpBase/wado/studies/$studyUid/series/$seriesUid/instances/$instanceUid/frames/1"
         if ($frameResp -and $frameResp.StatusCode -eq 200 -and [string]$frameResp.Headers["Content-Type"] -like "*application/octet-stream*") {
             Write-Ok "WADO-RS frame retrieval returned octet-stream multipart data"
@@ -473,6 +482,13 @@ if ($studyUid -ne "") {
             Write-Ok "WADO-URI returned application/dicom"
         } else {
             Write-Fail "WADO-URI failed"
+        }
+
+        $wadoUriTsResp = Get-HttpResponse "$HttpBase/wado?requestType=WADO&studyUID=$studyUid&seriesUID=$seriesUid&objectUID=$instanceUid&transferSyntax=1.2.840.10008.1.2.1.99"
+        if ($wadoUriTsResp -and $wadoUriTsResp.StatusCode -eq 200 -and [string]$wadoUriTsResp.Headers["Content-Type"] -like "*transfer-syntax=1.2.840.10008.1.2.1.99*") {
+            Write-Ok "WADO-URI honored transferSyntax query parameter"
+        } else {
+            Write-Fail "WADO-URI transferSyntax failed"
         }
     } else {
         Write-Fail "Could not resolve series/instance UIDs for WADO-RS retrieve"

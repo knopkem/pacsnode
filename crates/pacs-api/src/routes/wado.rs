@@ -2,7 +2,7 @@
 
 use axum::{
     extract::{Path, Query, State},
-    http::{header, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::Response,
 };
 use bytes::Bytes;
@@ -10,7 +10,8 @@ use pacs_core::{
     Instance, InstanceQuery, PacsError, SeriesQuery, SeriesUid, SopInstanceUid, StudyUid,
 };
 use pacs_dicom::{
-    extract_bulk_data, extract_frames, parse_bulk_data_tag_path, render_frames_png, BulkDataValue,
+    extract_bulk_data, extract_frames, parse_bulk_data_tag_path, render_frames_png,
+    supports_retrieve_transfer_syntax, transcode_part10, BulkDataValue,
 };
 use serde::Deserialize;
 use uuid::Uuid;
@@ -45,17 +46,27 @@ pub async fn wado_uri(
         .as_deref()
         .map(normalize_content_type)
         .unwrap_or_else(|| "application/dicom".into());
+    let requested_transfer_syntax = query.transfer_syntax.as_deref();
 
     match requested_content_type.as_str() {
-        "application/dicom" => single_part_response(blob, "application/dicom"),
+        "application/dicom" => {
+            let body = transcode_blob_if_requested(blob, requested_transfer_syntax)?;
+            single_dicom_response(body, requested_transfer_syntax)
+        }
         "image/png" => {
+            if requested_transfer_syntax.is_some() {
+                return Err(ApiError(PacsError::UnsupportedMediaType(
+                    "transferSyntax is only supported for application/dicom WADO-URI responses"
+                        .into(),
+                )));
+            }
             let frame_number = query.frame_number.unwrap_or(1);
             let png = render_frames_png(blob, &[frame_number])
                 .map_err(PacsError::from)
                 .map_err(ApiError)?;
             single_part_response(png.into_iter().next().unwrap_or_default(), "image/png")
         }
-        other => Err(ApiError(PacsError::DicomParse(format!(
+        other => Err(ApiError(PacsError::UnsupportedMediaType(format!(
             "unsupported WADO-URI contentType: {other}"
         )))),
     }
@@ -68,8 +79,10 @@ pub async fn wado_uri(
 /// Returns a `multipart/related; type="application/dicom"` response.
 pub async fn retrieve_study(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(study_uid): Path<String>,
 ) -> Result<Response, ApiError> {
+    let retrieve_request = parse_retrieve_request(&headers)?;
     let s_uid = StudyUid::from(study_uid.as_str());
     let series_list = state
         .store
@@ -98,19 +111,24 @@ pub async fn retrieve_study(
             .await?;
         for inst in instances {
             if let Ok(blob) = state.blobs.get(&inst.blob_key).await {
-                parts.push(blob);
+                parts.push(transcode_blob_if_requested(
+                    blob,
+                    retrieve_request.transfer_syntax.as_deref(),
+                )?);
             }
         }
     }
 
-    multipart_response(parts)
+    multipart_dicom_response(parts, retrieve_request.transfer_syntax.as_deref())
 }
 
 /// `GET /wado/studies/:study_uid/series/:series_uid` — retrieve all instances in a series.
 pub async fn retrieve_series(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path((_study_uid, series_uid)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
+    let retrieve_request = parse_retrieve_request(&headers)?;
     let instances = state
         .store
         .query_instances(&InstanceQuery {
@@ -126,21 +144,27 @@ pub async fn retrieve_series(
     let mut parts: Vec<Bytes> = Vec::new();
     for inst in instances {
         if let Ok(blob) = state.blobs.get(&inst.blob_key).await {
-            parts.push(blob);
+            parts.push(transcode_blob_if_requested(
+                blob,
+                retrieve_request.transfer_syntax.as_deref(),
+            )?);
         }
     }
 
-    multipart_response(parts)
+    multipart_dicom_response(parts, retrieve_request.transfer_syntax.as_deref())
 }
 
 /// `GET /wado/studies/:study_uid/series/:series_uid/instances/:instance_uid`
 /// — retrieve a single DICOM instance.
 pub async fn retrieve_instance(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path((_study_uid, _series_uid, instance_uid)): Path<(String, String, String)>,
 ) -> Result<Response, ApiError> {
+    let retrieve_request = parse_retrieve_request(&headers)?;
     let blob = load_instance_blob(&state, &SopInstanceUid::from(instance_uid.as_str())).await?;
-    multipart_response(vec![blob])
+    let body = transcode_blob_if_requested(blob, retrieve_request.transfer_syntax.as_deref())?;
+    multipart_dicom_response(vec![body], retrieve_request.transfer_syntax.as_deref())
 }
 
 /// `GET /wado/studies/:study_uid/series/:series_uid/instances/:instance_uid/frames/:frame_list`
@@ -298,8 +322,15 @@ pub struct WadoUriQuery {
     object_uid: String,
     #[serde(rename = "contentType")]
     content_type: Option<String>,
+    #[serde(rename = "transferSyntax")]
+    transfer_syntax: Option<String>,
     #[serde(rename = "frameNumber")]
     frame_number: Option<u32>,
+}
+
+#[derive(Debug, Default, Clone)]
+struct RetrieveRequest {
+    transfer_syntax: Option<String>,
 }
 
 async fn render_instance_blob(
@@ -420,9 +451,111 @@ fn normalize_content_type(content_type: &str) -> String {
         .to_ascii_lowercase()
 }
 
-/// Build a `multipart/related; type="application/dicom"` response.
-fn multipart_response(parts: Vec<Bytes>) -> Result<Response, ApiError> {
-    multipart_response_with_type(parts, "application/dicom")
+fn parse_retrieve_request(headers: &HeaderMap) -> Result<RetrieveRequest, ApiError> {
+    let Some(raw_accept) = headers.get(header::ACCEPT) else {
+        return Ok(RetrieveRequest::default());
+    };
+    let accept = raw_accept.to_str().map_err(|_| {
+        ApiError(PacsError::NotAcceptable(
+            "Accept header contains invalid UTF-8".into(),
+        ))
+    })?;
+
+    if accept.trim().is_empty() {
+        return Ok(RetrieveRequest::default());
+    }
+
+    for candidate in accept
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        if let Some(request) = parse_retrieve_accept_candidate(candidate)? {
+            return Ok(request);
+        }
+    }
+
+    Err(ApiError(PacsError::NotAcceptable(
+        "only application/dicom WADO-RS retrieval is supported".into(),
+    )))
+}
+
+fn parse_retrieve_accept_candidate(candidate: &str) -> Result<Option<RetrieveRequest>, ApiError> {
+    let mut parts = candidate.split(';').map(str::trim);
+    let media_type = parts.next().unwrap_or_default().to_ascii_lowercase();
+    if matches!(media_type.as_str(), "*/*" | "application/*") {
+        return Ok(Some(RetrieveRequest::default()));
+    }
+    if media_type != "multipart/related" && media_type != "application/dicom" {
+        return Ok(None);
+    }
+
+    let mut related_type: Option<String> = None;
+    let mut transfer_syntax: Option<String> = None;
+    for part in parts {
+        if part.is_empty() {
+            continue;
+        }
+        let mut kv = part.splitn(2, '=');
+        let key = kv.next().unwrap_or_default().trim().to_ascii_lowercase();
+        let value = kv
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .trim_matches('"')
+            .to_owned();
+        match key.as_str() {
+            "type" => related_type = Some(normalize_content_type(&value)),
+            "transfer-syntax" => transfer_syntax = Some(value),
+            "q" => {}
+            _ => {}
+        }
+    }
+
+    if media_type == "multipart/related"
+        && related_type
+            .as_deref()
+            .map(|value| value != "application/dicom")
+            .unwrap_or(false)
+    {
+        return Ok(None);
+    }
+
+    if let Some(ref ts_uid) = transfer_syntax {
+        if !supports_retrieve_transfer_syntax(ts_uid) {
+            return Err(ApiError(PacsError::NotAcceptable(format!(
+                "transfer syntax {ts_uid} is not supported for retrieve"
+            ))));
+        }
+    }
+
+    Ok(Some(RetrieveRequest { transfer_syntax }))
+}
+
+fn transcode_blob_if_requested(
+    blob: Bytes,
+    transfer_syntax: Option<&str>,
+) -> Result<Bytes, ApiError> {
+    match transfer_syntax {
+        Some(ts_uid) => transcode_part10(blob, ts_uid)
+            .map_err(PacsError::from)
+            .map_err(ApiError),
+        None => Ok(blob),
+    }
+}
+
+fn multipart_dicom_response(
+    parts: Vec<Bytes>,
+    transfer_syntax: Option<&str>,
+) -> Result<Response, ApiError> {
+    let boundary = Uuid::new_v4().simple().to_string();
+    let body = build_multipart_body(&parts, &boundary, "application/dicom");
+    let content_type = multipart_dicom_content_type(&boundary, transfer_syntax);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .body(axum::body::Body::from(body))
+        .map_err(|e| ApiError(PacsError::Internal(e.to_string())))
 }
 
 fn multipart_response_with_type(
@@ -441,12 +574,29 @@ fn multipart_response_with_type(
         .map_err(|e| ApiError(PacsError::Internal(e.to_string())))
 }
 
+fn multipart_dicom_content_type(boundary: &str, transfer_syntax: Option<&str>) -> String {
+    match transfer_syntax {
+        Some(ts_uid) => format!(
+            "multipart/related; type=\"application/dicom\"; transfer-syntax={ts_uid}; boundary={boundary}"
+        ),
+        None => format!("multipart/related; type=\"application/dicom\"; boundary={boundary}"),
+    }
+}
+
 fn single_part_response(body: Bytes, content_type: &str) -> Result<Response, ApiError> {
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
         .body(axum::body::Body::from(body))
         .map_err(|e| ApiError(PacsError::Internal(e.to_string())))
+}
+
+fn single_dicom_response(body: Bytes, transfer_syntax: Option<&str>) -> Result<Response, ApiError> {
+    let content_type = match transfer_syntax {
+        Some(ts_uid) => format!("application/dicom; transfer-syntax={ts_uid}"),
+        None => "application/dicom".into(),
+    };
+    single_part_response(body, &content_type)
 }
 
 /// Build a `multipart/related` body from raw byte parts.
@@ -478,11 +628,13 @@ mod tests {
     use super::*;
     use axum::{
         body::Body,
-        http::{Request, StatusCode},
+        http::{header, Request, StatusCode},
     };
     use bytes::Bytes;
-    use dicom_toolkit_data::{DataSet, DicomWriter, Element, FileFormat, PixelData, Value};
-    use dicom_toolkit_dict::{tags, Vr};
+    use dicom_toolkit_data::{
+        DataSet, DicomReader, DicomWriter, Element, FileFormat, PixelData, Value,
+    };
+    use dicom_toolkit_dict::{tags, ts::transfer_syntaxes, Vr};
     use http_body_util::BodyExt;
     use pacs_core::{DicomJson, Instance, SeriesUid, SopInstanceUid, StudyUid};
     use serde_json::json;
@@ -725,6 +877,131 @@ mod tests {
         );
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body.as_ref(), b"DICOM-URI");
+    }
+
+    #[tokio::test]
+    async fn test_retrieve_instance_honors_accept_transfer_syntax() {
+        let mut store = MockMetaStore::new();
+        let instance = make_instance();
+        store
+            .expect_get_instance()
+            .once()
+            .returning(move |_| Ok(instance.clone()));
+
+        let dicom = make_multiframe_dicom();
+        let mut blobs = MockBlobStr::new();
+        blobs
+            .expect_get()
+            .once()
+            .returning(move |_| Ok(dicom.clone()));
+
+        let app = build_router(make_test_state(store, blobs));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies/1.2.3/series/1.2.3.4/instances/1.2.3.4.5")
+                    .header(
+                        header::ACCEPT,
+                        "multipart/related; type=\"application/dicom\"; transfer-syntax=1.2.840.10008.1.2.1.99",
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let content_type = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert!(content_type.contains("transfer-syntax=1.2.840.10008.1.2.1.99"));
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let boundary = content_type.split("boundary=").nth(1).unwrap().trim();
+        let boundary_marker = format!("\r\n--{boundary}");
+        let start = body
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|idx| idx + 4)
+            .unwrap();
+        let end = body[start..]
+            .windows(boundary_marker.len())
+            .position(|window| window == boundary_marker.as_bytes())
+            .map(|idx| start + idx)
+            .unwrap();
+        let part = &body.as_ref()[start..end];
+        let file = DicomReader::new(std::io::Cursor::new(part))
+            .read_file()
+            .unwrap();
+        assert_eq!(
+            file.meta.transfer_syntax_uid,
+            transfer_syntaxes::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN.uid
+        );
+    }
+
+    #[tokio::test]
+    async fn test_retrieve_instance_rejects_unsupported_accept_media_type() {
+        let app = build_router(make_test_state(MockMetaStore::new(), MockBlobStr::new()));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies/1.2.3/series/1.2.3.4/instances/1.2.3.4.5")
+                    .header(header::ACCEPT, "image/jpeg")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NOT_ACCEPTABLE);
+    }
+
+    #[tokio::test]
+    async fn test_wado_uri_supports_transfer_syntax_query() {
+        let mut store = MockMetaStore::new();
+        let instance = make_instance();
+        store
+            .expect_get_instance()
+            .once()
+            .returning(move |_| Ok(instance.clone()));
+
+        let dicom = make_multiframe_dicom();
+        let mut blobs = MockBlobStr::new();
+        blobs
+            .expect_get()
+            .once()
+            .returning(move |_| Ok(dicom.clone()));
+
+        let app = build_router(make_test_state(store, blobs));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado?requestType=WADO&studyUID=1.2.3&seriesUID=1.2.3.4&objectUID=1.2.3.4.5&transferSyntax=1.2.840.10008.1.2.1.99")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let content_type = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(content_type.contains("transfer-syntax=1.2.840.10008.1.2.1.99"));
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let file = DicomReader::new(std::io::Cursor::new(body.as_ref()))
+            .read_file()
+            .unwrap();
+        assert_eq!(
+            file.meta.transfer_syntax_uid,
+            transfer_syntaxes::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN.uid
+        );
     }
 
     #[test]

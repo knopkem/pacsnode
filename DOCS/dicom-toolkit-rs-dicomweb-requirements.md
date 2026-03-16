@@ -15,6 +15,11 @@ The following are already implemented in pacsnode:
 - WADO-RS frame retrieval via `/frames/{n[,m...]}` returning native frame bytes
 - WADO-RS rendered PNG previews for study/series/instance/frame routes
 - Instance bulk-data endpoint plus `BulkDataURI` injection for Pixel Data
+- WADO-RS retrieve `Accept`-header negotiation for `application/dicom` transfer-syntax requests
+- WADO-URI `transferSyntax=...` handling for `application/dicom` retrieval
+- Retrieve-time transcoding for native syntaxes, Deflated Explicit VR Little Endian,
+  RLE Lossless, JPEG Baseline/Extended, JPEG-LS Lossless, JPEG 2000 Lossless,
+  and JPEG 2000
 - Legacy WADO-URI retrieval for `application/dicom` and rendered PNG via
   `contentType=image/png`
 
@@ -357,14 +362,98 @@ significantly.
 
 ---
 
+## Requirement 7 — DIMSE association transfer-syntax policy API
+
+### Why
+
+pacsnode can now transcode on WADO retrieve, but for DIMSE association negotiation
+it still depends on `dicom-toolkit-net::AssociationConfig`, which currently only
+offers a boolean `accept_all_transfer_syntaxes`.
+
+That means pacsnode cannot express:
+
+- an explicit allow-list of transfer syntaxes
+- an SCP preference order for offered syntaxes
+- policy such as “accept JPEG 2000 but reject JPEG Lossless output until validated”
+
+### Requirement
+
+Extend `AssociationConfig` so an SCP can advertise and prefer an explicit transfer
+syntax set rather than only “accept everything” or the hard-coded LE fallback.
+
+### Proposed API
+
+```rust
+pub struct AssociationConfig {
+    pub accept_all_transfer_syntaxes: bool,
+    pub accepted_transfer_syntaxes: Vec<String>,
+    pub preferred_transfer_syntaxes: Vec<String>,
+    // ...
+}
+```
+
+### Acceptance criteria
+
+- SCP can reject unsupported transfer syntaxes during presentation-context negotiation
+- SCP can prefer an explicit transfer syntax order
+- Existing behavior remains available through `accept_all_transfer_syntaxes = true`
+
+### Priority
+
+**High**
+
+---
+
+## Requirement 8 — Separate decode vs encode capability reporting
+
+### Why
+
+`dicom-toolkit-codec::supported_transfer_syntaxes()` is decode-oriented, while the
+currently convenient encode path does not expose the same set of transfer syntaxes
+for output. In practice, pacsnode can decode JPEG Lossless objects, but it cannot
+yet emit JPEG Lossless Part 10 output on retrieve.
+
+Without separate decode/encode capability reporting, PACS code has to duplicate
+toolkit-internal knowledge to avoid over-advertising transcoding support.
+
+### Requirement
+
+Expose distinct decode-supported and encode-supported transfer syntax sets.
+
+### Proposed API
+
+```rust
+pub fn supported_decode_transfer_syntaxes() -> &'static [&'static str];
+
+pub fn supported_encode_transfer_syntaxes() -> &'static [&'static str];
+
+pub fn can_encode(ts_uid: &str) -> bool;
+```
+
+### Acceptance criteria
+
+- The API makes it impossible to confuse “can decode existing object” with
+  “can emit new object in that syntax”
+- JPEG Lossless is not reported as encodable unless a real encoder exists
+- pacsnode can use the same toolkit API for both retrieve negotiation and
+  transcoding capability checks
+
+### Priority
+
+**Medium**
+
+---
+
 ## Recommended implementation order
 
 1. **JPEG export API**
 2. **DICOM JSON `BulkDataURI` serialization mode**
-3. **Transfer-syntax-aware raw element byte export**
-4. **Encapsulated frame helper**
-5. **Nested attribute-path resolver**
-6. **High-level rendered options helper**
+3. **DIMSE association transfer-syntax policy API**
+4. **Transfer-syntax-aware raw element byte export**
+5. **Separate decode vs encode capability reporting**
+6. **Encapsulated frame helper**
+7. **Nested attribute-path resolver**
+8. **High-level rendered options helper**
 
 ---
 

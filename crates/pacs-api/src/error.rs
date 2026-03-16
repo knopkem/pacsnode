@@ -24,6 +24,10 @@ impl IntoResponse for ApiError {
             PacsError::DicomParse(msg) | PacsError::InvalidUid(msg) => {
                 (StatusCode::BAD_REQUEST, msg.clone())
             }
+            PacsError::NotAcceptable(msg) => (StatusCode::NOT_ACCEPTABLE, msg.clone()),
+            PacsError::UnsupportedMediaType(msg) => {
+                (StatusCode::UNSUPPORTED_MEDIA_TYPE, msg.clone())
+            }
             PacsError::Store(_)
             | PacsError::Blob(_)
             | PacsError::Internal(_)
@@ -79,6 +83,21 @@ mod tests {
         assert_eq!(
             err.into_response().status(),
             StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[test]
+    fn test_not_acceptable_is_406() {
+        let err = ApiError(PacsError::NotAcceptable("image/jpeg".into()));
+        assert_eq!(err.into_response().status(), StatusCode::NOT_ACCEPTABLE);
+    }
+
+    #[test]
+    fn test_unsupported_media_type_is_415() {
+        let err = ApiError(PacsError::UnsupportedMediaType("image/tiff".into()));
+        assert_eq!(
+            err.into_response().status(),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
         );
     }
 

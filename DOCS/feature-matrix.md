@@ -37,7 +37,7 @@
 | **Storage Commitment** (N-EVENT-REPORT) | ❌ | ✅ (plugin) | Not implemented |
 | **Modality Worklist** (MWL SCP) | ❌ | ✅ (plugin) | No worklist management |
 | **Modality Performed Procedure Step** (MPPS) | ❌ | ❌ | Neither implements natively |
-| **Association negotiation** | ✅ | ✅ | Accepts all transfer syntaxes |
+| **Association negotiation** | ✅ | ✅ | Accepts all transfer syntaxes, but cannot yet enforce an SCP-side transfer-syntax allow-list/preference order |
 | **Max concurrent associations** | ✅ | ✅ | Configurable (default 64), semaphore-based |
 | **DIMSE timeout** | ✅ | ✅ | Configurable (default 30s) |
 | **AE title validation** | ⚠️ | ✅ | Accepts all callers; no whitelist filtering |
@@ -103,18 +103,18 @@
 
 | Transfer Syntax | pacsnode | Orthanc | Notes |
 |----------------|:--------:|:-------:|-------|
-| **Implicit VR Little Endian** (1.2.840.10008.1.2) | ⚠️ | ✅ | Accept-only, no transcode |
-| **Explicit VR Little Endian** (1.2.840.10008.1.2.1) | ✅ | ✅ | Native encoding format |
-| **Explicit VR Big Endian** (1.2.840.10008.1.2.2) | ⚠️ | ✅ | Accept-only |
-| **Deflated Explicit VR LE** (1.2.840.10008.1.2.1.99) | ❌ | ✅ | |
-| **JPEG Baseline** (1.2.840.10008.1.2.4.50) | ❌ | ✅ | |
-| **JPEG Lossless** (1.2.840.10008.1.2.4.57/70) | ❌ | ✅ | |
-| **JPEG 2000 Lossless** (1.2.840.10008.1.2.4.90) | ❌ | ✅ | dicom-toolkit has `Jp2kCodec` but not wired |
-| **JPEG 2000 Lossy** (1.2.840.10008.1.2.4.91) | ❌ | ✅ | |
-| **RLE Lossless** (1.2.840.10008.1.2.5) | ❌ | ✅ | |
+| **Implicit VR Little Endian** (1.2.840.10008.1.2) | ✅ | ✅ | Native retrieve target and retrieve-time transcode target |
+| **Explicit VR Little Endian** (1.2.840.10008.1.2.1) | ✅ | ✅ | Native encoding format and retrieve-time transcode target |
+| **Explicit VR Big Endian** (1.2.840.10008.1.2.2) | ✅ | ✅ | Big-endian retrieve-time transcode and rendering path covered |
+| **Deflated Explicit VR LE** (1.2.840.10008.1.2.1.99) | ✅ | ✅ | Read/write plus WADO retrieve-time transcode verified |
+| **JPEG Baseline** (1.2.840.10008.1.2.4.50) | ✅ | ✅ | Toolkit-backed decode plus retrieve-time transcode/output exercised in tests |
+| **JPEG Lossless** (1.2.840.10008.1.2.4.57/70) | ⚠️ | ✅ | Decode/retrieve path is available, but pacsnode cannot yet emit JPEG Lossless output on retrieve |
+| **JPEG 2000 Lossless** (1.2.840.10008.1.2.4.90) | ✅ | ✅ | Toolkit-backed decode plus lossless retrieve-time transcode verified |
+| **JPEG 2000 Lossy** (1.2.840.10008.1.2.4.91) | ⚠️ | ✅ | Retrieve-time output path is wired, but lossy quality/interoperability coverage is still thin |
+| **RLE Lossless** (1.2.840.10008.1.2.5) | ✅ | ✅ | Toolkit-backed decode plus retrieve-time transcode verified |
 | **MPEG-2/4** | ❌ | ⚠️ | Neither fully supports |
-| **Server-side transcoding** | ❌ | ✅ | Orthanc transcodes on retrieve |
-| **`Accept` header negotiation** | ❌ | ✅ | WADO-RS content negotiation |
+| **Server-side transcoding** | ✅ | ✅ | WADO-RS and WADO-URI can transcode on retrieve across the supported output syntaxes |
+| **`Accept` header negotiation** | ✅ | ✅ | WADO-RS retrieve honors `Accept` transfer-syntax requests for DICOM object retrieval |
 
 ---
 
@@ -251,7 +251,7 @@ Listed here for completeness and long-term roadmap consideration.
 | **DIMSE Services** | 85% | 95% | C-CANCEL, Storage Commitment, MWL |
 | **DICOMweb** | 90% | 90% | Remaining gaps are mainly content negotiation and broader bulk-data/media coverage |
 | **REST API** | 60% | 90% | Biggest gaps are anonymize/modify/merge/split/export/jobs plus real user management |
-| **Transfer Syntax / Codecs** | 25% | 85% | JPEG, J2K, RLE, transcoding |
+| **Transfer Syntax / Codecs** | 75% | 85% | Main remaining gaps are JPEG Lossless output, lossy J2K hardening, MPEG, and DIMSE TS policy |
 | **Storage** | 80% | 85% | Blob cleanup, commitment, compression |
 | **Database** | 95% | 85% | pacsnode ahead: JSONB, GIN, sqlx compile-time |
 | **Security** | 35% | 60% | Main remaining gaps are RBAC, OIDC/API keys, TLS, CORS hardening, and PHI log filtering |
@@ -273,8 +273,8 @@ Listed here for completeness and long-term roadmap consideration.
 
 ### 🟡 High (important for interoperability)
 
-6. **DICOMweb content negotiation / richer bulk-data coverage** — rendered output is PNG-only and bulk-data support is still conservative
-7. **JPEG / JPEG 2000 codecs** — many modalities send compressed; need decode for viewing
+6. **DICOMweb rendered negotiation / richer bulk-data coverage** — rendered output is still PNG-only and bulk-data support is conservative
+7. **DIMSE transfer-syntax policy + JPEG Lossless output** — retrieve transcoding exists now, but SCP-side syntax policy and true JPEG Lossless emission still need work
 8. **Anonymization API** — essential for research, sharing, and compliance
 9. **OHIF viewer integration** — web-based viewing is table stakes
 10. **Modality Worklist (MWL)** — required for integration with modalities/RIS

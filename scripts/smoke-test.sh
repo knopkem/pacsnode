@@ -424,6 +424,18 @@ if [ -n "$STUDY_UID" ]; then
             fail "WADO-RS retrieve returned HTTP ${HTTP_CODE}"
         fi
 
+        NEGOTIATE_HEADERS=$(mktemp)
+        NEGOTIATE_CODE=$(curl -s -o /dev/null -D "$NEGOTIATE_HEADERS" -w "%{http_code}" \
+            -H "Accept: multipart/related; type=\"application/dicom\"; transfer-syntax=1.2.840.10008.1.2.1.99" \
+            "${HTTP_BASE}/wado/studies/${STUDY_UID}/series/${SERIES_UID}/instances/${INSTANCE_UID}")
+        NEGOTIATE_CT=$(awk 'BEGIN{IGNORECASE=1}/^Content-Type:/{sub(/\r$/, "", $0); print substr($0, index($0,":")+2)}' "$NEGOTIATE_HEADERS")
+        if [ "$NEGOTIATE_CODE" = "200" ] && printf '%s' "$NEGOTIATE_CT" | grep -qi 'transfer-syntax=1.2.840.10008.1.2.1.99'; then
+            ok "WADO-RS retrieve honored Accept transfer-syntax negotiation"
+        else
+            fail "WADO-RS retrieve negotiation failed (HTTP ${NEGOTIATE_CODE}, content-type='${NEGOTIATE_CT}')"
+        fi
+        rm -f "$NEGOTIATE_HEADERS"
+
         FRAME_HEADERS=$(mktemp)
         FRAME_CODE=$(curl -s -o /dev/null -D "$FRAME_HEADERS" -w "%{http_code}" \
             "${HTTP_BASE}/wado/studies/${STUDY_UID}/series/${SERIES_UID}/instances/${INSTANCE_UID}/frames/1")
@@ -467,6 +479,17 @@ if [ -n "$STUDY_UID" ]; then
             fail "WADO-URI failed (HTTP ${WADO_URI_CODE}, content-type='${WADO_URI_CT}')"
         fi
         rm -f "$WADO_URI_HEADERS"
+
+        WADO_URI_TS_HEADERS=$(mktemp)
+        WADO_URI_TS_CODE=$(curl -s -o /dev/null -D "$WADO_URI_TS_HEADERS" -w "%{http_code}" \
+            "${HTTP_BASE}/wado?requestType=WADO&studyUID=${STUDY_UID}&seriesUID=${SERIES_UID}&objectUID=${INSTANCE_UID}&transferSyntax=1.2.840.10008.1.2.1.99")
+        WADO_URI_TS_CT=$(awk 'BEGIN{IGNORECASE=1}/^Content-Type:/{sub(/\r$/, "", $0); print substr($0, index($0,":")+2)}' "$WADO_URI_TS_HEADERS")
+        if [ "$WADO_URI_TS_CODE" = "200" ] && printf '%s' "$WADO_URI_TS_CT" | grep -qi 'transfer-syntax=1.2.840.10008.1.2.1.99'; then
+            ok "WADO-URI honored transferSyntax query parameter"
+        else
+            fail "WADO-URI transferSyntax failed (HTTP ${WADO_URI_TS_CODE}, content-type='${WADO_URI_TS_CT}')"
+        fi
+        rm -f "$WADO_URI_TS_HEADERS"
     else
         fail "Could not resolve series/instance UIDs for WADO-RS retrieve"
     fi

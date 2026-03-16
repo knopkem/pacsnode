@@ -131,7 +131,7 @@
 | **Content deduplication** | ❌ | ❌ | Neither implements natively |
 | **Multi-tier storage** (HSM) | ❌ | ✅ (plugin) | No hot/warm/cold tiering |
 | **Retention policies** | ❌ | ❌ | No auto-delete or lifecycle rules |
-| **Blob cleanup on DELETE** | ❌ | ✅ | REST deletes metadata but not S3 blobs |
+| **Blob cleanup on DELETE** | ✅ | ✅ | REST deletes now remove descendant S3 blobs and dedupe repeated blob keys before object-store cleanup |
 | **Backup/restore** | ❌ | ⚠️ | Relies on PostgreSQL + S3 backup tools |
 
 ---
@@ -252,7 +252,7 @@ Listed here for completeness and long-term roadmap consideration.
 | **DICOMweb** | 95% | 95% | Main remaining gap is UPS-RS/worklist surface, which Orthanc also lacks natively |
 | **REST API** | 60% | 90% | Biggest gaps are anonymize/modify/merge/split/export/jobs plus real user management |
 | **Transfer Syntax / Codecs** | 75% | 85% | Main remaining gaps are JPEG Lossless output, lossy J2K hardening, MPEG, and DIMSE TS policy |
-| **Storage** | 80% | 85% | Blob cleanup, commitment, compression |
+| **Storage** | 85% | 85% | Main remaining gaps are storage commitment, compression-at-rest, and lifecycle/retention tooling |
 | **Database** | 95% | 85% | pacsnode ahead: JSONB, GIN, sqlx compile-time |
 | **Security** | 35% | 60% | Main remaining gaps are RBAC, OIDC/API keys, TLS, CORS hardening, and PHI log filtering |
 | **Viewer / UI** | 45% | 70% | OHIF hosting now exists, but bundled assets and a dedicated study/worklist shell are still missing |
@@ -268,36 +268,35 @@ Listed here for completeness and long-term roadmap consideration.
 1. **Authentication & RBAC** — no patient data should be accessible without login
 2. **TLS termination** — at minimum via reverse proxy (Nginx/Caddy), ideally native
 3. **Operationalize audit logging** — enable/configure it by default in secured deployments and add review/search APIs
-4. **Blob cleanup on DELETE** — REST deletes leave orphaned S3 objects
-5. **CORS tightening** — replace `permissive()` with configured origins
+4. **CORS tightening** — replace `permissive()` with configured origins
 
 ### 🟡 High (important for interoperability)
 
-6. **DIMSE transfer-syntax policy wiring + JPEG Lossless output** — retrieve transcoding exists now, but SCP-side syntax policy adoption and true JPEG Lossless emission still need work
-7. **Anonymization API** — essential for research, sharing, and compliance
-8. **Clinical worklist / bundled UI on top of OHIF hosting** — the viewer host exists, but a user-facing study/worklist shell is still missing
-9. **Modality Worklist (MWL)** — required for integration with modalities/RIS
-10. **DICOM Conformance Statement** — required for hospital procurement
+5. **DIMSE transfer-syntax policy wiring + JPEG Lossless output** — retrieve transcoding exists now, but SCP-side syntax policy adoption and true JPEG Lossless emission still need work
+6. **Anonymization API** — essential for research, sharing, and compliance
+7. **Clinical worklist / bundled UI on top of OHIF hosting** — the viewer host exists, but a user-facing study/worklist shell is still missing
+8. **Modality Worklist (MWL)** — required for integration with modalities/RIS
+9. **DICOM Conformance Statement** — required for hospital procurement
 
 ### 🟢 Medium (quality of life / enterprise)
 
-11. **ZIP/DICOMDIR export** — downloading studies for CD/USB
-12. **Async job queue** — long-running ops (anonymize, export) shouldn't block
-13. **Metrics dashboards / deeper instrumentation** — the `/metrics` endpoint exists, but production dashboards and broader coverage are still needed
-14. **HL7/FHIR integration** — hospital system interop
-15. **Prior study prefetch** — radiology workflow optimization
-16. **Full-text search** — PostgreSQL tsvector for patient/study search
-17. **Server-side thumbnails** — faster study browsing in viewer
-18. **Study sharing URLs** — secure links for referring physicians
+10. **ZIP/DICOMDIR export** — downloading studies for CD/USB
+11. **Async job queue** — long-running ops (anonymize, export) shouldn't block
+12. **Metrics dashboards / deeper instrumentation** — the `/metrics` endpoint exists, but production dashboards and broader coverage are still needed
+13. **HL7/FHIR integration** — hospital system interop
+14. **Prior study prefetch** — radiology workflow optimization
+15. **Full-text search** — PostgreSQL tsvector for patient/study search
+16. **Server-side thumbnails** — faster study browsing in viewer
+17. **Study sharing URLs** — secure links for referring physicians
 
 ### 🔵 Low (nice to have / long-term)
 
-19. **Storage commitment** (N-EVENT-REPORT)
-20. **Multi-site federation / peer sync**
-21. **AI/ML integration pipeline**
-22. **Plugin ecosystem expansion** (anonymization, codecs, HL7, export)
-23. **Teaching file management**
-24. **Patient merge / reconciliation**
+18. **Storage commitment** (N-EVENT-REPORT)
+19. **Multi-site federation / peer sync**
+20. **AI/ML integration pipeline**
+21. **Plugin ecosystem expansion** (anonymization, codecs, HL7, export)
+22. **Teaching file management**
+23. **Patient merge / reconciliation**
 
 ---
 

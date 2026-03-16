@@ -11,6 +11,8 @@ use pacs_plugin::{AuthenticatedUser, PacsEvent, ResourceLevel};
 
 use crate::{error::ApiError, state::AppState};
 
+use super::{cleanup_blob_keys, collect_study_blob_keys};
+
 /// `GET /api/studies` — list all studies.
 pub async fn list_studies(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let studies = state.store.query_studies(&StudyQuery::default()).await?;
@@ -35,7 +37,9 @@ pub async fn delete_study(
     Path(uid): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let study_uid = StudyUid::from(uid.as_str());
+    let blob_keys = collect_study_blob_keys(&state, &study_uid).await?;
     state.store.delete_study(&study_uid).await?;
+    cleanup_blob_keys(&state, blob_keys).await;
     state
         .plugins
         .emit_event(PacsEvent::ResourceDeleted {
@@ -53,7 +57,7 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
     };
-    use pacs_core::PacsError;
+    use pacs_core::{DicomJson, Instance, PacsError, Series, SeriesUid, SopInstanceUid, StudyUid};
     use tower::ServiceExt;
 
     use crate::{
@@ -106,8 +110,132 @@ mod tests {
     #[tokio::test]
     async fn test_delete_study_returns_204() {
         let mut store = MockMetaStore::new();
+        store
+            .expect_query_series()
+            .once()
+            .returning(|_| Ok(Vec::new()));
         store.expect_delete_study().once().returning(|_| Ok(()));
         let app = build_router(make_test_state(store, MockBlobStr::new()));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/studies/1.2.3")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn test_delete_study_deletes_unique_blob_keys() {
+        let study_uid = StudyUid::from("1.2.3");
+        let series_one_uid = SeriesUid::from("1.2.3.1");
+        let series_two_uid = SeriesUid::from("1.2.3.2");
+
+        let mut store = MockMetaStore::new();
+        store.expect_query_series().once().returning({
+            let study_uid = study_uid.clone();
+            let series_one_uid = series_one_uid.clone();
+            let series_two_uid = series_two_uid.clone();
+            move |_| {
+                Ok(vec![
+                    Series {
+                        series_uid: series_one_uid.clone(),
+                        study_uid: study_uid.clone(),
+                        modality: None,
+                        series_number: Some(1),
+                        description: None,
+                        body_part: None,
+                        num_instances: 1,
+                        metadata: DicomJson::empty(),
+                        created_at: None,
+                    },
+                    Series {
+                        series_uid: series_two_uid.clone(),
+                        study_uid: study_uid.clone(),
+                        modality: None,
+                        series_number: Some(2),
+                        description: None,
+                        body_part: None,
+                        num_instances: 2,
+                        metadata: DicomJson::empty(),
+                        created_at: None,
+                    },
+                ])
+            }
+        });
+        store.expect_query_instances().times(2).returning({
+            let study_uid = study_uid.clone();
+            let series_one_uid = series_one_uid.clone();
+            let series_two_uid = series_two_uid.clone();
+            move |query| {
+                let instances = if query.series_uid == series_one_uid {
+                    vec![Instance {
+                        instance_uid: SopInstanceUid::from("1.2.3.1.1"),
+                        series_uid: series_one_uid.clone(),
+                        study_uid: study_uid.clone(),
+                        sop_class_uid: None,
+                        instance_number: Some(1),
+                        transfer_syntax: None,
+                        rows: None,
+                        columns: None,
+                        blob_key: "blob/shared".into(),
+                        metadata: DicomJson::empty(),
+                        created_at: None,
+                    }]
+                } else if query.series_uid == series_two_uid {
+                    vec![
+                        Instance {
+                            instance_uid: SopInstanceUid::from("1.2.3.2.1"),
+                            series_uid: series_two_uid.clone(),
+                            study_uid: study_uid.clone(),
+                            sop_class_uid: None,
+                            instance_number: Some(1),
+                            transfer_syntax: None,
+                            rows: None,
+                            columns: None,
+                            blob_key: "blob/shared".into(),
+                            metadata: DicomJson::empty(),
+                            created_at: None,
+                        },
+                        Instance {
+                            instance_uid: SopInstanceUid::from("1.2.3.2.2"),
+                            series_uid: series_two_uid.clone(),
+                            study_uid: study_uid.clone(),
+                            sop_class_uid: None,
+                            instance_number: Some(2),
+                            transfer_syntax: None,
+                            rows: None,
+                            columns: None,
+                            blob_key: "blob/unique".into(),
+                            metadata: DicomJson::empty(),
+                            created_at: None,
+                        },
+                    ]
+                } else {
+                    panic!("unexpected series UID: {}", query.series_uid);
+                };
+                Ok(instances)
+            }
+        });
+        store.expect_delete_study().once().returning(|_| Ok(()));
+
+        let mut blobs = MockBlobStr::new();
+        blobs
+            .expect_delete()
+            .withf(|key| key == "blob/shared")
+            .once()
+            .returning(|_| Ok(()));
+        blobs
+            .expect_delete()
+            .withf(|key| key == "blob/unique")
+            .once()
+            .returning(|_| Ok(()));
+
+        let app = build_router(make_test_state(store, blobs));
         let resp = app
             .oneshot(
                 Request::builder()

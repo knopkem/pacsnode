@@ -11,6 +11,8 @@ use pacs_plugin::{AuthenticatedUser, PacsEvent, ResourceLevel};
 
 use crate::{error::ApiError, state::AppState};
 
+use super::{cleanup_blob_keys, collect_instance_blob_keys};
+
 /// `GET /api/series/:series_uid/instances` — list instances for a series.
 pub async fn list_instances_for_series(
     State(state): State<AppState>,
@@ -51,7 +53,9 @@ pub async fn delete_instance(
     Path(uid): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let instance_uid = SopInstanceUid::from(uid.as_str());
+    let blob_keys = collect_instance_blob_keys(&state, &instance_uid).await?;
     state.store.delete_instance(&instance_uid).await?;
+    cleanup_blob_keys(&state, blob_keys).await;
     state
         .plugins
         .emit_event(PacsEvent::ResourceDeleted {
@@ -69,7 +73,7 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
     };
-    use pacs_core::PacsError;
+    use pacs_core::{DicomJson, Instance, PacsError, SeriesUid, SopInstanceUid, StudyUid};
     use tower::ServiceExt;
 
     use crate::{
@@ -101,9 +105,86 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_instance_returns_204() {
+        let instance_uid = SopInstanceUid::from("1.2.3");
+        let series_uid = SeriesUid::from("1.2");
+        let study_uid = StudyUid::from("1");
+
         let mut store = MockMetaStore::new();
+        store.expect_get_instance().once().returning({
+            let instance_uid = instance_uid.clone();
+            let series_uid = series_uid.clone();
+            let study_uid = study_uid.clone();
+            move |_| {
+                Ok(Instance {
+                    instance_uid: instance_uid.clone(),
+                    series_uid: series_uid.clone(),
+                    study_uid: study_uid.clone(),
+                    sop_class_uid: None,
+                    instance_number: Some(1),
+                    transfer_syntax: None,
+                    rows: None,
+                    columns: None,
+                    blob_key: "blob/instance".into(),
+                    metadata: DicomJson::empty(),
+                    created_at: None,
+                })
+            }
+        });
         store.expect_delete_instance().once().returning(|_| Ok(()));
-        let app = build_router(make_test_state(store, MockBlobStr::new()));
+        let mut blobs = MockBlobStr::new();
+        blobs.expect_delete().once().returning(|_| Ok(()));
+
+        let app = build_router(make_test_state(store, blobs));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/instances/1.2.3")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn test_delete_instance_deletes_blob() {
+        let instance_uid = SopInstanceUid::from("1.2.3");
+        let series_uid = SeriesUid::from("1.2");
+        let study_uid = StudyUid::from("1");
+
+        let mut store = MockMetaStore::new();
+        store.expect_get_instance().once().returning({
+            let instance_uid = instance_uid.clone();
+            let series_uid = series_uid.clone();
+            let study_uid = study_uid.clone();
+            move |_| {
+                Ok(Instance {
+                    instance_uid: instance_uid.clone(),
+                    series_uid: series_uid.clone(),
+                    study_uid: study_uid.clone(),
+                    sop_class_uid: None,
+                    instance_number: Some(1),
+                    transfer_syntax: None,
+                    rows: None,
+                    columns: None,
+                    blob_key: "blob/instance".into(),
+                    metadata: DicomJson::empty(),
+                    created_at: None,
+                })
+            }
+        });
+        store.expect_delete_instance().once().returning(|_| Ok(()));
+
+        let mut blobs = MockBlobStr::new();
+        blobs
+            .expect_delete()
+            .withf(|key| key == "blob/instance")
+            .once()
+            .returning(|_| Ok(()));
+
+        let app = build_router(make_test_state(store, blobs));
         let resp = app
             .oneshot(
                 Request::builder()

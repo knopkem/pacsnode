@@ -33,5 +33,5 @@ pub mod store;
 
 pub(crate) mod queries;
 
-pub use plugin::PgMetadataStorePlugin;
+pub use plugin::{PgMetadataStorePlugin, PG_METADATA_STORE_PLUGIN_ID};
 pub use store::PgMetadataStore;

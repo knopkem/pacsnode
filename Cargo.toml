@@ -6,6 +6,8 @@ members = [
     "crates/pacs-auth-plugin",
     "crates/pacs-audit-plugin",
     "crates/pacs-dicom",
+    "crates/pacs-fs-storage",
+    "crates/pacs-sqlite-store",
     "crates/pacs-store",
     "crates/pacs-storage",
     "crates/pacs-dimse",
@@ -30,6 +32,8 @@ pacs-plugin  = { path = "crates/pacs-plugin" }
 pacs-auth-plugin = { path = "crates/pacs-auth-plugin" }
 pacs-audit-plugin = { path = "crates/pacs-audit-plugin" }
 pacs-dicom   = { path = "crates/pacs-dicom" }
+pacs-fs-storage = { path = "crates/pacs-fs-storage" }
+pacs-sqlite-store = { path = "crates/pacs-sqlite-store" }
 pacs-store   = { path = "crates/pacs-store" }
 pacs-storage = { path = "crates/pacs-storage" }
 pacs-dimse   = { path = "crates/pacs-dimse" }
@@ -62,7 +66,7 @@ serde        = { version = "1", features = ["derive"] }
 serde_json   = "1"
 
 # ── Database ──────────────────────────────────────────────────────────────────
-sqlx         = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "migrate"] }
+sqlx         = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlite", "uuid", "chrono", "json", "migrate"] }
 
 # ── Object storage ────────────────────────────────────────────────────────────
 object_store = { version = "0.11", features = ["aws"] }
@@ -100,6 +104,7 @@ rstest              = "0.23"
 testcontainers      = "0.23"
 testcontainers-modules = { version = "0.11", features = ["postgres"] }
 serial_test             = "3"
+tempfile                = "3"
 
 [profile.release]
 opt-level = 3

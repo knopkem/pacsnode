@@ -51,6 +51,12 @@ pub use plugin::{Plugin, PluginHealth, PluginManifest};
 pub use registry::{PluginRegistration, PluginRegistry};
 pub use state::{AppState, ServerInfo};
 
+/// Dependency token satisfied by any registered [`MetadataStorePlugin`].
+pub const METADATA_STORE_CAPABILITY_DEPENDENCY: &str = "capability:metadata-store";
+
+/// Dependency token satisfied by any registered [`BlobStorePlugin`].
+pub const BLOB_STORE_CAPABILITY_DEPENDENCY: &str = "capability:blob-store";
+
 /// Re-export of `inventory` so the registration macro works in dependent crates.
 pub use inventory;
 

@@ -112,7 +112,9 @@ you explicitly replace them (e.g. with an alternative storage backend).
 | Plugin ID | Crate | Provides |
 |-----------|-------|----------|
 | `pg-metadata-store` | `pacs-store` | PostgreSQL metadata storage |
+| `sqlite-metadata-store` | `pacs-sqlite-store` | SQLite metadata storage |
 | `s3-blob-store` | `pacs-storage` | S3/MinIO blob storage |
+| `filesystem-blob-store` | `pacs-fs-storage` | Filesystem blob storage |
 | `pacs-store-scp` | `pacs-dimse` | C-STORE SCP handler |
 | `pacs-query-scp` | `pacs-dimse` | C-FIND / C-GET / C-MOVE SCP handlers |
 
@@ -124,7 +126,7 @@ to `plugins.enabled` in `config.toml`:
 | Plugin ID | Crate | Provides |
 |-----------|-------|----------|
 | `basic-auth` | `pacs-auth-plugin` | JWT authentication + login endpoints |
-| `audit-logger` | `pacs-audit-plugin` | Audit trail to PostgreSQL |
+| `audit-logger` | `pacs-audit-plugin` | Audit trail to the active metadata store |
 | `prometheus-metrics` | `pacs-metrics-plugin` | Prometheus `/metrics` endpoint + HTTP latency tracking |
 
 ```toml
@@ -487,7 +489,7 @@ PluginManifest::new("my-plugin", "My Plugin", env!("CARGO_PKG_VERSION"))
 
 // With dependencies:
 PluginManifest::new("audit-logger", "Audit Logger", "0.1.0")
-    .with_dependencies(["pg-metadata-store"])
+    .with_dependencies([pacs_plugin::METADATA_STORE_CAPABILITY_DEPENDENCY])
 
 // Optional plugin (must be listed in plugins.enabled):
 PluginManifest::new("basic-auth", "Basic Auth", "0.1.0")
@@ -495,7 +497,10 @@ PluginManifest::new("basic-auth", "Basic Auth", "0.1.0")
 
 // Both:
 PluginManifest::new("my-plugin", "My Plugin", "0.1.0")
-    .with_dependencies(["pg-metadata-store", "s3-blob-store"])
+    .with_dependencies([
+        pacs_plugin::METADATA_STORE_CAPABILITY_DEPENDENCY,
+        pacs_plugin::BLOB_STORE_CAPABILITY_DEPENDENCY,
+    ])
     .disabled_by_default()
 ```
 
@@ -834,7 +839,7 @@ pub struct PluginContext {
 }
 ```
 
-**Dependency-aware context:** If your plugin depends on `pg-metadata-store`, the
+**Dependency-aware context:** If your plugin depends on `pacs_plugin::METADATA_STORE_CAPABILITY_DEPENDENCY`, the
 `ctx.metadata_store` field will be `Some(...)` by the time your `init()` runs,
 because the registry resolves dependencies topologically.
 
@@ -924,10 +929,12 @@ async fn init(&mut self, ctx: &PluginContext) -> Result<(), PluginError> {
 
 ### Built-in Plugin Config Merging
 
-Built-in plugins like `pg-metadata-store` and `s3-blob-store` receive their config
-from the core `[database]` and `[storage]` sections respectively. The server's
+Built-in plugins like `pg-metadata-store`, `sqlite-metadata-store`, `s3-blob-store`,
+and `filesystem-blob-store` receive their config from the core `[database]`,
+`[storage]`, or `[filesystem_storage]` sections as appropriate. The server's
 `build_plugin_configs()` function merges these into the plugin config map
-automatically. You don't need to duplicate config under `[plugins.pg-metadata-store]`.
+automatically, so you only need `[plugins.<id>]` when you want to override or
+extend the built-in defaults.
 
 ---
 

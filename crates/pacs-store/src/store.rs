@@ -12,8 +12,8 @@
 use async_trait::async_trait;
 use pacs_core::{
     AuditLogEntry, AuditLogPage, AuditLogQuery, DicomJson, DicomNode, Instance, InstanceQuery,
-    MetadataStore, PacsError, PacsResult, PacsStatistics, Series, SeriesQuery, SeriesUid,
-    SopInstanceUid, Study, StudyQuery, StudyUid,
+    MetadataStore, NewAuditLogEntry, PacsError, PacsResult, PacsStatistics, Series, SeriesQuery,
+    SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
 };
 use sqlx::PgPool;
 use tracing::instrument;
@@ -135,6 +135,11 @@ impl MetadataStore for PgMetadataStore {
     #[instrument(skip(self), fields(audit_log_id = id))]
     async fn get_audit_log(&self, id: i64) -> PacsResult<AuditLogEntry> {
         audit::get(&self.pool, id).await
+    }
+
+    #[instrument(skip(self, entry), fields(action = %entry.action, resource = %entry.resource))]
+    async fn store_audit_log(&self, entry: &NewAuditLogEntry) -> PacsResult<()> {
+        audit::store(&self.pool, entry).await
     }
 }
 

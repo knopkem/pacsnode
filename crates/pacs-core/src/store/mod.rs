@@ -2,7 +2,8 @@ use async_trait::async_trait;
 
 use crate::domain::{
     AuditLogEntry, AuditLogPage, AuditLogQuery, DicomJson, DicomNode, Instance, InstanceQuery,
-    PacsStatistics, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
+    NewAuditLogEntry, PacsStatistics, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study,
+    StudyQuery, StudyUid,
 };
 use crate::error::PacsResult;
 
@@ -96,6 +97,9 @@ pub trait MetadataStore: Send + Sync {
     ///
     /// Returns [`crate::error::PacsError::NotFound`] if no audit row with `id` exists.
     async fn get_audit_log(&self, id: i64) -> PacsResult<AuditLogEntry>;
+
+    /// Persists a new append-only audit log entry.
+    async fn store_audit_log(&self, entry: &NewAuditLogEntry) -> PacsResult<()>;
 }
 
 #[cfg(test)]

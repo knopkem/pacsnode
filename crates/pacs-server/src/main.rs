@@ -3,6 +3,22 @@
 //! ⚠️ **NOT FOR CLINICAL USE** — This software has not been validated for
 //! diagnostic or therapeutic purposes.
 
+#[cfg(all(feature = "postgres", feature = "sqlite"))]
+compile_error!(
+    "Enable exactly one metadata backend. Use `--no-default-features --features standalone` for SQLite builds."
+);
+
+#[cfg(all(feature = "s3", feature = "filesystem"))]
+compile_error!(
+    "Enable exactly one blob backend. Use `--no-default-features --features standalone` for filesystem builds."
+);
+
+#[cfg(not(any(feature = "postgres", feature = "sqlite")))]
+compile_error!("Enable at least one metadata backend feature (`postgres` or `sqlite`).");
+
+#[cfg(not(any(feature = "s3", feature = "filesystem")))]
+compile_error!("Enable at least one blob backend feature (`s3` or `filesystem`).");
+
 use std::{
     collections::{BTreeSet, HashMap},
     sync::Arc,
@@ -12,7 +28,15 @@ use anyhow::{anyhow, Context, Result};
 use pacs_audit_plugin::AUDIT_LOGGER_PLUGIN_ID;
 use pacs_auth_plugin::BASIC_AUTH_PLUGIN_ID;
 use pacs_core::{DicomNode, MetadataStore};
+#[cfg(feature = "filesystem")]
+use pacs_fs_storage::{self as _, FS_BLOB_STORE_PLUGIN_ID};
 use pacs_plugin::{PluginRegistry, ServerInfo};
+#[cfg(feature = "sqlite")]
+use pacs_sqlite_store::{self as _, SQLITE_METADATA_STORE_PLUGIN_ID};
+#[cfg(feature = "s3")]
+use pacs_storage::{self as _, S3_BLOB_STORE_PLUGIN_ID};
+#[cfg(feature = "postgres")]
+use pacs_store::{self as _, PG_METADATA_STORE_PLUGIN_ID};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -23,8 +47,6 @@ use config::{AppConfig, LogFormat};
 use pacs_audit_plugin as _;
 use pacs_auth_plugin as _;
 use pacs_metrics_plugin as _;
-use pacs_storage as _;
-use pacs_store as _;
 use pacs_viewer_plugin as _;
 
 #[tokio::main]
@@ -147,26 +169,106 @@ async fn main() -> Result<()> {
 fn build_plugin_configs(cfg: &AppConfig) -> Result<HashMap<String, serde_json::Value>> {
     let mut configs = cfg.plugins.configs.clone();
 
-    let mut db_config = serde_json::to_value(&cfg.database).context("serialize database config")?;
-    if let Some(override_value) = configs.remove("pg-metadata-store") {
-        merge_json(&mut db_config, override_value);
+    #[cfg(feature = "postgres")]
+    {
+        let mut db_config = cfg
+            .database
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()
+            .context("serialize database config")?
+            .unwrap_or_else(empty_object);
+        if let Some(override_value) = configs.remove(PG_METADATA_STORE_PLUGIN_ID) {
+            merge_json(&mut db_config, override_value);
+        }
+        ensure_non_empty_config(
+            &db_config,
+            "database",
+            "database config is required for the postgres metadata backend",
+        )?;
+        configs.insert(PG_METADATA_STORE_PLUGIN_ID.into(), db_config);
     }
-    configs.insert("pg-metadata-store".into(), db_config);
 
-    let mut storage_config =
-        serde_json::to_value(&cfg.storage).context("serialize storage config")?;
-    if let Some(override_value) = configs.remove("s3-blob-store") {
-        merge_json(&mut storage_config, override_value);
+    #[cfg(feature = "sqlite")]
+    {
+        let mut db_config = cfg
+            .database
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()
+            .context("serialize sqlite database config")?
+            .unwrap_or_else(empty_object);
+        if let Some(override_value) = configs.remove(SQLITE_METADATA_STORE_PLUGIN_ID) {
+            merge_json(&mut db_config, override_value);
+        }
+        ensure_non_empty_config(
+            &db_config,
+            "database",
+            "database config is required for the sqlite metadata backend",
+        )?;
+        configs.insert(SQLITE_METADATA_STORE_PLUGIN_ID.into(), db_config);
     }
-    configs.insert("s3-blob-store".into(), storage_config);
 
-    let mut audit_config = serde_json::to_value(&cfg.database).context("serialize audit config")?;
-    if let Some(override_value) = configs.remove("audit-logger") {
-        merge_json(&mut audit_config, override_value);
+    #[cfg(feature = "s3")]
+    {
+        let mut storage_config = cfg
+            .storage
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()
+            .context("serialize storage config")?
+            .unwrap_or_else(empty_object);
+        if let Some(override_value) = configs.remove(S3_BLOB_STORE_PLUGIN_ID) {
+            merge_json(&mut storage_config, override_value);
+        }
+        ensure_non_empty_config(
+            &storage_config,
+            "storage",
+            "storage config is required for the s3 blob backend",
+        )?;
+        configs.insert(S3_BLOB_STORE_PLUGIN_ID.into(), storage_config);
     }
-    configs.insert("audit-logger".into(), audit_config);
+
+    #[cfg(feature = "filesystem")]
+    {
+        let mut storage_config = cfg
+            .filesystem_storage
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()
+            .context("serialize filesystem storage config")?
+            .unwrap_or_else(empty_object);
+        if let Some(override_value) = configs.remove(FS_BLOB_STORE_PLUGIN_ID) {
+            merge_json(&mut storage_config, override_value);
+        }
+        ensure_non_empty_config(
+            &storage_config,
+            "filesystem_storage",
+            "filesystem_storage config is required for the filesystem blob backend",
+        )?;
+        configs.insert(FS_BLOB_STORE_PLUGIN_ID.into(), storage_config);
+    }
+
+    let audit_config = configs
+        .remove(AUDIT_LOGGER_PLUGIN_ID)
+        .unwrap_or_else(empty_object);
+    configs.insert(AUDIT_LOGGER_PLUGIN_ID.into(), audit_config);
 
     Ok(configs)
+}
+
+fn empty_object() -> serde_json::Value {
+    serde_json::Value::Object(Default::default())
+}
+
+fn ensure_non_empty_config(config: &serde_json::Value, section: &str, message: &str) -> Result<()> {
+    if matches!(config, serde_json::Value::Object(map) if map.is_empty()) {
+        return Err(anyhow!(
+            "{message} (missing `{section}` or plugin override)"
+        ));
+    }
+
+    Ok(())
 }
 
 fn merge_json(base: &mut serde_json::Value, overlay: serde_json::Value) {
@@ -281,25 +383,29 @@ fn audit_auto_enable_in_secure_deployments(cfg: &AppConfig) -> bool {
 mod tests {
     use super::*;
     use crate::config::{
-        DatabaseConfig, LoggingConfig, PluginsConfig, ServerConfig, StorageConfig,
+        DatabaseConfig, FilesystemStorageConfig, LoggingConfig, PluginsConfig, ServerConfig,
+        StorageConfig,
     };
 
     fn make_config(enabled: &[&str], configs: HashMap<String, serde_json::Value>) -> AppConfig {
         AppConfig {
             server: ServerConfig::default(),
             nodes: Vec::new(),
-            database: DatabaseConfig {
+            database: Some(DatabaseConfig {
                 url: "postgres://u:p@localhost/pacs".into(),
                 max_connections: 20,
                 run_migrations: true,
-            },
-            storage: StorageConfig {
+            }),
+            storage: Some(StorageConfig {
                 endpoint: "http://localhost:9000".into(),
                 bucket: "dicom".into(),
                 access_key: "key".into(),
                 secret_key: "secret".into(),
                 region: "us-east-1".into(),
-            },
+            }),
+            filesystem_storage: Some(FilesystemStorageConfig {
+                root: "./data/blobs".into(),
+            }),
             logging: LoggingConfig {
                 level: "info".into(),
                 format: LogFormat::Json,

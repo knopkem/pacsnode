@@ -1,6 +1,6 @@
 # pacsnode
 
-A modern, high-performance **Picture Archiving and Communication System (PACS)** built entirely in Rust. pacsnode provides full DICOMweb and DIMSE protocol support, backed by PostgreSQL for metadata and S3-compatible object storage for pixel data.
+A modern, high-performance **Picture Archiving and Communication System (PACS)** built entirely in Rust. pacsnode provides full DICOMweb and DIMSE protocol support, backed by PostgreSQL + S3 by default, with a standalone SQLite + filesystem mode for single-machine deployments.
 
 > ⚠️ **NOT FOR CLINICAL USE** — This software is not a certified medical device. It has not been validated for diagnostic or therapeutic purposes.
 
@@ -9,10 +9,9 @@ A modern, high-performance **Picture Archiving and Communication System (PACS)**
 - **DICOMweb** — STOW-RS, QIDO-RS, WADO-RS (PS3.18 compliant)
 - **DIMSE** — C-STORE, C-FIND, C-MOVE, C-GET, C-ECHO SCP + SCU
 - **REST API** — Study/Series/Instance CRUD, remote node management, statistics
-- **PostgreSQL** — Hybrid relational + JSONB schema with GIN indexes for fast queries
-- **S3 Storage** — Pixel data stored in any S3-compatible backend (MinIO, RustFS, AWS S3)
+- **Backend Choice** — PostgreSQL + S3 by default (recommended), or SQLite + local filesystem in [standalone mode](#standalone-mode) for simple single-machine use
 - **Async** — Built on Tokio with fully async I/O throughout
-- **Single Binary** — Zero runtime dependencies beyond PostgreSQL and S3
+- **Single Binary** — Zero runtime dependencies beyond your selected metadata/blob backends
 
 ## Architecture
 
@@ -51,8 +50,10 @@ A modern, high-performance **Picture Archiving and Communication System (PACS)**
 |-------|------|
 | `pacs-core` | Domain types (`Study`, `Series`, `Instance`), UID newtypes, `MetadataStore` + `BlobStore` traits, error types |
 | `pacs-dicom` | Bridge to dicom-toolkit-rs — DICOM parsing, tag extraction, JSON conversion |
-| `pacs-store` | PostgreSQL `MetadataStore` implementation (sqlx, compile-time verified queries) |
-| `pacs-storage` | S3 `BlobStore` implementation (object_store crate) |
+| `pacs-store` | PostgreSQL `MetadataStore` implementation |
+| `pacs-sqlite-store` | SQLite `MetadataStore` implementation for standalone deployments |
+| `pacs-storage` | S3 `BlobStore` implementation |
+| `pacs-fs-storage` | Filesystem `BlobStore` implementation for standalone deployments |
 | `pacs-dimse` | DICOM SCP server + SCU client (C-STORE, C-FIND, C-MOVE, C-GET, C-ECHO) |
 | `pacs-api` | Axum HTTP server — DICOMweb (STOW/QIDO/WADO-RS) + REST endpoints |
 | `pacs-server` | Binary entry point — config loading, startup wiring, graceful shutdown |
@@ -115,13 +116,74 @@ docker compose down -v       # stop and delete all data
 
 ---
 
+## Standalone Mode
+
+> ⚠️ **Not recommended for production or clinical environments.**
+> Standalone mode is a simplified single-binary deployment that replaces PostgreSQL with SQLite and S3 with a local filesystem. It is intended for **development, evaluation, and lightweight single-machine use only.**
+
+### Why you probably want the default backend instead
+
+| | Default (PostgreSQL + S3) | Standalone (SQLite + filesystem) |
+|---|---|---|
+| **Recommended for** | Production, multi-node, clinical | Dev/eval, single machine, quick trials |
+| **Concurrency** | Full multi-process, highly concurrent | Single-writer SQLite; fine for low load |
+| **Scalability** | Horizontal — multiple pacsnode instances | Single machine only |
+| **Backup / restore** | Standard PostgreSQL + S3 tooling | File copy of DB + blob directory |
+| **QIDO performance** | GIN-indexed JSONB; fast at scale | Full-scan fallback for complex queries |
+| **Operational maturity** | Mature tooling ecosystem | Minimal; SQLite WAL mode only |
+
+### When standalone is acceptable
+
+- Local development and integration testing without Docker.
+- Evaluation or demos on a single machine.
+- Very small deployments (< ~10k studies) where operational simplicity matters more than performance.
+
+### Building the standalone binary
+
+```bash
+# Standalone build — SQLite + filesystem, no PostgreSQL or S3 required
+cargo build --release --no-default-features --features standalone
+```
+
+> The default build (`cargo build --release`) produces the PostgreSQL + S3 binary. These two build profiles are mutually exclusive; you cannot combine `standalone` with the default feature flags.
+
+### Running in standalone mode
+
+```bash
+# Create the data directories
+mkdir -p ./data/blobs
+
+# Configure via environment variables
+export PACS_DATABASE__URL="sqlite://./data/pacsnode.db"
+export PACS_FILESYSTEM_STORAGE__ROOT="./data/blobs"
+./target/release/pacsnode
+```
+
+Or via `config.toml` — place it either **next to the binary** or in your working directory:
+
+```toml
+[server]
+http_port = 8042      # change if 8042 is already in use
+
+[database]
+url = "sqlite://./data/pacsnode.db"
+
+[filesystem_storage]
+root = "./data/blobs"
+```
+
+> **Tip:** If you copy the binary to a deployment folder, drop `config.toml` in the same folder. pacsnode will find it automatically regardless of which directory you run it from.
+
+Standalone mode runs embedded SQLite migrations on first start — no `sqlx-cli` or manual schema setup needed. The database file and blob directory are created automatically if they do not exist.
+
+
 ## Building from Source
 
 ### Prerequisites
 
 - **Rust 1.88+** (see `rust-toolchain.toml`)
-- **PostgreSQL 14+** — running instance with a database created
-- **S3-compatible storage** — MinIO, RustFS, or AWS S3
+- **Default backend:** PostgreSQL 14+ plus S3-compatible storage (MinIO, RustFS, or AWS S3)
+- **Standalone backend:** no external database or object store required
 - **sqlx-cli** (optional, for managing migrations manually):
   ```bash
   cargo install sqlx-cli --no-default-features --features postgres
@@ -134,8 +196,11 @@ docker compose down -v       # stop and delete all data
 git clone https://github.com/your-org/pacsnode.git
 cd pacsnode
 
-# Build in release mode
+# Default build (PostgreSQL + S3)
 cargo build --release
+
+# Standalone build (SQLite + filesystem)
+cargo build --release --no-default-features --features standalone
 
 # The binary is at target/release/pacsnode
 ```
@@ -145,15 +210,21 @@ cargo build --release
 ```bash
 # Option 1: Use a config file
 cp config.toml.example config.toml
-# Edit config.toml with your database and storage settings
+# Edit config.toml with your backend settings
 ./target/release/pacsnode
 
-# Option 2: Use environment variables only
+# Option 2: Use environment variables only (default PostgreSQL + S3 backend)
 export PACS_DATABASE__URL="postgres://pacsnode:secret@localhost:5432/pacsnode"
 export PACS_STORAGE__ENDPOINT="http://localhost:9000"
 export PACS_STORAGE__BUCKET="dicom"
 export PACS_STORAGE__ACCESS_KEY="minioadmin"
 export PACS_STORAGE__SECRET_KEY="minioadmin"
+./target/release/pacsnode
+
+# Option 3: Standalone mode (SQLite + filesystem — see Standalone Mode section)
+# Requires a binary built with --no-default-features --features standalone
+export PACS_DATABASE__URL="sqlite://./data/pacsnode.db"
+export PACS_FILESYSTEM_STORAGE__ROOT="./data/blobs"
 ./target/release/pacsnode
 ```
 
@@ -161,16 +232,19 @@ export PACS_STORAGE__SECRET_KEY="minioadmin"
 
 ## Configuration
 
-pacsnode uses a two-layer configuration system:
+pacsnode uses a three-layer configuration system:
 
-1. **TOML file** — `config.toml` in the working directory (optional)
-2. **Environment variables** — `PACS_` prefix with `__` separator (overrides TOML)
+1. **`config.toml` next to the executable** — picked up automatically when the binary is run from its own directory (optional)
+2. **`config.toml` in the working directory** — overrides the executable-adjacent file when both exist (optional)
+3. **Environment variables** — `PACS_` prefix with `__` separator (overrides both TOML sources)
 
 See [`config.toml.example`](config.toml.example) for a fully-commented reference.
 
+> **Mode column:** `both` = applies to all builds · `pg+s3` = default build only · `standalone` = standalone build only
+
 ### Configuration Reference
 
-#### Server
+#### Server — `both`
 
 | Setting | Env Var | Default | Description |
 |---------|---------|---------|-------------|
@@ -184,15 +258,15 @@ See [`config.toml.example`](config.toml.example) for a fully-commented reference
 | `server.max_associations` | `PACS_SERVER__MAX_ASSOCIATIONS` | `64` | Max concurrent DIMSE connections |
 | `server.dimse_timeout_secs` | `PACS_SERVER__DIMSE_TIMEOUT_SECS` | `30` | DIMSE operation timeout (seconds) |
 
-#### Database
+#### Database — `both`
 
 | Setting | Env Var | Default | Description |
 |---------|---------|---------|-------------|
-| `database.url` | `PACS_DATABASE__URL` | *(required)* | PostgreSQL connection URL |
+| `database.url` | `PACS_DATABASE__URL` | *(required)* | `postgres://...` for pg+s3 builds; `sqlite://...` for standalone |
 | `database.max_connections` | `PACS_DATABASE__MAX_CONNECTIONS` | `20` | Connection pool size |
 | `database.run_migrations` | `PACS_DATABASE__RUN_MIGRATIONS` | `true` | Auto-run migrations on startup |
 
-#### Storage
+#### Storage — `pg+s3` only
 
 | Setting | Env Var | Default | Description |
 |---------|---------|---------|-------------|
@@ -202,14 +276,20 @@ See [`config.toml.example`](config.toml.example) for a fully-commented reference
 | `storage.secret_key` | `PACS_STORAGE__SECRET_KEY` | *(required)* | S3 secret access key |
 | `storage.region` | `PACS_STORAGE__REGION` | `us-east-1` | S3 region |
 
-#### Logging
+#### Filesystem Storage — `standalone` only
+
+| Setting | Env Var | Default | Description |
+|---------|---------|---------|-------------|
+| `filesystem_storage.root` | `PACS_FILESYSTEM_STORAGE__ROOT` | *(required)* | Root directory for filesystem-backed blob storage |
+
+#### Logging — `both`
 
 | Setting | Env Var | Default | Description |
 |---------|---------|---------|-------------|
 | `logging.level` | `PACS_LOGGING__LEVEL` | `info` | Log level ([tracing env_filter syntax](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html)) |
 | `logging.format` | `PACS_LOGGING__FORMAT` | `json` | `json` or `pretty` |
 
-#### Bootstrap DICOM Nodes
+#### Bootstrap DICOM Nodes — `both`
 
 You can pre-seed the remote node registry directly from `config.toml` with
 repeated `[[nodes]]` tables. On startup, pacsnode upserts each configured node
@@ -328,7 +408,7 @@ Nodes are the **AE whitelist** and remote-destination catalog. When
 `server.ae_whitelist_enabled = true`, pacsnode only accepts inbound DIMSE
 associations from calling AE titles that already exist in this list. The same
 registry is also used for outbound DIMSE destinations such as C-MOVE / C-STORE
-SCU operations. Nodes are stored in the `dicom_nodes` PostgreSQL table and
+SCU operations. Nodes are stored in the metadata backend's `dicom_nodes` table and
 **persist across restarts**.
 
 **Enable AE whitelisting:**
@@ -477,9 +557,9 @@ echoscu --host localhost --port 4242 --ae-title MODALITY \
 
 ---
 
-## Database
+## Metadata Storage
 
-pacsnode uses PostgreSQL with a hybrid schema: indexed relational columns for fast QIDO queries, plus JSONB columns with GIN indexes for full metadata retrieval.
+By default, pacsnode uses PostgreSQL with a hybrid schema: indexed relational columns for fast QIDO queries, plus JSONB columns with GIN indexes for full metadata retrieval. Standalone builds use SQLite with equivalent logical tables and trigger-maintained counters.
 
 ### Schema Overview
 
@@ -493,7 +573,7 @@ pacsnode uses PostgreSQL with a hybrid schema: indexed relational columns for fa
 
 ### Migrations
 
-Migrations are managed with [sqlx-cli](https://crates.io/crates/sqlx-cli) and live in the `migrations/` directory. By default, pacsnode runs pending migrations automatically on startup (`database.run_migrations = true`).
+PostgreSQL migrations are managed with [sqlx-cli](https://crates.io/crates/sqlx-cli) and live in the workspace `migrations/` directory. The standalone SQLite backend ships its own embedded migrations under `crates/pacs-sqlite-store/migrations/`. By default, pacsnode runs pending migrations automatically on startup (`database.run_migrations = true`).
 
 To manage migrations manually:
 
@@ -515,8 +595,8 @@ sqlx migrate info --source migrations/ --database-url postgres://...
 ### Running Tests
 
 ```bash
-# Unit tests (no external services needed)
-cargo test
+# Unit tests / workspace tests that do not need Docker
+cargo test --workspace --all-targets --exclude pacs-store && cargo test -p pacs-store --lib
 
 # Integration tests require PostgreSQL + MinIO (see docker/docker-compose.yml)
 cd docker && docker compose up -d postgres minio
@@ -545,7 +625,9 @@ pacsnode/
 │   ├── pacs-core/          # Domain types, traits, errors
 │   ├── pacs-dicom/         # dicom-toolkit-rs adapter
 │   ├── pacs-store/         # PostgreSQL MetadataStore
+│   ├── pacs-sqlite-store/  # SQLite MetadataStore
 │   ├── pacs-storage/       # S3 BlobStore
+│   ├── pacs-fs-storage/    # Filesystem BlobStore
 │   ├── pacs-dimse/         # DIMSE SCP/SCU
 │   ├── pacs-api/           # Axum HTTP handlers
 │   └── pacs-server/        # Binary, config, startup

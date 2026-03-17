@@ -25,5 +25,5 @@ pub mod s3;
 
 pub use config::StorageConfig;
 pub use error::StorageError;
-pub use plugin::S3BlobStorePlugin;
+pub use plugin::{S3BlobStorePlugin, S3_BLOB_STORE_PLUGIN_ID};
 pub use s3::S3BlobStore;

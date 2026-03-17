@@ -416,14 +416,17 @@ impl PluginRegistry {
         for (idx, plugin) in self.plugins.iter().enumerate() {
             let manifest = plugin.manifest();
             for dependency in manifest.dependencies {
-                let dep_idx = self.plugin_ids.get(&dependency).copied().ok_or_else(|| {
-                    PluginError::MissingDependency {
-                        plugin_id: manifest.id.clone(),
-                        dependency,
-                    }
-                })?;
-                graph[dep_idx].push(idx);
-                indegree[idx] += 1;
+                let dep_indices =
+                    self.resolve_dependency_indices(&dependency)
+                        .ok_or_else(|| PluginError::MissingDependency {
+                            plugin_id: manifest.id.clone(),
+                            dependency,
+                        })?;
+
+                for dep_idx in dep_indices {
+                    graph[dep_idx].push(idx);
+                    indegree[idx] += 1;
+                }
             }
         }
 
@@ -457,6 +460,33 @@ impl PluginRegistry {
 
         Ok(order)
     }
+
+    fn resolve_dependency_indices(&self, dependency: &str) -> Option<Vec<usize>> {
+        let matches = match dependency {
+            crate::METADATA_STORE_CAPABILITY_DEPENDENCY => self
+                .plugins
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, plugin)| {
+                    plugin.as_metadata_store_plugin().is_some().then_some(idx)
+                })
+                .collect::<Vec<_>>(),
+            crate::BLOB_STORE_CAPABILITY_DEPENDENCY => self
+                .plugins
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, plugin)| plugin.as_blob_store_plugin().is_some().then_some(idx))
+                .collect::<Vec<_>>(),
+            _ => self
+                .plugin_ids
+                .get(dependency)
+                .copied()
+                .into_iter()
+                .collect::<Vec<_>>(),
+        };
+
+        (!matches.is_empty()).then_some(matches)
+    }
 }
 
 impl Default for PluginRegistry {
@@ -473,8 +503,8 @@ mod tests {
     use bytes::Bytes;
     use pacs_core::{
         AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson, DicomNode, Instance,
-        InstanceQuery, MetadataStore, PacsError, PacsResult, PacsStatistics, Series, SeriesQuery,
-        SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
+        InstanceQuery, MetadataStore, NewAuditLogEntry, PacsError, PacsResult, PacsStatistics,
+        Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
     };
     use tokio::sync::Mutex;
 
@@ -570,6 +600,10 @@ mod tests {
                 resource: "audit_log",
                 uid: "0".into(),
             })
+        }
+
+        async fn store_audit_log(&self, _entry: &NewAuditLogEntry) -> PacsResult<()> {
+            Ok(())
         }
     }
 
@@ -799,6 +833,44 @@ mod tests {
             .await
             .unwrap();
 
+        assert!(registry.metadata_store().is_some());
+        assert!(registry.blob_store().is_some());
+    }
+
+    #[tokio::test]
+    async fn capability_dependencies_resolve_against_provider_plugins() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut registry = PluginRegistry::new();
+        registry
+            .register(Box::new(MetadataPlugin::default()))
+            .unwrap();
+        registry.register(Box::new(BlobPlugin::default())).unwrap();
+        registry
+            .register(Box::new(OrderPlugin::new(
+                "dependent",
+                vec![
+                    crate::METADATA_STORE_CAPABILITY_DEPENDENCY.into(),
+                    crate::BLOB_STORE_CAPABILITY_DEPENDENCY.into(),
+                ],
+                Arc::clone(&events),
+            )))
+            .unwrap();
+
+        registry
+            .init_all(
+                ServerInfo {
+                    ae_title: "PACSNODE".into(),
+                    http_port: 8042,
+                    dicom_port: 4242,
+                    version: "0.1.0",
+                },
+                &HashMap::new(),
+            )
+            .await
+            .unwrap();
+
+        let events = events.lock().await.clone();
+        assert_eq!(events, vec!["init:dependent", "start:dependent"]);
         assert!(registry.metadata_store().is_some());
         assert!(registry.blob_store().is_some());
     }

@@ -1,7 +1,13 @@
 //! pacsnode server configuration.
 //!
-//! Configuration is loaded from a TOML file, then overridden by environment
-//! variables with the prefix `PACS_` (e.g. `PACS_DATABASE__URL`).
+//! Configuration is loaded in three layers (later layers override earlier ones):
+//!
+//! 1. `config.toml` next to the **executable** (optional — useful when running the
+//!    binary directly from its release/install directory)
+//! 2. `config.toml` in the **current working directory** (optional — overrides the
+//!    executable-adjacent file when both are present)
+//! 3. **Environment variables** with the `PACS_` prefix (override both TOML sources).
+//!    Use `__` (double underscore) as the nesting separator, e.g. `PACS_DATABASE__URL`.
 //!
 //! # Example config.toml
 //!
@@ -42,10 +48,15 @@ pub struct AppConfig {
     /// Optional DICOM nodes to upsert into the registry on startup.
     #[serde(default)]
     pub nodes: Vec<DicomNode>,
-    /// PostgreSQL database settings.
-    pub database: DatabaseConfig,
+    /// Metadata database settings for the active backend.
+    #[serde(default)]
+    pub database: Option<DatabaseConfig>,
     /// S3-compatible object storage settings.
-    pub storage: StorageConfig,
+    #[serde(default)]
+    pub storage: Option<StorageConfig>,
+    /// Filesystem blob storage settings for standalone deployments.
+    #[serde(default)]
+    pub filesystem_storage: Option<FilesystemStorageConfig>,
     /// Structured logging settings.
     #[serde(default)]
     pub logging: LoggingConfig,
@@ -87,10 +98,14 @@ pub struct ServerConfig {
     pub dimse_timeout_secs: u64,
 }
 
-/// PostgreSQL connection configuration.
+/// Metadata database connection configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DatabaseConfig {
-    /// `postgres://user:password@host:port/dbname` connection string.
+    /// Backend-specific connection string.
+    ///
+    /// Examples:
+    /// - PostgreSQL: `postgres://user:password@host:port/dbname`
+    /// - SQLite: `sqlite://./data/pacsnode.db`
     pub url: String,
     /// Maximum number of pooled connections.
     #[serde(default = "default_max_connections")]
@@ -114,6 +129,13 @@ pub struct StorageConfig {
     /// AWS/S3 region string (MinIO/RustFS ignore this).
     #[serde(default = "default_region")]
     pub region: String,
+}
+
+/// Local filesystem blob storage configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct FilesystemStorageConfig {
+    /// Root directory used for DICOM blob storage.
+    pub root: String,
 }
 
 /// Log format and verbosity.
@@ -150,15 +172,23 @@ pub struct PluginsConfig {
 }
 
 impl AppConfig {
-    /// Load configuration from `config.toml` (optional) + environment variables.
+    /// Load configuration from `config.toml` + environment variables.
     ///
-    /// Environment variables override file values. The prefix `PACS_` is
-    /// stripped, and `__` separates nested keys (e.g. `PACS_DATABASE__URL`
-    /// sets `database.url`).
+    /// Sources are applied in priority order (highest wins):
+    ///
+    /// 1. `config.toml` next to the executable — found automatically, no path
+    ///    configuration required; useful when shipping the binary with a bundled
+    ///    config file in the same directory.
+    /// 2. `config.toml` in the **current working directory** — overrides the
+    ///    executable-adjacent file when both exist.
+    /// 3. **Environment variables** — `PACS_` prefix, `__` separator
+    ///    (e.g. `PACS_SERVER__HTTP_PORT=9000` overrides `server.http_port`).
+    ///
+    /// All sources are optional; missing files are silently skipped.
     ///
     /// # Errors
     ///
-    /// Returns a [`ConfigError`] if the file exists but is malformed, or if a
+    /// Returns a [`ConfigError`] if a file exists but is malformed, or if a
     /// required field is missing after all sources are merged.
     ///
     /// # Examples
@@ -169,7 +199,31 @@ impl AppConfig {
     /// println!("listening on :{}", cfg.server.http_port);
     /// ```
     pub fn load() -> Result<Self, ConfigError> {
-        Self::load_from("config")
+        let mut builder = Config::builder();
+
+        // Layer 1: config.toml next to the executable (lowest file priority).
+        // Resolved via current_exe() so it works regardless of working directory.
+        if let Ok(exe_path) = std::env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                let exe_config = exe_dir.join("config");
+                builder = builder.add_source(
+                    File::with_name(&exe_config.to_string_lossy().into_owned()).required(false),
+                );
+            }
+        }
+
+        // Layer 2: config.toml in the current working directory (overrides exe-adjacent).
+        builder = builder.add_source(File::with_name("config").required(false));
+
+        // Layer 3: environment variables (highest priority, override both files).
+        builder = builder.add_source(
+            Environment::with_prefix("PACS")
+                .prefix_separator("_")
+                .separator("__")
+                .try_parsing(true),
+        );
+
+        builder.build()?.try_deserialize()
     }
 
     /// Load configuration from the named file stem (without extension).
@@ -282,8 +336,16 @@ mod tests {
         assert!(cfg.server.preferred_transfer_syntaxes.is_empty());
         assert_eq!(cfg.server.max_associations, 64);
         assert!(cfg.nodes.is_empty());
-        assert!(cfg.database.run_migrations);
-        assert_eq!(cfg.storage.region, "us-east-1");
+        assert!(
+            cfg.database
+                .as_ref()
+                .expect("database config")
+                .run_migrations
+        );
+        assert_eq!(
+            cfg.storage.as_ref().expect("storage config").region,
+            "us-east-1"
+        );
         assert_eq!(cfg.logging.format, LogFormat::Json);
 
         // Cleanup
@@ -474,5 +536,32 @@ mod tests {
             .try_deserialize()
             .unwrap();
         assert_eq!(cfg.logging.format, LogFormat::Pretty);
+    }
+
+    #[test]
+    fn filesystem_storage_deserializes_from_toml() {
+        let toml = r#"
+            [server]
+            http_port = 8042
+            dicom_port = 4242
+            [database]
+            url = "sqlite://./data/pacsnode.db"
+            [filesystem_storage]
+            root = "./data/blobs"
+        "#;
+        let cfg: AppConfig = config::Config::builder()
+            .add_source(config::File::from_str(toml, config::FileFormat::Toml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+
+        assert_eq!(
+            cfg.filesystem_storage
+                .as_ref()
+                .expect("filesystem storage")
+                .root,
+            "./data/blobs"
+        );
     }
 }

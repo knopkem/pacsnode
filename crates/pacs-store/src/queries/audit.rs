@@ -1,7 +1,7 @@
 //! Audit-log SQL helpers: browse, search, and fetch by ID.
 
 use chrono::{DateTime, Utc};
-use pacs_core::{AuditLogEntry, AuditLogPage, AuditLogQuery, PacsResult};
+use pacs_core::{AuditLogEntry, AuditLogPage, AuditLogQuery, NewAuditLogEntry, PacsResult};
 use sqlx::{PgPool, Postgres, QueryBuilder};
 
 use crate::error::{map_db_err, map_store_err};
@@ -94,6 +94,35 @@ pub(crate) async fn get(pool: &PgPool, id: i64) -> PacsResult<AuditLogEntry> {
         .await
         .map_err(|error| map_db_err(error, "audit_log", &id.to_string()))
         .map(AuditLogEntry::from)
+}
+
+/// Persists a new audit-log row.
+pub(crate) async fn store(pool: &PgPool, entry: &NewAuditLogEntry) -> PacsResult<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO audit_log (
+            user_id,
+            action,
+            resource,
+            resource_uid,
+            source_ip,
+            status,
+            details
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        "#,
+    )
+    .bind(entry.user_id.as_deref())
+    .bind(&entry.action)
+    .bind(&entry.resource)
+    .bind(entry.resource_uid.as_deref())
+    .bind(entry.source_ip.as_deref())
+    .bind(&entry.status)
+    .bind(&entry.details)
+    .execute(pool)
+    .await
+    .map_err(map_store_err)?;
+
+    Ok(())
 }
 
 fn push_filters(qb: &mut QueryBuilder<'_, Postgres>, query: &AuditLogQuery) {

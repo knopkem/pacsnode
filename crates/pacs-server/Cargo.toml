@@ -6,6 +6,14 @@ edition.workspace     = true
 rust-version.workspace = true
 license.workspace     = true
 
+[features]
+default = ["postgres", "s3"]
+postgres = ["dep:pacs-store"]
+sqlite = ["dep:pacs-sqlite-store"]
+s3 = ["dep:pacs-storage"]
+filesystem = ["dep:pacs-fs-storage"]
+standalone = ["sqlite", "filesystem"]
+
 [[bin]]
 name = "pacsnode"
 path = "src/main.rs"
@@ -18,9 +26,11 @@ axum         = { workspace = true }
 pacs-auth-plugin = { workspace = true }
 pacs-audit-plugin = { workspace = true }
 pacs-core    = { workspace = true }
+pacs-fs-storage = { workspace = true, optional = true }
 pacs-plugin  = { workspace = true }
-pacs-store   = { workspace = true }
-pacs-storage = { workspace = true }
+pacs-sqlite-store = { workspace = true, optional = true }
+pacs-store   = { workspace = true, optional = true }
+pacs-storage = { workspace = true, optional = true }
 pacs-dicom   = { workspace = true }
 pacs-dimse   = { workspace = true }
 pacs-metrics-plugin = { workspace = true }

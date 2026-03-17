@@ -1,13 +1,24 @@
 # pacsnode — Configuration Reference
 #
-# pacsnode loads configuration in two layers (later layers override earlier):
-#   1. config.toml  — this file (optional, looked for in the working directory)
-#   2. Environment   — PACS_ prefix, __ separator (e.g. PACS_SERVER__HTTP_PORT=9000)
+# pacsnode loads configuration in three layers (later layers override earlier):
+#   1. config.toml  — next to the executable         (optional)
+#   2. config.toml  — in the current working directory (optional, overrides #1)
+#   3. Environment   — PACS_ prefix, __ separator (e.g. PACS_SERVER__HTTP_PORT=9000)
 #
 # Copy this file to config.toml and adjust values for your deployment.
 # All values shown below are the defaults.
+#
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │  BUILD MODE LEGEND                                                          │
+# │                                                                             │
+# │  [both]        — applies to both default (PostgreSQL + S3) and standalone   │
+# │  [pg+s3]       — default build only  (cargo build --release)               │
+# │  [standalone]  — standalone build only                                     │
+# │                   (cargo build --release --no-default-features \           │
+# │                    --features standalone)                                   │
+# └─────────────────────────────────────────────────────────────────────────────┘
 
-# ── Server ────────────────────────────────────────────────────────────────────
+# ── Server [both] ─────────────────────────────────────────────────────────────
 
 [server]
 # HTTP port for REST API and DICOMweb (STOW-RS, QIDO-RS, WADO-RS)
@@ -43,7 +54,7 @@ max_associations = 64
 # DIMSE operation timeout in seconds
 dimse_timeout_secs = 30
 
-# ── Bootstrap DICOM Nodes ──────────────────────────────────────────────────────
+# ── Bootstrap DICOM Nodes [both] ──────────────────────────────────────────────
 #
 # Optional `[[nodes]]` entries are upserted into the node registry on startup.
 # Use this to pre-seed the AE whitelist and known DIMSE destinations from TOML.
@@ -57,11 +68,12 @@ dimse_timeout_secs = 30
 # description = "CT Scanner - Room 3"
 # tls_enabled = false
 
-# ── Database ──────────────────────────────────────────────────────────────────
+# ── Database [both] ───────────────────────────────────────────────────────────
 
 [database]
-# PostgreSQL connection URL (REQUIRED — no default)
-# Format: postgres://user:password@host:port/database
+# Metadata backend connection URL (REQUIRED — no default)
+# PostgreSQL (default build):  postgres://user:password@host:port/database
+# SQLite    (standalone build): sqlite://./data/pacsnode.db
 url = "postgres://pacsnode:secret@localhost:5432/pacsnode"
 
 # Maximum connections in the connection pool
@@ -70,7 +82,10 @@ max_connections = 20
 # Automatically run pending sqlx migrations on startup
 run_migrations = true
 
-# ── Storage ───────────────────────────────────────────────────────────────────
+# ── S3 Storage [pg+s3] ────────────────────────────────────────────────────────
+#
+# Required for the default build (PostgreSQL + S3).
+# Omit this entire section in a standalone build — use [filesystem_storage] below.
 
 [storage]
 # S3-compatible object storage endpoint (REQUIRED — no default)
@@ -90,7 +105,15 @@ secret_key = ""
 # S3 region
 region = "us-east-1"
 
-# ── Logging ───────────────────────────────────────────────────────────────────
+# ── Filesystem Storage [standalone] ──────────────────────────────────────────
+#
+# Required for the standalone build (SQLite + filesystem).
+# Remove or ignore in a default (PostgreSQL + S3) build.
+#
+# [filesystem_storage]
+# root = "./data/blobs"
+
+# ── Logging [both] ────────────────────────────────────────────────────────────
 
 [logging]
 # Log level filter (tracing env_filter syntax)
@@ -100,9 +123,10 @@ level = "info"
 # Log output format: "json" for structured logging, "pretty" for human-readable
 format = "json"
 
-# ── Optional Plugins ────────────────────────────────────────────────────────────
+# ── Optional Plugins [both] ─────────────────────────────────────────────────────
 #
-# Built-in storage and DIMSE plugins are enabled automatically.
+# Built-in storage and DIMSE plugins are enabled automatically for the selected
+# cargo feature set.
 # Add optional plugin IDs below to enable them:
 #   - "basic-auth"
 #   - "audit-logger"

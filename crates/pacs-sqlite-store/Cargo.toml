@@ -1,6 +1,6 @@
 [package]
-name        = "pacs-audit-plugin"
-description = "pacsnode audit-log event plugin"
+name        = "pacs-sqlite-store"
+description = "pacsnode — SQLite MetadataStore implementation"
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -8,8 +8,15 @@ license.workspace      = true
 
 [dependencies]
 async-trait = { workspace = true }
+chrono      = { workspace = true }
 pacs-core   = { workspace = true }
 pacs-plugin = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
+sqlx        = { workspace = true }
+tokio       = { workspace = true }
 tracing     = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio    = { workspace = true }

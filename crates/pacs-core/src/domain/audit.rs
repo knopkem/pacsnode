@@ -1,6 +1,47 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// A new audit log entry awaiting persistence.
+///
+/// This type mirrors [`AuditLogEntry`] without the database-assigned identifier
+/// and timestamp fields.
+///
+/// # Examples
+///
+/// ```
+/// use pacs_core::NewAuditLogEntry;
+///
+/// let entry = NewAuditLogEntry {
+///     user_id: Some("admin".into()),
+///     action: "DELETE".into(),
+///     resource: "study".into(),
+///     resource_uid: Some("1.2.3".into()),
+///     source_ip: Some("127.0.0.1".into()),
+///     status: "ok".into(),
+///     details: serde_json::json!({}),
+/// };
+///
+/// assert_eq!(entry.action, "DELETE");
+/// assert_eq!(entry.resource_uid.as_deref(), Some("1.2.3"));
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NewAuditLogEntry {
+    /// Authenticated user ID, if the action originated from HTTP auth.
+    pub user_id: Option<String>,
+    /// High-level action name, such as `STORE`, `QUERY`, or `DELETE`.
+    pub action: String,
+    /// Resource kind, such as `study`, `instance`, or `association`.
+    pub resource: String,
+    /// Resource UID or identifier, when available.
+    pub resource_uid: Option<String>,
+    /// Source IP address, when available.
+    pub source_ip: Option<String>,
+    /// Outcome status, such as `ok` or `rejected`.
+    pub status: String,
+    /// Structured event details.
+    pub details: serde_json::Value,
+}
+
 /// A single append-only audit log entry.
 ///
 /// # Examples
@@ -89,6 +130,26 @@ mod tests {
     use chrono::TimeZone;
 
     use super::*;
+
+    #[test]
+    fn new_audit_log_entry_serde_roundtrip() {
+        let entry = NewAuditLogEntry {
+            user_id: Some("admin".into()),
+            action: "QUERY".into(),
+            resource: "query".into(),
+            resource_uid: None,
+            source_ip: Some("127.0.0.1".into()),
+            status: "ok".into(),
+            details: serde_json::json!({
+                "level": "STUDY",
+                "num_results": 3,
+            }),
+        };
+
+        let json = serde_json::to_string(&entry).unwrap();
+        let back: NewAuditLogEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, entry);
+    }
 
     #[test]
     fn audit_log_query_defaults_to_no_filters() {

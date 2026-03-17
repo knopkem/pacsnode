@@ -841,7 +841,8 @@ mod tests {
     use super::*;
     use mockall::mock;
     use pacs_core::{
-        AuditLogEntry, AuditLogPage, AuditLogQuery, PacsResult, PacsStatistics, SeriesUid, StudyUid,
+        AuditLogEntry, AuditLogPage, AuditLogQuery, NewAuditLogEntry, PacsResult, PacsStatistics,
+        SeriesUid, StudyUid,
     };
 
     // ── Mock MetadataStore ────────────────────────────────────────────────────
@@ -870,6 +871,7 @@ mod tests {
             async fn delete_node(&self, ae_title: &str) -> PacsResult<()>;
             async fn search_audit_logs(&self, q: &AuditLogQuery) -> PacsResult<AuditLogPage>;
             async fn get_audit_log(&self, id: i64) -> PacsResult<AuditLogEntry>;
+            async fn store_audit_log(&self, entry: &NewAuditLogEntry) -> PacsResult<()>;
         }
     }
 

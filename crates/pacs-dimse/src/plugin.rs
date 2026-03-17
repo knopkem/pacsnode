@@ -5,12 +5,13 @@ use pacs_core::{BlobStore, MetadataStore};
 use pacs_plugin::{
     register_plugin, FindScpPlugin, GetScpPlugin, MoveScpPlugin, Plugin, PluginContext,
     PluginError, PluginManifest, PluginRegistry, StoreScpHandler, StoreScpPlugin,
+    BLOB_STORE_CAPABILITY_DEPENDENCY, METADATA_STORE_CAPABILITY_DEPENDENCY,
 };
 
 use crate::server::provider::{PacsQueryProvider, PacsStoreProvider};
 
-const METADATA_STORE_DEPENDENCY: &str = "pg-metadata-store";
-const BLOB_STORE_DEPENDENCY: &str = "s3-blob-store";
+const METADATA_STORE_DEPENDENCY: &str = METADATA_STORE_CAPABILITY_DEPENDENCY;
+const BLOB_STORE_DEPENDENCY: &str = BLOB_STORE_CAPABILITY_DEPENDENCY;
 
 /// Built-in plugin ID for the default pacsnode C-STORE SCP handler.
 pub const PACS_STORE_SCP_PLUGIN_ID: &str = "pacs-store-scp";
@@ -191,8 +192,8 @@ mod tests {
     use bytes::Bytes;
     use pacs_core::{
         AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson, DicomNode, Instance,
-        InstanceQuery, MetadataStore, PacsError, PacsResult, PacsStatistics, Series, SeriesQuery,
-        SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
+        InstanceQuery, MetadataStore, NewAuditLogEntry, PacsError, PacsResult, PacsStatistics,
+        Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
     };
     use pacs_plugin::{EventBus, ServerInfo};
 
@@ -302,6 +303,10 @@ mod tests {
                 resource: "audit_log",
                 uid: "0".into(),
             })
+        }
+
+        async fn store_audit_log(&self, _entry: &NewAuditLogEntry) -> PacsResult<()> {
+            Ok(())
         }
     }
 

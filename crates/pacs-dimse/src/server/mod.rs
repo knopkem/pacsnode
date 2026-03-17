@@ -895,9 +895,9 @@ mod ae_whitelist_tests {
     use bytes::Bytes;
     use pacs_core::{
         AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson,
-        DicomNode as RegisteredDicomNode, Instance, InstanceQuery, MetadataStore, PacsResult,
-        PacsStatistics, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery,
-        StudyUid,
+        DicomNode as RegisteredDicomNode, Instance, InstanceQuery, MetadataStore, NewAuditLogEntry,
+        PacsResult, PacsStatistics, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study,
+        StudyQuery, StudyUid,
     };
 
     use super::*;
@@ -1013,6 +1013,10 @@ mod ae_whitelist_tests {
         async fn get_audit_log(&self, _id: i64) -> PacsResult<AuditLogEntry> {
             Err(PacsError::Internal("unused".into()))
         }
+
+        async fn store_audit_log(&self, _entry: &NewAuditLogEntry) -> PacsResult<()> {
+            Err(PacsError::Internal("unused".into()))
+        }
     }
 
     fn make_server(
@@ -1084,9 +1088,9 @@ mod tests {
     use mockall::mock;
     use pacs_core::{
         AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson,
-        DicomNode as RegisteredDicomNode, Instance, InstanceQuery, MetadataStore, PacsResult,
-        PacsStatistics, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery,
-        StudyUid,
+        DicomNode as RegisteredDicomNode, Instance, InstanceQuery, MetadataStore, NewAuditLogEntry,
+        PacsResult, PacsStatistics, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study,
+        StudyQuery, StudyUid,
     };
 
     mock! {
@@ -1112,6 +1116,7 @@ mod tests {
             async fn delete_node(&self, ae_title: &str) -> PacsResult<()>;
             async fn search_audit_logs(&self, q: &AuditLogQuery) -> PacsResult<AuditLogPage>;
             async fn get_audit_log(&self, id: i64) -> PacsResult<AuditLogEntry>;
+            async fn store_audit_log(&self, entry: &NewAuditLogEntry) -> PacsResult<()>;
         }
     }
     mock! {

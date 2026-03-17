@@ -1,30 +1,32 @@
 //! pacsnode audit-log plugin.
 //!
-//! Persists runtime events to the existing `audit_log` PostgreSQL table.
+//! Persists runtime events through the active [`MetadataStore`].
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
+use pacs_core::{MetadataStore, NewAuditLogEntry};
 use pacs_plugin::{
     register_plugin, EventKind, EventPlugin, PacsEvent, Plugin, PluginContext, PluginError,
-    PluginHealth, PluginManifest, QuerySource, ResourceLevel,
+    PluginHealth, PluginManifest, QuerySource, ResourceLevel, METADATA_STORE_CAPABILITY_DEPENDENCY,
 };
 use serde::Deserialize;
-use sqlx::{postgres::PgPoolOptions, PgPool};
 
 /// Compile-time plugin ID for the audit logger.
 pub const AUDIT_LOGGER_PLUGIN_ID: &str = "audit-logger";
 
-const METADATA_STORE_DEPENDENCY: &str = "pg-metadata-store";
+const METADATA_STORE_DEPENDENCY: &str = METADATA_STORE_CAPABILITY_DEPENDENCY;
 
 #[derive(Default)]
 pub struct AuditLoggerPlugin {
-    pool: Option<PgPool>,
+    store: Option<Arc<dyn MetadataStore>>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 struct AuditPluginConfig {
-    url: String,
-    #[serde(default = "default_max_connections")]
-    max_connections: u32,
+    #[serde(default = "default_true")]
+    #[serde(rename = "auto_enable_in_secure_deployments")]
+    _auto_enable_in_secure_deployments: bool,
 }
 
 #[derive(Debug)]
@@ -38,8 +40,8 @@ struct AuditRecord {
     details: serde_json::Value,
 }
 
-fn default_max_connections() -> u32 {
-    5
+fn default_true() -> bool {
+    true
 }
 
 #[async_trait]
@@ -55,27 +57,26 @@ impl Plugin for AuditLoggerPlugin {
     }
 
     async fn init(&mut self, ctx: &PluginContext) -> Result<(), PluginError> {
-        let config: AuditPluginConfig =
+        let _config: AuditPluginConfig =
             serde_json::from_value(ctx.config.clone()).map_err(|error| PluginError::Config {
                 plugin_id: AUDIT_LOGGER_PLUGIN_ID.into(),
                 message: error.to_string(),
             })?;
 
-        let pool = PgPoolOptions::new()
-            .max_connections(config.max_connections)
-            .connect(&config.url)
-            .await
-            .map_err(|source| PluginError::InitFailed {
-                plugin_id: AUDIT_LOGGER_PLUGIN_ID.into(),
-                source: Box::new(source),
-            })?;
-
-        self.pool = Some(pool);
+        self.store =
+            Some(
+                ctx.metadata_store
+                    .clone()
+                    .ok_or_else(|| PluginError::MissingDependency {
+                        plugin_id: AUDIT_LOGGER_PLUGIN_ID.into(),
+                        dependency: "metadata-store".into(),
+                    })?,
+            );
         Ok(())
     }
 
     async fn health(&self) -> PluginHealth {
-        if self.pool.is_some() {
+        if self.store.is_some() {
             PluginHealth::Healthy
         } else {
             PluginHealth::Unhealthy("plugin not initialized".into())
@@ -102,7 +103,7 @@ impl EventPlugin for AuditLoggerPlugin {
     }
 
     async fn on_event(&self, event: &PacsEvent) -> Result<(), PluginError> {
-        let Some(pool) = &self.pool else {
+        let Some(store) = &self.store else {
             return Err(PluginError::NotInitialized {
                 plugin_id: AUDIT_LOGGER_PLUGIN_ID.into(),
                 capability: "EventPlugin".into(),
@@ -113,24 +114,30 @@ impl EventPlugin for AuditLoggerPlugin {
             return Ok(());
         };
 
-        sqlx::query(
-            "INSERT INTO audit_log (user_id, action, resource, resource_uid, source_ip, status, details) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-        )
-        .bind(record.user_id)
-        .bind(record.action)
-        .bind(record.resource)
-        .bind(record.resource_uid)
-        .bind(record.source_ip)
-        .bind(record.status)
-        .bind(record.details)
-        .execute(pool)
-        .await
-        .map_err(|source| PluginError::Runtime {
-            plugin_id: AUDIT_LOGGER_PLUGIN_ID.into(),
-            message: source.to_string(),
-        })?;
+        let entry = NewAuditLogEntry::from(record);
+        store
+            .store_audit_log(&entry)
+            .await
+            .map_err(|source| PluginError::Runtime {
+                plugin_id: AUDIT_LOGGER_PLUGIN_ID.into(),
+                message: source.to_string(),
+            })?;
 
         Ok(())
+    }
+}
+
+impl From<AuditRecord> for NewAuditLogEntry {
+    fn from(record: AuditRecord) -> Self {
+        Self {
+            user_id: record.user_id,
+            action: record.action.into(),
+            resource: record.resource.into(),
+            resource_uid: record.resource_uid,
+            source_ip: record.source_ip,
+            status: record.status.into(),
+            details: record.details,
+        }
     }
 }
 

@@ -480,6 +480,10 @@ mod tests {
                 uid: "0".into(),
             })
         }
+
+        async fn store_audit_log(&self, _entry: &pacs_core::NewAuditLogEntry) -> PacsResult<()> {
+            Ok(())
+        }
     }
 
     #[derive(Default)]

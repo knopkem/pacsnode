@@ -206,9 +206,8 @@ impl AppConfig {
         if let Ok(exe_path) = std::env::current_exe() {
             if let Some(exe_dir) = exe_path.parent() {
                 let exe_config = exe_dir.join("config");
-                builder = builder.add_source(
-                    File::with_name(&exe_config.to_string_lossy().into_owned()).required(false),
-                );
+                let exe_config = exe_config.to_string_lossy();
+                builder = builder.add_source(File::with_name(exe_config.as_ref()).required(false));
             }
         }
 
@@ -229,6 +228,7 @@ impl AppConfig {
     /// Load configuration from the named file stem (without extension).
     ///
     /// Useful for testing with alternative config files.
+    #[cfg(test)]
     pub fn load_from(file_stem: &str) -> Result<Self, ConfigError> {
         Config::builder()
             // Optional TOML config file

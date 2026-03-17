@@ -139,7 +139,7 @@ pub struct FilesystemStorageConfig {
 }
 
 /// Log format and verbosity.
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LoggingConfig {
     /// Log level filter (e.g. `"info"`, `"debug"`, `"info,pacs_dimse=trace"`).
     #[serde(default = "default_log_level")]
@@ -147,6 +147,15 @@ pub struct LoggingConfig {
     /// Log output format: `"json"` for structured JSON, `"pretty"` for human-readable.
     #[serde(default = "default_log_format")]
     pub format: LogFormat,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            level: default_log_level(),
+            format: default_log_format(),
+        }
+    }
 }
 
 /// Log output format.

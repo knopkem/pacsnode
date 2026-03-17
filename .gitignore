@@ -44,6 +44,9 @@ ehthumbs.db
 *.log
 logs/
 
+# ── Data ─────────────────────────────────────────────────────────────────────
+data/
+
 # ── Docker local volumes ─────────────────────────────────────────────────────
 docker/postgres_data/
 docker/minio_data/

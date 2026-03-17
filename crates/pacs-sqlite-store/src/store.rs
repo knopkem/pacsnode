@@ -367,14 +367,30 @@ impl MetadataStore for SqliteMetadataStore {
         let mut qb = QueryBuilder::<Sqlite>::new(format!("{STUDY_SELECT} WHERE 1=1"));
 
         if let Some(patient_id) = &query.patient_id {
-            qb.push(" AND patient_id = ");
-            qb.push_bind(patient_id.clone());
+            if patient_id.contains('*') || patient_id.contains('?') {
+                qb.push(" AND patient_id LIKE ");
+                qb.push_bind(
+                    patient_id
+                        .replace('*', "%")
+                        .replace('?', "_"),
+                );
+            } else {
+                qb.push(" AND patient_id = ");
+                qb.push_bind(patient_id.clone());
+            }
         }
 
         if let Some(patient_name) = &query.patient_name {
-            if query.fuzzy_matching {
+            if query.fuzzy_matching
+                || patient_name.contains('*')
+                || patient_name.contains('?')
+            {
                 qb.push(" AND LOWER(patient_name) LIKE LOWER(");
-                qb.push_bind(patient_name.replace('*', "%"));
+                qb.push_bind(
+                    patient_name
+                        .replace('*', "%")
+                        .replace('?', "_"),
+                );
                 qb.push(")");
             } else {
                 qb.push(" AND patient_name = ");

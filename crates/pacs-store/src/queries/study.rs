@@ -132,14 +132,19 @@ pub(crate) async fn query(pool: &PgPool, q: &StudyQuery) -> PacsResult<Vec<Study
     let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(format!("{SELECT_COLS} WHERE 1=1"));
 
     if let Some(ref pid) = q.patient_id {
-        qb.push(" AND patient_id = ");
-        qb.push_bind(pid.clone());
+        if pid.contains('*') || pid.contains('?') {
+            qb.push(" AND patient_id LIKE ");
+            qb.push_bind(pid.replace('*', "%").replace('?', "_"));
+        } else {
+            qb.push(" AND patient_id = ");
+            qb.push_bind(pid.clone());
+        }
     }
 
     if let Some(ref pname) = q.patient_name {
-        if q.fuzzy_matching {
+        if q.fuzzy_matching || pname.contains('*') || pname.contains('?') {
             qb.push(" AND patient_name ILIKE ");
-            qb.push_bind(pname.replace('*', "%"));
+            qb.push_bind(pname.replace('*', "%").replace('?', "_"));
         } else {
             qb.push(" AND patient_name = ");
             qb.push_bind(pname.clone());

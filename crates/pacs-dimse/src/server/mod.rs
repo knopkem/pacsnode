@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use dicom_toolkit_data::DataSet;
+use dicom_toolkit_data::{io::reader::DicomReader, io::writer::DicomWriter, DataSet};
 use dicom_toolkit_dict::tags;
 use dicom_toolkit_net::{
-    c_store, handle_find_rq, handle_store_rq,
+    c_store,
     services::provider::{
         FindEvent, FindServiceProvider, GetEvent, GetServiceProvider, MoveEvent,
         MoveServiceProvider, RetrieveItem, StoreEvent, StoreResult, StoreServiceProvider,
@@ -28,9 +28,13 @@ use crate::config::DimseConfig;
 use crate::error::DimseError;
 
 pub mod provider;
+mod server_association;
+
 use provider::{PacsQueryProvider, PacsStoreProvider};
+use server_association::ServerAssociation;
 
 const TS_EXPLICIT_LE: &str = "1.2.840.10008.1.2.1";
+const TS_IMPLICIT_LE: &str = "1.2.840.10008.1.2";
 
 struct DynStoreProvider {
     inner: Arc<dyn StoreScpHandler>,
@@ -338,8 +342,14 @@ impl DicomServer {
     ) {
         let assoc_config = association_config(&server.config);
 
-        let mut assoc = match Association::accept(stream, &assoc_config).await {
+        let mut assoc = match ServerAssociation::accept(stream, &assoc_config).await {
             Ok(a) => a,
+            Err(dicom_toolkit_core::error::DcmError::Io(io_err))
+                if io_err.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                debug!(peer = %peer_addr, "Peer disconnected before completing association negotiation");
+                return;
+            }
             Err(e) => {
                 error!(error = %e, "Association negotiation failed");
                 return;
@@ -503,7 +513,7 @@ impl DicomServer {
 ///
 /// This function is **not** cancellation-safe.
 async fn send_echo_response(
-    assoc: &mut Association,
+    assoc: &mut ServerAssociation,
     ctx_id: u8,
     cmd: &DataSet,
 ) -> Result<(), DimseError> {
@@ -518,6 +528,369 @@ async fn send_echo_response(
 
     assoc.send_dimse_command(ctx_id, &rsp).await?;
     Ok(())
+}
+
+fn encode_dataset(
+    dataset: &DataSet,
+    transfer_syntax: &str,
+) -> Result<Vec<u8>, dicom_toolkit_core::error::DcmError> {
+    let mut bytes = Vec::new();
+    DicomWriter::new(&mut bytes).write_dataset(dataset, transfer_syntax)?;
+    Ok(bytes)
+}
+
+fn command_has_dataset(cmd: &DataSet) -> bool {
+    cmd.get_u16(tags::COMMAND_DATA_SET_TYPE)
+        .map(|value| value != 0x0101)
+        .unwrap_or(true)
+}
+
+fn trim_uid(value: Option<&str>) -> String {
+    value
+        .map(|raw| raw.trim().trim_end_matches('\0').to_string())
+        .unwrap_or_default()
+}
+
+fn store_dataset_has_required_uids(dataset: &DataSet) -> bool {
+    !trim_uid(dataset.get_string(tags::STUDY_INSTANCE_UID)).is_empty()
+        && !trim_uid(dataset.get_string(tags::SERIES_INSTANCE_UID)).is_empty()
+}
+
+fn payload_starts_with_file_meta(data: &[u8]) -> bool {
+    data.len() >= 4 && data[0] == 0x02 && data[1] == 0x00
+}
+
+fn payload_has_dicm_prefix(data: &[u8]) -> bool {
+    data.len() >= 132 && &data[128..132] == b"DICM"
+}
+
+fn payload_prefix_hex(data: &[u8], max_len: usize) -> String {
+    data.iter()
+        .take(max_len)
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn dataset_first_tags(dataset: &DataSet, max_tags: usize) -> String {
+    dataset
+        .tags()
+        .take(max_tags)
+        .map(|tag| format!("({:04X},{:04X})", tag.group, tag.element))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn decode_store_dataset(data: &[u8], negotiated_ts: &str, sop_instance_uid: &str) -> DataSet {
+    if data.is_empty() {
+        error!(
+            sop_instance_uid = %sop_instance_uid,
+            "C-STORE dataset payload is empty (0 bytes received)"
+        );
+        return DataSet::new();
+    }
+
+    let raw_dataset = DicomReader::new(data)
+        .read_dataset(negotiated_ts)
+        .map_err(|err| {
+            error!(
+                error = %err,
+                sop_instance_uid = %sop_instance_uid,
+                transfer_syntax = %negotiated_ts,
+                payload_len = data.len(),
+                prefix_hex = %payload_prefix_hex(data, 32),
+                "Failed to decode C-STORE payload as raw dataset"
+            );
+            err
+        })
+        .ok();
+
+    if let Some(dataset) = raw_dataset {
+        if store_dataset_has_required_uids(&dataset) {
+            return dataset;
+        }
+
+        error!(
+            sop_instance_uid = %sop_instance_uid,
+            transfer_syntax = %negotiated_ts,
+            payload_len = data.len(),
+            element_count = dataset.len(),
+            first_tags = %dataset_first_tags(&dataset, 8),
+            prefix_hex = %payload_prefix_hex(data, 32),
+            has_dicm_prefix = payload_has_dicm_prefix(data),
+            starts_with_file_meta = payload_starts_with_file_meta(data),
+            "Decoded C-STORE raw dataset but required UIDs missing; trying fallbacks"
+        );
+    }
+
+    if payload_starts_with_file_meta(data) {
+        let mut synthetic_file = Vec::with_capacity(132 + data.len());
+        synthetic_file.extend_from_slice(&[0u8; 128]);
+        synthetic_file.extend_from_slice(b"DICM");
+        synthetic_file.extend_from_slice(data);
+
+        if let Ok(file) = DicomReader::new(synthetic_file.as_slice()).read_file() {
+            if store_dataset_has_required_uids(&file.dataset) {
+                warn!(
+                    sop_instance_uid = %sop_instance_uid,
+                    negotiated_transfer_syntax = %negotiated_ts,
+                    payload_len = data.len(),
+                    "Recovered C-STORE dataset by decoding file meta without a preamble"
+                );
+                return file.dataset;
+            }
+        }
+    }
+
+    if let Ok(file) = DicomReader::new(data).read_file() {
+        if store_dataset_has_required_uids(&file.dataset) {
+            warn!(
+                sop_instance_uid = %sop_instance_uid,
+                transfer_syntax = %negotiated_ts,
+                payload_len = data.len(),
+                "Recovered C-STORE dataset by decoding the payload as a Part 10 file"
+            );
+            return file.dataset;
+        }
+    }
+
+    for fallback_ts in [TS_EXPLICIT_LE, TS_IMPLICIT_LE, "1.2.840.10008.1.2.2"] {
+        if fallback_ts == negotiated_ts {
+            continue;
+        }
+
+        if let Ok(dataset) = DicomReader::new(data).read_dataset(fallback_ts) {
+            if store_dataset_has_required_uids(&dataset) {
+                warn!(
+                    sop_instance_uid = %sop_instance_uid,
+                    negotiated_transfer_syntax = %negotiated_ts,
+                    fallback_transfer_syntax = %fallback_ts,
+                    payload_len = data.len(),
+                    "Recovered C-STORE dataset using a raw-dataset transfer syntax fallback"
+                );
+                return dataset;
+            }
+        }
+    }
+
+    error!(
+        sop_instance_uid = %sop_instance_uid,
+        negotiated_transfer_syntax = %negotiated_ts,
+        payload_len = data.len(),
+        prefix_hex = %payload_prefix_hex(data, 32),
+        has_dicm_prefix = payload_has_dicm_prefix(data),
+        starts_with_file_meta = payload_starts_with_file_meta(data),
+        "All C-STORE decode fallbacks exhausted"
+    );
+
+    DataSet::new()
+}
+
+async fn recv_command_data_bytes(
+    assoc: &mut ServerAssociation,
+    cmd: &DataSet,
+    command_name: &str,
+    required: bool,
+) -> Result<Vec<u8>, dicom_toolkit_core::error::DcmError> {
+    let ds_type = cmd.get_u16(tags::COMMAND_DATA_SET_TYPE);
+    if !command_has_dataset(cmd) {
+        if required {
+            warn!(
+                command = command_name,
+                command_data_set_type = ?ds_type,
+                "DIMSE command declared no dataset even though one is required; treating it as empty"
+            );
+        }
+        return Ok(Vec::new());
+    }
+
+    match assoc.recv_optional_dimse_data().await? {
+        Some(bytes) => {
+            info!(
+                command = command_name,
+                payload_len = bytes.len(),
+                command_data_set_type = ?ds_type,
+                "Received DIMSE dataset payload"
+            );
+            Ok(bytes)
+        }
+        None => {
+            let message =
+                "DIMSE command declared a dataset but the next queued PDV was another command; treating the dataset as empty";
+            if required {
+                warn!(
+                    command = command_name,
+                    command_data_set_type = ?ds_type,
+                    "{message}"
+                );
+            } else {
+                debug!(command = command_name, "{message}");
+            }
+            Ok(Vec::new())
+        }
+    }
+}
+
+async fn handle_store_rq<P>(
+    assoc: &mut ServerAssociation,
+    ctx_id: u8,
+    cmd: &DataSet,
+    provider: &P,
+) -> Result<(), dicom_toolkit_core::error::DcmError>
+where
+    P: StoreServiceProvider,
+{
+    let sop_class = cmd
+        .get_string(tags::AFFECTED_SOP_CLASS_UID)
+        .unwrap_or_default()
+        .trim_end_matches('\0')
+        .to_string();
+    let sop_instance = cmd
+        .get_string(tags::AFFECTED_SOP_INSTANCE_UID)
+        .unwrap_or_default()
+        .trim_end_matches('\0')
+        .to_string();
+    let msg_id = cmd.get_u16(tags::MESSAGE_ID).unwrap_or(1);
+
+    let data = recv_command_data_bytes(assoc, cmd, "C-STORE", true).await?;
+
+    let ts_uid = assoc
+        .context_by_id(ctx_id)
+        .map(|pc| pc.transfer_syntax.trim_end_matches('\0').to_string())
+        .unwrap_or_else(|| TS_EXPLICIT_LE.to_string());
+
+    info!(
+        sop_instance_uid = %sop_instance,
+        context_id = ctx_id,
+        transfer_syntax = %ts_uid,
+        payload_len = data.len(),
+        "C-STORE decode starting"
+    );
+
+    if data.is_empty() {
+        error!(
+            sop_instance_uid = %sop_instance,
+            context_id = ctx_id,
+            transfer_syntax = %ts_uid,
+            "C-STORE received ZERO bytes of dataset — data receive path returned empty"
+        );
+    }
+
+    let dataset = decode_store_dataset(data.as_slice(), &ts_uid, &sop_instance);
+
+    let event = StoreEvent {
+        calling_ae: assoc.calling_ae.clone(),
+        sop_class_uid: sop_class.clone(),
+        sop_instance_uid: sop_instance.clone(),
+        dataset,
+    };
+
+    let result = provider.on_store(event).await;
+
+    let mut rsp = DataSet::new();
+    rsp.set_uid(tags::AFFECTED_SOP_CLASS_UID, &sop_class);
+    rsp.set_u16(tags::COMMAND_FIELD, 0x8001);
+    rsp.set_u16(tags::MESSAGE_ID_BEING_RESPONDED_TO, msg_id);
+    rsp.set_u16(tags::COMMAND_DATA_SET_TYPE, 0x0101);
+    rsp.set_uid(tags::AFFECTED_SOP_INSTANCE_UID, &sop_instance);
+    rsp.set_u16(tags::STATUS, result.status);
+
+    assoc.send_dimse_command(ctx_id, &rsp).await
+}
+
+async fn handle_find_rq<P>(
+    assoc: &mut ServerAssociation,
+    ctx_id: u8,
+    cmd: &DataSet,
+    provider: &P,
+) -> Result<(), dicom_toolkit_core::error::DcmError>
+where
+    P: FindServiceProvider,
+{
+    let sop_class = cmd
+        .get_string(tags::AFFECTED_SOP_CLASS_UID)
+        .unwrap_or_default()
+        .trim_end_matches('\0')
+        .to_string();
+    let msg_id = cmd.get_u16(tags::MESSAGE_ID).unwrap_or(1);
+
+    let query_bytes = recv_command_data_bytes(assoc, cmd, "C-FIND", false).await?;
+
+    let negotiated_ts = assoc
+        .context_by_id(ctx_id)
+        .map(|pc| pc.transfer_syntax.trim_end_matches('\0').to_string())
+        .unwrap_or_else(|| TS_EXPLICIT_LE.to_string());
+
+    info!(
+        query_bytes_len = query_bytes.len(),
+        negotiated_ts = %negotiated_ts,
+        sop_class = %sop_class,
+        "C-FIND identifier received"
+    );
+
+    let identifier = match DicomReader::new(query_bytes.as_slice())
+        .read_dataset(&negotiated_ts)
+    {
+        Ok(ds) => {
+            let tag_list: Vec<String> = ds
+                .tags()
+                .map(|t| format!("({:04X},{:04X})", t.group, t.element))
+                .collect();
+            info!(
+                num_elements = ds.len(),
+                tags = %tag_list.join(", "),
+                qr_level = ?ds.get_string(tags::QUERY_RETRIEVE_LEVEL),
+                patient_name = ?ds.get_string(tags::PATIENT_NAME),
+                patient_id = ?ds.get_string(tags::PATIENT_ID),
+                "C-FIND identifier decoded"
+            );
+            ds
+        }
+        Err(e) => {
+            warn!(
+                error = %e,
+                negotiated_ts = %negotiated_ts,
+                query_bytes_len = query_bytes.len(),
+                "C-FIND identifier decode failed, falling back to empty dataset"
+            );
+            DataSet::new()
+        }
+    };
+
+    let event = FindEvent {
+        calling_ae: assoc.calling_ae.clone(),
+        sop_class_uid: sop_class.clone(),
+        identifier,
+    };
+
+    let matches = provider.on_find(event).await;
+    info!(
+        num_matches = matches.len(),
+        "C-FIND query completed"
+    );
+
+    for result_ds in &matches {
+        let result_bytes = encode_dataset(result_ds, &negotiated_ts)?;
+
+        let mut rsp = DataSet::new();
+        rsp.set_uid(tags::AFFECTED_SOP_CLASS_UID, &sop_class);
+        rsp.set_u16(tags::COMMAND_FIELD, 0x8020);
+        rsp.set_u16(tags::MESSAGE_ID_BEING_RESPONDED_TO, msg_id);
+        rsp.set_u16(tags::COMMAND_DATA_SET_TYPE, 0x0000);
+        rsp.set_u16(tags::STATUS, 0xFF00);
+
+        assoc.send_dimse_command(ctx_id, &rsp).await?;
+        assoc.send_dimse_data(ctx_id, &result_bytes).await?;
+    }
+
+    let mut final_rsp = DataSet::new();
+    final_rsp.set_uid(tags::AFFECTED_SOP_CLASS_UID, &sop_class);
+    final_rsp.set_u16(tags::COMMAND_FIELD, 0x8020);
+    final_rsp.set_u16(tags::MESSAGE_ID_BEING_RESPONDED_TO, msg_id);
+    final_rsp.set_u16(tags::COMMAND_DATA_SET_TYPE, 0x0101);
+    final_rsp.set_u16(tags::STATUS, 0x0000);
+
+    assoc.send_dimse_command(ctx_id, &final_rsp).await
 }
 
 fn association_config(config: &DimseConfig) -> AssociationConfig {
@@ -547,7 +920,7 @@ fn prepare_retrieve_dataset(
 }
 
 async fn handle_get_rq_with_transcoding<P>(
-    assoc: &mut Association,
+    assoc: &mut ServerAssociation,
     ctx_id: u8,
     cmd: &DataSet,
     provider: &P,
@@ -562,14 +935,14 @@ where
         .to_string();
     let msg_id = cmd.get_u16(tags::MESSAGE_ID).unwrap_or(1);
 
-    let query_bytes = assoc.recv_dimse_data().await?;
+    let query_bytes = recv_command_data_bytes(assoc, cmd, "C-GET", false).await?;
 
     let ts = assoc
         .context_by_id(ctx_id)
         .map(|pc| pc.transfer_syntax.trim_end_matches('\0').to_string())
         .unwrap_or_else(|| TS_EXPLICIT_LE.to_string());
 
-    let identifier = dicom_toolkit_data::DicomReader::new(query_bytes.as_slice())
+    let identifier = DicomReader::new(query_bytes.as_slice())
         .read_dataset(&ts)
         .unwrap_or_else(|_| DataSet::new());
 
@@ -658,7 +1031,7 @@ where
 }
 
 async fn handle_move_rq_with_transcoding<P, L>(
-    assoc: &mut Association,
+    assoc: &mut ServerAssociation,
     ctx_id: u8,
     cmd: &DataSet,
     provider: &P,
@@ -681,14 +1054,14 @@ where
         .trim()
         .to_string();
 
-    let query_bytes = assoc.recv_dimse_data().await?;
+    let query_bytes = recv_command_data_bytes(assoc, cmd, "C-MOVE", false).await?;
 
     let ts = assoc
         .context_by_id(ctx_id)
         .map(|pc| pc.transfer_syntax.trim_end_matches('\0').to_string())
         .unwrap_or_else(|| TS_EXPLICIT_LE.to_string());
 
-    let identifier = dicom_toolkit_data::DicomReader::new(query_bytes.as_slice())
+    let identifier = DicomReader::new(query_bytes.as_slice())
         .read_dataset(&ts)
         .unwrap_or_else(|_| DataSet::new());
 
@@ -1085,12 +1458,22 @@ mod ae_whitelist_tests {
 mod tests {
     use super::*;
     use crate::config::DimseConfig;
+    use dicom_toolkit_net::{
+        dimse,
+        pdu::{self, AssociateRq, Pdu, Pdv, PresentationContextRqItem},
+        AssociationConfig,
+    };
     use mockall::mock;
     use pacs_core::{
         AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson,
         DicomNode as RegisteredDicomNode, Instance, InstanceQuery, MetadataStore, NewAuditLogEntry,
         PacsResult, PacsStatistics, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study,
         StudyQuery, StudyUid,
+    };
+    use tokio::{
+        io::AsyncWriteExt,
+        net::{TcpListener, TcpStream},
+        sync::oneshot,
     };
 
     mock! {
@@ -1209,6 +1592,534 @@ mod tests {
     fn dicom_node_addr_hostname() {
         let node = DicomNode::new("DEST", "pacs.example.com", 11112);
         assert_eq!(node.addr(), "pacs.example.com:11112");
+    }
+
+    fn store_context() -> PresentationContextRqItem {
+        PresentationContextRqItem {
+            id: 1,
+            abstract_syntax: "1.2.840.10008.5.1.4.1.1.2".into(),
+            transfer_syntaxes: vec![TS_EXPLICIT_LE.to_string()],
+        }
+    }
+
+    fn store_associate_rq() -> AssociateRq {
+        AssociateRq {
+            called_ae_title: "PACSNODE".into(),
+            calling_ae_title: "FO-DICOM".into(),
+            application_context: "1.2.840.10008.3.1.1.1".into(),
+            presentation_contexts: vec![store_context()],
+            max_pdu_length: 16_384,
+            implementation_class_uid: "1.2.826.0.1.3680043.8.498.1".into(),
+            implementation_version_name: "FO-DICOM".into(),
+        }
+    }
+
+    #[test]
+    fn decode_store_dataset_recovers_part10_payload() {
+        let study_uid = "1.2.3.4.10";
+        let series_uid = "1.2.3.4.10.1";
+        let sop_instance_uid = "1.2.3.4.10.1.1";
+
+        let mut dataset = DataSet::new();
+        dataset.set_uid(tags::STUDY_INSTANCE_UID, study_uid);
+        dataset.set_uid(tags::SERIES_INSTANCE_UID, series_uid);
+        dataset.set_uid(tags::SOP_INSTANCE_UID, sop_instance_uid);
+
+        let file = dicom_toolkit_data::FileFormat::from_dataset(
+            "1.2.840.10008.5.1.4.1.1.2",
+            sop_instance_uid,
+            dataset,
+        );
+        let mut payload = Vec::new();
+        DicomWriter::new(&mut payload)
+            .write_file(&file)
+            .expect("encode Part 10 store payload");
+
+        let decoded = decode_store_dataset(&payload, TS_EXPLICIT_LE, sop_instance_uid);
+        assert_eq!(
+            decoded.get_string(tags::STUDY_INSTANCE_UID),
+            Some(study_uid)
+        );
+        assert_eq!(
+            decoded.get_string(tags::SERIES_INSTANCE_UID),
+            Some(series_uid)
+        );
+    }
+
+    #[test]
+    fn decode_store_dataset_recovers_file_meta_without_preamble() {
+        let study_uid = "1.2.3.4.11";
+        let series_uid = "1.2.3.4.11.1";
+        let sop_instance_uid = "1.2.3.4.11.1.1";
+
+        let mut dataset = DataSet::new();
+        dataset.set_uid(tags::STUDY_INSTANCE_UID, study_uid);
+        dataset.set_uid(tags::SERIES_INSTANCE_UID, series_uid);
+        dataset.set_uid(tags::SOP_INSTANCE_UID, sop_instance_uid);
+
+        let file = dicom_toolkit_data::FileFormat::from_dataset(
+            "1.2.840.10008.5.1.4.1.1.2",
+            sop_instance_uid,
+            dataset,
+        );
+        let mut payload = Vec::new();
+        DicomWriter::new(&mut payload)
+            .write_file(&file)
+            .expect("encode Part 10 store payload");
+
+        let payload_without_preamble = &payload[132..];
+        let decoded =
+            decode_store_dataset(payload_without_preamble, TS_EXPLICIT_LE, sop_instance_uid);
+        assert_eq!(
+            decoded.get_string(tags::STUDY_INSTANCE_UID),
+            Some(study_uid)
+        );
+        assert_eq!(
+            decoded.get_string(tags::SERIES_INSTANCE_UID),
+            Some(series_uid)
+        );
+    }
+
+    #[test]
+    fn decode_store_dataset_recovers_raw_dataset() {
+        let study_uid = "1.2.3.4.12";
+        let series_uid = "1.2.3.4.12.1";
+        let sop_instance_uid = "1.2.3.4.12.1.1";
+
+        let mut dataset = DataSet::new();
+        dataset.set_uid(tags::STUDY_INSTANCE_UID, study_uid);
+        dataset.set_uid(tags::SERIES_INSTANCE_UID, series_uid);
+        dataset.set_uid(tags::SOP_INSTANCE_UID, sop_instance_uid);
+
+        // Encode as raw dataset bytes (the standard DIMSE C-STORE payload).
+        let mut raw_bytes = Vec::new();
+        DicomWriter::new(&mut raw_bytes)
+            .write_dataset(&dataset, TS_EXPLICIT_LE)
+            .expect("encode raw dataset");
+
+        assert!(!raw_bytes.is_empty(), "encoded dataset must be non-empty");
+
+        let decoded = decode_store_dataset(&raw_bytes, TS_EXPLICIT_LE, sop_instance_uid);
+        assert_eq!(
+            decoded.get_string(tags::STUDY_INSTANCE_UID),
+            Some(study_uid)
+        );
+        assert_eq!(
+            decoded.get_string(tags::SERIES_INSTANCE_UID),
+            Some(series_uid)
+        );
+    }
+
+    #[test]
+    fn decode_store_dataset_handles_real_dicom_file_payload() {
+        let test_file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("testfiles/ABDOM_1.dcm");
+        if !test_file.exists() {
+            // Skip if test file not available.
+            return;
+        }
+
+        let file_bytes = std::fs::read(&test_file).expect("read test DICOM file");
+
+        // Parse the file to get the study/series UIDs for verification.
+        let file = DicomReader::new(file_bytes.as_slice())
+            .read_file()
+            .expect("parse Part 10 test file");
+        let study_uid = file
+            .dataset
+            .get_string(tags::STUDY_INSTANCE_UID)
+            .expect("test file has Study UID");
+        let series_uid = file
+            .dataset
+            .get_string(tags::SERIES_INSTANCE_UID)
+            .expect("test file has Series UID");
+        let sop_instance_uid = file
+            .dataset
+            .get_string(tags::SOP_INSTANCE_UID)
+            .expect("test file has SOP Instance UID");
+        let ts_uid = &file.meta.transfer_syntax_uid;
+
+        // Extract the raw dataset (skip preamble + DICM + file meta header).
+        // Re-encode the parsed dataset to get clean raw bytes.
+        let mut raw_bytes = Vec::new();
+        DicomWriter::new(&mut raw_bytes)
+            .write_dataset(&file.dataset, ts_uid)
+            .expect("re-encode dataset");
+
+        // This is the decode path a real C-STORE SCP uses.
+        let decoded = decode_store_dataset(&raw_bytes, ts_uid, sop_instance_uid);
+        assert_eq!(
+            decoded.get_string(tags::STUDY_INSTANCE_UID),
+            Some(study_uid),
+            "Study UID must survive raw-dataset round-trip"
+        );
+        assert_eq!(
+            decoded.get_string(tags::SERIES_INSTANCE_UID),
+            Some(series_uid),
+            "Series UID must survive raw-dataset round-trip"
+        );
+
+        // Also test decode_store_dataset with the full Part 10 payload
+        // (some buggy SCUs send Part 10 over DIMSE).
+        let decoded_p10 = decode_store_dataset(&file_bytes, ts_uid, sop_instance_uid);
+        assert_eq!(
+            decoded_p10.get_string(tags::STUDY_INSTANCE_UID),
+            Some(study_uid),
+            "Study UID must survive Part 10 fallback decode"
+        );
+    }
+
+    fn store_command(msg_id: u16, command_data_set_type: u16) -> DataSet {
+        let mut cmd = DataSet::new();
+        cmd.set_uid(tags::AFFECTED_SOP_CLASS_UID, "1.2.840.10008.5.1.4.1.1.2");
+        cmd.set_u16(tags::COMMAND_FIELD, 0x0001);
+        cmd.set_u16(tags::MESSAGE_ID, msg_id);
+        cmd.set_u16(tags::PRIORITY, 0);
+        cmd.set_u16(tags::COMMAND_DATA_SET_TYPE, command_data_set_type);
+        cmd.set_uid(tags::AFFECTED_SOP_INSTANCE_UID, &format!("1.2.3.{msg_id}"));
+        cmd
+    }
+
+    async fn connect_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let client = tokio::spawn(async move { TcpStream::connect(addr).await.expect("connect") });
+        let (server, _) = listener.accept().await.expect("accept");
+        let client = client.await.expect("join client task");
+        (server, client)
+    }
+
+    #[tokio::test]
+    async fn recv_command_data_bytes_allows_missing_store_dataset_without_losing_next_command() {
+        let (server_stream, mut client_stream) = connect_pair().await;
+        let (done_tx, done_rx) = oneshot::channel();
+
+        tokio::spawn(async move {
+            let mut assoc = ServerAssociation::accept(server_stream, &AssociationConfig::default())
+                .await
+                .expect("accept association");
+
+            let (_, cmd) = assoc
+                .recv_dimse_command()
+                .await
+                .expect("receive first command");
+            let data = recv_command_data_bytes(&mut assoc, &cmd, "C-STORE", true)
+                .await
+                .expect("read store dataset or empty");
+            let (_, next_cmd) = assoc
+                .recv_dimse_command()
+                .await
+                .expect("receive queued command");
+            done_tx
+                .send((data, next_cmd.get_u16(tags::MESSAGE_ID)))
+                .expect("send result to test");
+        });
+
+        client_stream
+            .write_all(&pdu::encode_associate_rq(&store_associate_rq()))
+            .await
+            .expect("send associate-rq");
+        match pdu::read_pdu(&mut client_stream)
+            .await
+            .expect("read associate-ac")
+        {
+            Pdu::AssociateAc(_) => {}
+            other => panic!("expected AssociateAc, got {other:?}"),
+        }
+
+        let pdus = pdu::encode_p_data_tf(&[
+            Pdv {
+                context_id: 1,
+                msg_control: 0x03,
+                data: dimse::encode_command_dataset(&store_command(1, 0x0000)),
+            },
+            Pdv {
+                context_id: 1,
+                msg_control: 0x03,
+                data: dimse::encode_command_dataset(&store_command(2, 0x0000)),
+            },
+        ]);
+        client_stream
+            .write_all(&pdus)
+            .await
+            .expect("send back-to-back store commands");
+
+        let (data, next_message_id) = done_rx.await.expect("server processed commands");
+        assert!(data.is_empty());
+        assert_eq!(next_message_id, Some(2));
+    }
+
+    #[tokio::test]
+    async fn recv_store_data_round_trip_through_wire() {
+        let study_uid = "1.2.3.4.99";
+        let series_uid = "1.2.3.4.99.1";
+        let sop_instance_uid = "1.2.3.4.99.1.1";
+
+        // Build the dataset payload as a raw Explicit VR LE stream (DIMSE standard).
+        let mut dataset = DataSet::new();
+        dataset.set_uid(tags::STUDY_INSTANCE_UID, study_uid);
+        dataset.set_uid(tags::SERIES_INSTANCE_UID, series_uid);
+        dataset.set_uid(tags::SOP_INSTANCE_UID, sop_instance_uid);
+        let mut raw_payload = Vec::new();
+        DicomWriter::new(&mut raw_payload)
+            .write_dataset(&dataset, TS_EXPLICIT_LE)
+            .expect("encode raw dataset");
+
+        let (server_stream, mut client_stream) = connect_pair().await;
+        let (done_tx, done_rx) = oneshot::channel();
+        let payload_clone = raw_payload.clone();
+
+        tokio::spawn(async move {
+            let mut assoc = ServerAssociation::accept(server_stream, &AssociationConfig::default())
+                .await
+                .expect("accept association");
+
+            let (ctx_id, cmd) = assoc
+                .recv_dimse_command()
+                .await
+                .expect("receive C-STORE command");
+            let data = recv_command_data_bytes(&mut assoc, &cmd, "C-STORE", true)
+                .await
+                .expect("receive store dataset bytes");
+
+            let ts_uid = assoc
+                .context_by_id(ctx_id)
+                .map(|pc| pc.transfer_syntax.trim_end_matches('\0').to_string())
+                .unwrap_or_else(|| TS_EXPLICIT_LE.to_string());
+            let decoded = decode_store_dataset(&data, &ts_uid, sop_instance_uid);
+
+            done_tx
+                .send((data.len(), decoded))
+                .expect("send result to test");
+        });
+
+        // Client side: send A-ASSOCIATE-RQ, read A-ASSOCIATE-AC.
+        client_stream
+            .write_all(&pdu::encode_associate_rq(&store_associate_rq()))
+            .await
+            .expect("send associate-rq");
+        match pdu::read_pdu(&mut client_stream)
+            .await
+            .expect("read associate-ac")
+        {
+            Pdu::AssociateAc(_) => {}
+            other => panic!("expected AssociateAc, got {other:?}"),
+        }
+
+        // Send C-STORE command in its own P-DATA-TF.
+        let cmd_pdv = Pdv {
+            context_id: 1,
+            msg_control: 0x03, // last + command
+            data: dimse::encode_command_dataset(&store_command(1, 0x0000)),
+        };
+        client_stream
+            .write_all(&pdu::encode_p_data_tf(&[cmd_pdv]))
+            .await
+            .expect("send store command");
+
+        // Send dataset in its own P-DATA-TF.
+        let data_pdv = Pdv {
+            context_id: 1,
+            msg_control: 0x02, // last + data
+            data: payload_clone,
+        };
+        client_stream
+            .write_all(&pdu::encode_p_data_tf(&[data_pdv]))
+            .await
+            .expect("send store data");
+
+        let (received_len, decoded) = done_rx.await.expect("server processed C-STORE");
+        assert_eq!(received_len, raw_payload.len());
+        assert_eq!(
+            decoded.get_string(tags::STUDY_INSTANCE_UID),
+            Some(study_uid)
+        );
+        assert_eq!(
+            decoded.get_string(tags::SERIES_INSTANCE_UID),
+            Some(series_uid)
+        );
+    }
+
+    #[tokio::test]
+    async fn recv_store_data_multi_pdu_round_trip() {
+        let study_uid = "1.2.3.4.100";
+        let series_uid = "1.2.3.4.100.1";
+        let sop_instance_uid = "1.2.3.4.100.1.1";
+
+        let mut dataset = DataSet::new();
+        dataset.set_uid(tags::STUDY_INSTANCE_UID, study_uid);
+        dataset.set_uid(tags::SERIES_INSTANCE_UID, series_uid);
+        dataset.set_uid(tags::SOP_INSTANCE_UID, sop_instance_uid);
+        let mut raw_payload = Vec::new();
+        DicomWriter::new(&mut raw_payload)
+            .write_dataset(&dataset, TS_EXPLICIT_LE)
+            .expect("encode raw dataset");
+
+        let (server_stream, mut client_stream) = connect_pair().await;
+        let (done_tx, done_rx) = oneshot::channel();
+        let payload_clone = raw_payload.clone();
+
+        tokio::spawn(async move {
+            let mut assoc = ServerAssociation::accept(server_stream, &AssociationConfig::default())
+                .await
+                .expect("accept association");
+
+            let (ctx_id, cmd) = assoc
+                .recv_dimse_command()
+                .await
+                .expect("receive C-STORE command");
+            let data = recv_command_data_bytes(&mut assoc, &cmd, "C-STORE", true)
+                .await
+                .expect("receive store dataset bytes");
+
+            let ts_uid = assoc
+                .context_by_id(ctx_id)
+                .map(|pc| pc.transfer_syntax.trim_end_matches('\0').to_string())
+                .unwrap_or_else(|| TS_EXPLICIT_LE.to_string());
+            let decoded = decode_store_dataset(&data, &ts_uid, sop_instance_uid);
+
+            done_tx
+                .send((data.len(), decoded))
+                .expect("send result to test");
+        });
+
+        client_stream
+            .write_all(&pdu::encode_associate_rq(&store_associate_rq()))
+            .await
+            .expect("send associate-rq");
+        match pdu::read_pdu(&mut client_stream)
+            .await
+            .expect("read associate-ac")
+        {
+            Pdu::AssociateAc(_) => {}
+            other => panic!("expected AssociateAc, got {other:?}"),
+        }
+
+        // Command in its own P-DATA-TF.
+        let cmd_pdv = Pdv {
+            context_id: 1,
+            msg_control: 0x03,
+            data: dimse::encode_command_dataset(&store_command(1, 0x0000)),
+        };
+        client_stream
+            .write_all(&pdu::encode_p_data_tf(&[cmd_pdv]))
+            .await
+            .expect("send store command");
+
+        // Split dataset across multiple P-DATA-TFs (simulate small max PDU).
+        let chunk_size = 20; // very small chunks
+        let chunks: Vec<&[u8]> = payload_clone.chunks(chunk_size).collect();
+        let total = chunks.len();
+        for (i, chunk) in chunks.iter().enumerate() {
+            let is_last = i + 1 == total;
+            let pdv = Pdv {
+                context_id: 1,
+                msg_control: if is_last { 0x02 } else { 0x00 }, // data, last flag only on final
+                data: chunk.to_vec(),
+            };
+            client_stream
+                .write_all(&pdu::encode_p_data_tf(&[pdv]))
+                .await
+                .expect("send data fragment");
+        }
+
+        let (received_len, decoded) = done_rx.await.expect("server processed C-STORE");
+        assert_eq!(received_len, raw_payload.len());
+        assert_eq!(
+            decoded.get_string(tags::STUDY_INSTANCE_UID),
+            Some(study_uid)
+        );
+        assert_eq!(
+            decoded.get_string(tags::SERIES_INSTANCE_UID),
+            Some(series_uid)
+        );
+    }
+
+    #[tokio::test]
+    async fn recv_store_data_cmd_and_data_in_same_pdu() {
+        let study_uid = "1.2.3.4.101";
+        let series_uid = "1.2.3.4.101.1";
+        let sop_instance_uid = "1.2.3.4.101.1.1";
+
+        let mut dataset = DataSet::new();
+        dataset.set_uid(tags::STUDY_INSTANCE_UID, study_uid);
+        dataset.set_uid(tags::SERIES_INSTANCE_UID, series_uid);
+        dataset.set_uid(tags::SOP_INSTANCE_UID, sop_instance_uid);
+        let mut raw_payload = Vec::new();
+        DicomWriter::new(&mut raw_payload)
+            .write_dataset(&dataset, TS_EXPLICIT_LE)
+            .expect("encode raw dataset");
+
+        let (server_stream, mut client_stream) = connect_pair().await;
+        let (done_tx, done_rx) = oneshot::channel();
+
+        tokio::spawn(async move {
+            let mut assoc = ServerAssociation::accept(server_stream, &AssociationConfig::default())
+                .await
+                .expect("accept association");
+            let (ctx_id, cmd) = assoc
+                .recv_dimse_command()
+                .await
+                .expect("receive C-STORE command");
+            let data = recv_command_data_bytes(&mut assoc, &cmd, "C-STORE", true)
+                .await
+                .expect("receive store dataset bytes");
+            let ts_uid = assoc
+                .context_by_id(ctx_id)
+                .map(|pc| pc.transfer_syntax.trim_end_matches('\0').to_string())
+                .unwrap_or_else(|| TS_EXPLICIT_LE.to_string());
+            let decoded = decode_store_dataset(&data, &ts_uid, sop_instance_uid);
+            done_tx
+                .send((data.len(), decoded))
+                .expect("send result");
+        });
+
+        client_stream
+            .write_all(&pdu::encode_associate_rq(&store_associate_rq()))
+            .await
+            .expect("send associate-rq");
+        match pdu::read_pdu(&mut client_stream)
+            .await
+            .expect("read associate-ac")
+        {
+            Pdu::AssociateAc(_) => {}
+            other => panic!("expected AssociateAc, got {other:?}"),
+        }
+
+        // fo-dicom style: command AND data PDVs in the SAME P-DATA-TF.
+        let pdus = pdu::encode_p_data_tf(&[
+            Pdv {
+                context_id: 1,
+                msg_control: 0x03, // last + command
+                data: dimse::encode_command_dataset(&store_command(1, 0x0000)),
+            },
+            Pdv {
+                context_id: 1,
+                msg_control: 0x02, // last + data
+                data: raw_payload.clone(),
+            },
+        ]);
+        client_stream
+            .write_all(&pdus)
+            .await
+            .expect("send coalesced command+data");
+
+        let (received_len, decoded) = done_rx.await.expect("server processed C-STORE");
+        assert_eq!(received_len, raw_payload.len());
+        assert_eq!(
+            decoded.get_string(tags::STUDY_INSTANCE_UID),
+            Some(study_uid)
+        );
+        assert_eq!(
+            decoded.get_string(tags::SERIES_INSTANCE_UID),
+            Some(series_uid)
+        );
     }
 
     #[tokio::test]

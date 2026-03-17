@@ -369,11 +369,7 @@ impl MetadataStore for SqliteMetadataStore {
         if let Some(patient_id) = &query.patient_id {
             if patient_id.contains('*') || patient_id.contains('?') {
                 qb.push(" AND patient_id LIKE ");
-                qb.push_bind(
-                    patient_id
-                        .replace('*', "%")
-                        .replace('?', "_"),
-                );
+                qb.push_bind(patient_id.replace('*', "%").replace('?', "_"));
             } else {
                 qb.push(" AND patient_id = ");
                 qb.push_bind(patient_id.clone());
@@ -381,16 +377,9 @@ impl MetadataStore for SqliteMetadataStore {
         }
 
         if let Some(patient_name) = &query.patient_name {
-            if query.fuzzy_matching
-                || patient_name.contains('*')
-                || patient_name.contains('?')
-            {
+            if query.fuzzy_matching || patient_name.contains('*') || patient_name.contains('?') {
                 qb.push(" AND LOWER(patient_name) LIKE LOWER(");
-                qb.push_bind(
-                    patient_name
-                        .replace('*', "%")
-                        .replace('?', "_"),
-                );
+                qb.push_bind(patient_name.replace('*', "%").replace('?', "_"));
                 qb.push(")");
             } else {
                 qb.push(" AND patient_name = ");

@@ -828,9 +828,7 @@ where
         "C-FIND identifier received"
     );
 
-    let identifier = match DicomReader::new(query_bytes.as_slice())
-        .read_dataset(&negotiated_ts)
-    {
+    let identifier = match DicomReader::new(query_bytes.as_slice()).read_dataset(&negotiated_ts) {
         Ok(ds) => {
             let tag_list: Vec<String> = ds
                 .tags()
@@ -864,10 +862,7 @@ where
     };
 
     let matches = provider.on_find(event).await;
-    info!(
-        num_matches = matches.len(),
-        "C-FIND query completed"
-    );
+    info!(num_matches = matches.len(), "C-FIND query completed");
 
     for result_ds in &matches {
         let result_bytes = encode_dataset(result_ds, &negotiated_ts)?;
@@ -2075,9 +2070,7 @@ mod tests {
                 .map(|pc| pc.transfer_syntax.trim_end_matches('\0').to_string())
                 .unwrap_or_else(|| TS_EXPLICIT_LE.to_string());
             let decoded = decode_store_dataset(&data, &ts_uid, sop_instance_uid);
-            done_tx
-                .send((data.len(), decoded))
-                .expect("send result");
+            done_tx.send((data.len(), decoded)).expect("send result");
         });
 
         client_stream

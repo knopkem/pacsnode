@@ -358,6 +358,10 @@ a {
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
 }
 
+.filter-grid-system-storage {
+  grid-template-columns: minmax(320px, 1fr);
+}
+
 .filter-grid-system-syntaxes {
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
 }
@@ -403,6 +407,10 @@ a {
 
 .field-wide {
   grid-column: span 2;
+}
+
+.filter-grid-system-storage .field-wide {
+  grid-column: 1 / -1;
 }
 
 .field span {

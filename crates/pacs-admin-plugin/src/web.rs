@@ -2865,6 +2865,7 @@ fn transfer_syntax_label(uid: &str) -> String {
         "1.2.840.10008.1.2.4.91" => "JPEG 2000".into(),
         "1.2.840.10008.1.2.4.201" => "HTJ2K Lossless Only".into(),
         "1.2.840.10008.1.2.4.202" => "HTJ2K".into(),
+        "1.2.840.10008.1.2.4.203" => "HTJ2K".into(),
         _ => uid.to_string(),
     }
 }
@@ -4525,6 +4526,11 @@ mod tests {
         .unwrap();
 
         assert!(settings.storage_transfer_syntax.is_none());
+    }
+
+    #[test]
+    fn transfer_syntax_label_uses_short_name_for_htj2k_203() {
+        assert_eq!(transfer_syntax_label("1.2.840.10008.1.2.4.203"), "HTJ2K");
     }
 
     #[test]

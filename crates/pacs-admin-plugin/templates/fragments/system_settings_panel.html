@@ -49,7 +49,10 @@
         <span>DIMSE Timeout (s)</span>
         <input type="number" name="dimse_timeout_secs" min="1" value="{{ form.dimse_timeout_secs }}" required />
       </label>
-      <label class="field">
+    </div>
+
+    <div class="filter-grid filter-grid-system-storage">
+      <label class="field field-wide">
         <span>Storage Transfer Syntax</span>
         <select name="storage_transfer_syntax">
           {% for option in storage_syntax_options %}

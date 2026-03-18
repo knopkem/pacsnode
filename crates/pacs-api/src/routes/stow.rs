@@ -118,12 +118,46 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
     };
+    use bytes::Bytes;
+    use dicom_toolkit_data::{DataSet, DicomWriter, FileFormat};
+    use dicom_toolkit_dict::{tags, Vr};
+    use http_body_util::BodyExt;
+    use serde_json::json;
     use tower::ServiceExt;
 
     use crate::{
         router::build_router,
         test_support::{make_test_state, MockBlobStr, MockMetaStore},
     };
+
+    fn make_dicom_part(sop_class_uid: &str, modality: &str, instance_uid: &str) -> Vec<u8> {
+        let mut ds = DataSet::new();
+        ds.set_string(tags::STUDY_INSTANCE_UID, Vr::UI, "1.2.3");
+        ds.set_string(tags::SERIES_INSTANCE_UID, Vr::UI, "1.2.3.4");
+        ds.set_string(tags::SOP_INSTANCE_UID, Vr::UI, instance_uid);
+        ds.set_string(tags::SOP_CLASS_UID, Vr::UI, sop_class_uid);
+        ds.set_string(tags::MODALITY, Vr::CS, modality);
+
+        let ff = FileFormat::from_dataset(sop_class_uid, instance_uid, ds);
+        let mut buf = Vec::new();
+        DicomWriter::new(std::io::Cursor::new(&mut buf))
+            .write_file(&ff)
+            .unwrap();
+        buf
+    }
+
+    fn build_multipart_body(boundary: &str, parts: &[Vec<u8>]) -> Bytes {
+        let mut body = Vec::new();
+        for part in parts {
+            body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+            body.extend_from_slice(b"Content-Type: application/dicom\r\n");
+            body.extend_from_slice(b"\r\n");
+            body.extend_from_slice(part);
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        Bytes::from(body)
+    }
 
     #[test]
     fn test_extract_boundary_unquoted() {
@@ -177,5 +211,62 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_stow_accepts_sr_and_seg_sop_classes() {
+        let mut store = MockMetaStore::new();
+        store.expect_store_study().times(2).returning(|_| Ok(()));
+        store.expect_store_series().times(2).returning(|series| {
+            assert!(matches!(series.modality.as_deref(), Some("SR") | Some("SEG")));
+            Ok(())
+        });
+        store.expect_store_instance().times(2).returning(|instance| {
+            assert!(matches!(
+                instance.sop_class_uid.as_deref(),
+                Some("1.2.840.10008.5.1.4.1.1.88.22") | Some("1.2.840.10008.5.1.4.1.1.66.4")
+            ));
+            Ok(())
+        });
+
+        let mut blobs = MockBlobStr::new();
+        blobs.expect_put().times(2).returning(|_, _| Ok(()));
+
+        let boundary = "stow-boundary";
+        let sr = make_dicom_part("1.2.840.10008.5.1.4.1.1.88.22", "SR", "1.2.3.4.5");
+        let seg = make_dicom_part("1.2.840.10008.5.1.4.1.1.66.4", "SEG", "1.2.3.4.6");
+        let body = build_multipart_body(boundary, &[sr, seg]);
+
+        let app = build_router(make_test_state(store, blobs));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/wado/studies")
+                    .header(
+                        "content-type",
+                        format!(
+                            "multipart/related; type=\"application/dicom\"; boundary={boundary}"
+                        ),
+                    )
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let stored = json["00081199"]["Value"].as_array().unwrap();
+        assert_eq!(stored.len(), 2);
+        assert_eq!(
+            stored[0]["00081150"]["Value"][0],
+            json!("1.2.840.10008.5.1.4.1.1.88.22")
+        );
+        assert_eq!(
+            stored[1]["00081150"]["Value"][0],
+            json!("1.2.840.10008.5.1.4.1.1.66.4")
+        );
     }
 }

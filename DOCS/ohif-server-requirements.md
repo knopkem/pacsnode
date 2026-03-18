@@ -73,7 +73,7 @@ These endpoints are required for any study to load at all.
 
 | Parameter | Notes | pacsnode status |
 |-----------|-------|-----------------|
-| `fuzzymatching=true` | Fuzzy patient-name matching | ⚠️ Unclear — verify |
+| `fuzzymatching=true` | Fuzzy patient-name matching | ✅ Implemented for study-level QIDO and passed through to the metadata store |
 | `includeField=00080016` | SOP Class UID, Rows, Columns, etc. | ✅ Implemented for study/series QIDO shaping; instance QIDO already returns stored metadata |
 | `AccessionNumber` | Required for worklist / order matching | ✅ Stored in JSONB |
 | `StudyDescription` | Display field | ✅ Stored |
@@ -111,7 +111,7 @@ hanging protocols to work correctly.
 | `GET /studies/{uid}/series/{uid}/instances` | `application/dicom+json` | Retrieve all instance metadata for a series | ✅ Implemented |
 | `GET /studies/{uid}/series/{uid}/instances/{uid}` | `multipart/related; type="application/octet-stream"` | Full DICOM P10 instance | ✅ Implemented |
 | `GET /studies/{uid}/series/{uid}/instances/{uid}/frames/{n}` | `image/jpeg`, `image/png`, or multipart | Individual frame retrieval | ✅ Implemented, including comma-separated frame lists and rendered variants |
-| `GET /studies/{uid}/series/{uid}/instances/{uid}/bulkdata/{tag}` | varies | BulkDataURI target | ⚠️ Needs verification |
+| `GET /studies/{uid}/series/{uid}/instances/{uid}/bulkdata/{tag}` | varies | BulkDataURI target | ✅ Implemented; encapsulated documents preserve their declared MIME type, while pixel/video bulk data still defaults to `application/octet-stream` |
 | `GET /studies/{uid}/series/{uid}/instances/{uid}/metadata` | `application/dicom+json` | Single-instance metadata | ✅ Implemented via wado.rs |
 
 ---
@@ -151,8 +151,8 @@ Content-Type: application/dicom
 --boundary--
 ```
 
-**pacsnode status:** ✅ STOW-RS exists at `POST /wado/studies`.  Needs
-validation that SR SOP classes are stored without being rejected.
+**pacsnode status:** ✅ STOW-RS exists at `POST /wado/studies` and accepts SR
+and SEG SOP classes without SOP-class whitelisting.
 
 ### 3.3 QIDO-RS query for SR retrieval
 
@@ -368,8 +368,8 @@ Accept: multipart/related; type="application/octet-stream"; transfer-syntax=1.2.
 Multiple frame indices may be comma-separated in one request.  The server must
 return a `multipart/related` response with one part per frame.
 
-**pacsnode status:** ⚠️ Single-frame retrieval exists; multi-frame comma list
-(`/frames/1,2,3`) may not be supported.  Needs verification.
+**pacsnode status:** ✅ Implemented; comma-separated frame lists such as
+`/frames/1,2,3` are accepted for WADO-RS frame retrieval.
 
 ### 9.2 DICOM video (MPEG-4, H.264)
 
@@ -395,13 +395,18 @@ bulkDataURI: {
 pacsnode must serve pixel data via BulkDataURI and set the correct `Content-Type`
 (`video/mp4` or `application/octet-stream`) for video objects.
 
-**pacsnode status:** ⚠️ BulkDataURI is emitted in WADO-RS JSON responses, but
-content-type handling for video needs verification.
+**pacsnode status:** ⚠️ BulkDataURI is emitted in WADO-RS JSON responses.
+Pixel-data BulkDataURI responses still default to `application/octet-stream`, so
+video-specific media types remain a follow-up item.
 
 ### 9.3 Encapsulated PDF
 
 Similar pattern: PDF objects must have a BulkDataURI resolvable with
 `Content-Type: application/pdf` (or `application/octet-stream`).
+
+**pacsnode status:** ✅ Encapsulated documents now return the declared
+`MIMETypeOfEncapsulatedDocument` for BulkDataURI responses, including
+`application/pdf` when present.
 
 ---
 
@@ -446,8 +451,8 @@ broken hanging protocols.
 | `00200013` | InstanceNumber | ✅ |
 | `00280010` | Rows | ✅ |
 | `00280011` | Columns | ✅ |
-| `00280008` | NumberOfFrames | ⚠️ Verify present in QIDO response |
-| `00080008` | ImageType | ⚠️ Verify present |
+| `00280008` | NumberOfFrames | ✅ |
+| `00080008` | ImageType | ✅ |
 
 ### 10.4 PatientName JSON format
 
@@ -492,9 +497,11 @@ GET /wado/studies/{uid}/series/{uid}/instances/{uid}/bulkdata/{tag}
 For encapsulated Pixel Data the response is the raw encapsulated byte stream
 (all fragments concatenated, no DICOM framing).
 
-**pacsnode status:** ✅ BulkDataURI is emitted; endpoint exists.  Validate that
-absolute URLs or properly relative URIs are returned depending on the deployment
-prefix (`startsWith` / `prefixWith` config in OHIF).
+**pacsnode status:** ✅ BulkDataURI is emitted; endpoint exists.  Encapsulated
+documents preserve their declared MIME type, while pixel data still uses
+`application/octet-stream`.  Validate that absolute URLs or properly relative
+URIs are returned depending on the deployment prefix (`startsWith` /
+`prefixWith` config in OHIF).
 
 ### 11.2 Reverse-proxy path correction
 
@@ -647,7 +654,7 @@ following areas warrant load testing:
 | QIDO-RS studies/series/instances | ✅ | Verify all required metadata fields are returned |
 | WADO-RS metadata (`application/dicom+json`) | ✅ | Verify PN format, BulkDataURI presence |
 | WADO-RS full instance retrieval | ✅ | Verify multipart framing |
-| STOW-RS `POST /studies` | ✅ | Verify SR/SEG SOP classes are accepted |
+| STOW-RS `POST /studies` | ✅ | SR and SEG SOP classes verified |
 | BulkDataURI emission | ✅ | Verify absolute vs relative URL handling |
 | Bearer token auth on all DICOMweb routes | ✅ | — |
 
@@ -668,8 +675,7 @@ following areas warrant load testing:
 | Per-user measurement isolation | High | Multi-user auth with ownership scoping on stored SR/SEG instances |
 | WSI tile performance | High | Benchmark frame endpoint under 100 concurrent requests; add S3 redirect for large objects |
 | OIDC integration | High | Replace JWT-only auth with OIDC provider support (Keycloak, Auth0) |
-| `fuzzymatching` query support | Medium | ILIKE or pg_trgm matching on PatientName in QIDO-RS |
-| Video BulkDataURI content-type | Low | Ensure `Content-Type: video/mp4` for DICOM Video objects |
+| Video BulkDataURI content-type | Low | Infer `video/mp4` or `video/mpeg` from transfer syntax for DICOM video pixel data instead of always returning `application/octet-stream` |
 
 ### Priority 4 — Future / out of scope for now
 
@@ -707,7 +713,7 @@ window.config = {
       imageRendering: 'wadors',
       thumbnailRendering: 'thumbnail',
       enableStudyLazyLoad: true,
-      supportsFuzzyMatching: false,       // set true once pg_trgm matching is implemented
+      supportsFuzzyMatching: true,
       supportsWildcard: true,
 
       bulkDataURI: {
@@ -748,7 +754,7 @@ WADO-RS
   GET .../instances/{uid} (full P10)              ✅
   GET .../instances/{uid}/metadata                ✅
   GET .../instances/{uid}/frames/{n}              ✅ comma-list supported
-  GET .../instances/{uid}/bulkdata/{tag}          ⚠️ verify content-type
+  GET .../instances/{uid}/bulkdata/{tag}          ✅ document MIME types; ⚠️ video still octet-stream
   GET .../instances/{uid}/thumbnail               ✅
   GET .../instances/{uid}/rendered                ✅
 

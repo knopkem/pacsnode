@@ -306,18 +306,23 @@ pub async fn instance_bulkdata(
     State(state): State<AppState>,
     Path((study_uid, series_uid, instance_uid, tag_path)): Path<(String, String, String, String)>,
 ) -> Result<Response, ApiError> {
-    let blob = load_instance_blob(&state, &SopInstanceUid::from(instance_uid.as_str())).await?;
+    let instance = state
+        .store
+        .get_instance(&SopInstanceUid::from(instance_uid.as_str()))
+        .await?;
+    let blob = state.blobs.get(&instance.blob_key).await?;
     let normalized_tag_path = tag_path.trim_matches('/').to_owned();
+    let content_type = bulkdata_content_type(&instance, &normalized_tag_path);
     match extract_bulk_data_path(blob, &normalized_tag_path)
         .map_err(PacsError::from)
         .map_err(ApiError)?
     {
-        BulkDataValue::Single(bytes) => single_part_response(bytes, "application/octet-stream"),
+        BulkDataValue::Single(bytes) => single_part_response(bytes, &content_type),
         BulkDataValue::Multipart(parts) => {
             let part_count = parts.len();
             multipart_response_with_type_and_locations(
                 parts,
-                "application/octet-stream",
+                &content_type,
                 (1..=part_count)
                     .map(|index| {
                         format!(
@@ -328,6 +333,33 @@ pub async fn instance_bulkdata(
             )
         }
     }
+}
+
+fn bulkdata_content_type(instance: &Instance, normalized_tag_path: &str) -> String {
+    if normalized_tag_path.eq_ignore_ascii_case("00420011") {
+        if let Some(content_type) = encapsulated_document_content_type(&instance.metadata) {
+            return content_type;
+        }
+
+        if instance.sop_class_uid.as_deref() == Some("1.2.840.10008.5.1.4.1.1.104.1") {
+            return "application/pdf".into();
+        }
+    }
+
+    "application/octet-stream".into()
+}
+
+fn encapsulated_document_content_type(metadata: &DicomJson) -> Option<String> {
+    metadata
+        .as_value()
+        .get("00420012")
+        .and_then(|value| value.get("Value"))
+        .and_then(serde_json::Value::as_array)
+        .and_then(|values| values.first())
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 // ── Metadata endpoints ────────────────────────────────────────────────────────
@@ -1218,6 +1250,27 @@ mod tests {
         Bytes::from(buf)
     }
 
+    fn make_encapsulated_pdf_dicom() -> Bytes {
+        let mut ds = DataSet::new();
+        ds.set_string(tags::STUDY_INSTANCE_UID, Vr::UI, "1.2.3");
+        ds.set_string(tags::SERIES_INSTANCE_UID, Vr::UI, "1.2.3.4");
+        ds.set_string(tags::SOP_INSTANCE_UID, Vr::UI, "1.2.3.4.5");
+        ds.set_string(tags::SOP_CLASS_UID, Vr::UI, "1.2.840.10008.5.1.4.1.1.104.1");
+        ds.set_string(Tag::new(0x0042, 0x0012), Vr::LO, "application/pdf");
+        ds.insert(Element::bytes(
+            Tag::new(0x0042, 0x0011),
+            Vr::OB,
+            b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n".to_vec(),
+        ));
+
+        let ff = FileFormat::from_dataset("1.2.840.10008.5.1.4.1.1.104.1", "1.2.3.4.5", ds);
+        let mut buf = Vec::new();
+        DicomWriter::new(std::io::Cursor::new(&mut buf))
+            .write_file(&ff)
+            .unwrap();
+        Bytes::from(buf)
+    }
+
     fn make_instance_from_dicom(dicom: &Bytes) -> Instance {
         ParsedDicom::from_bytes(dicom.clone()).unwrap().instance
     }
@@ -1690,6 +1743,43 @@ mod tests {
         );
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body.as_ref(), &[0xDE, 0xAD]);
+    }
+
+    #[tokio::test]
+    async fn test_bulkdata_returns_declared_encapsulated_document_media_type() {
+        let dicom = make_encapsulated_pdf_dicom();
+        let instance = make_instance_from_dicom(&dicom);
+
+        let mut store = MockMetaStore::new();
+        store
+            .expect_get_instance()
+            .once()
+            .returning(move |_| Ok(instance.clone()));
+
+        let mut blobs = MockBlobStr::new();
+        blobs
+            .expect_get()
+            .once()
+            .returning(move |_| Ok(dicom.clone()));
+
+        let app = build_router(make_test_state(store, blobs));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies/1.2.3/series/1.2.3.4/instances/1.2.3.4.5/bulkdata/00420011")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/pdf"
+        );
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert!(body.starts_with(b"%PDF-1.7"));
     }
 
     #[tokio::test]

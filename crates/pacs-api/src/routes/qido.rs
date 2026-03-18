@@ -418,7 +418,7 @@ mod tests {
         http::{Request, StatusCode},
     };
     use http_body_util::BodyExt;
-    use pacs_core::{DicomJson, Series, SeriesUid, Study, StudyUid};
+    use pacs_core::{DicomJson, Instance, Series, SeriesUid, SopInstanceUid, Study, StudyUid};
     use serde_json::json;
     use tower::ServiceExt;
 
@@ -526,6 +526,28 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/wado/studies?includeField=00080016,00280010")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_search_studies_passes_fuzzy_matching_to_store() {
+        let mut store = MockMetaStore::new();
+        store.expect_query_studies().once().returning(|query| {
+            assert!(query.fuzzy_matching);
+            assert_eq!(query.patient_name.as_deref(), Some("Doe*"));
+            Ok(vec![])
+        });
+
+        let app = build_router(make_test_state(store, MockBlobStr::new()));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies?PatientName=Doe*&fuzzymatching=true")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -652,5 +674,50 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json[0]["00080021"]["Value"][0], json!("20240102"));
         assert_eq!(json[0]["00080031"]["Value"][0], json!("101112"));
+    }
+
+    #[tokio::test]
+    async fn test_search_instances_returns_required_multiframe_metadata_fields() {
+        let mut store = MockMetaStore::new();
+        store.expect_query_instances().once().returning(|_| {
+            Ok(vec![Instance {
+                instance_uid: SopInstanceUid::from("1.2.3.4.5"),
+                series_uid: SeriesUid::from("1.2.3.4"),
+                study_uid: StudyUid::from("1.2.3"),
+                sop_class_uid: Some("1.2.840.10008.5.1.4.1.1.2".into()),
+                instance_number: Some(1),
+                transfer_syntax: Some("1.2.840.10008.1.2.1".into()),
+                rows: Some(512),
+                columns: Some(512),
+                blob_key: "1.2.3/1.2.3.4/1.2.3.4.5".into(),
+                metadata: DicomJson::from(json!({
+                    "00080018": {"vr": "UI", "Value": ["1.2.3.4.5"]},
+                    "00080016": {"vr": "UI", "Value": ["1.2.840.10008.5.1.4.1.1.2"]},
+                    "00200013": {"vr": "IS", "Value": ["1"]},
+                    "00280010": {"vr": "US", "Value": [512]},
+                    "00280011": {"vr": "US", "Value": [512]},
+                    "00280008": {"vr": "IS", "Value": ["12"]},
+                    "00080008": {"vr": "CS", "Value": ["ORIGINAL", "PRIMARY", "AXIAL"]}
+                })),
+                created_at: None,
+            }])
+        });
+
+        let app = build_router(make_test_state(store, MockBlobStr::new()));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies/1.2.3/series/1.2.3.4/instances")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json[0]["00280008"]["Value"][0], json!("12"));
+        assert_eq!(json[0]["00080008"]["Value"][0], json!("ORIGINAL"));
+        assert_eq!(json[0]["00080008"]["Value"][2], json!("AXIAL"));
     }
 }

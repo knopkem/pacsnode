@@ -155,6 +155,28 @@ impl RoutePlugin for OhifViewerPlugin {
         let viewer_root_route = viewer_root.clone();
         let mut router = Router::new()
             .route(
+                "/assets/{*path}",
+                get({
+                    let runtime = Arc::clone(&runtime);
+                    move |AxumPath(path): AxumPath<String>, request| {
+                        serve_root_asset_alias_request(
+                            Arc::clone(&runtime),
+                            format!("assets/{path}"),
+                            request,
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/{file}",
+                get({
+                    let runtime = Arc::clone(&runtime);
+                    move |AxumPath(file): AxumPath<String>, request| {
+                        serve_root_asset_alias_request(Arc::clone(&runtime), file, request)
+                    }
+                }),
+            )
+            .route(
                 &route_prefix,
                 get({
                     let viewer_root = viewer_root.clone();
@@ -301,6 +323,36 @@ async fn serve_viewer_request(
     }
 }
 
+async fn serve_root_asset_alias_request(
+    runtime: Arc<ViewerRuntime>,
+    requested_path: String,
+    request: Request,
+) -> Response {
+    let request_path = format!("/{requested_path}");
+    if !looks_like_static_asset_path(&request_path) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    let Some(relative_path) = sanitize_relative_request_path(&requested_path) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let candidate = runtime.static_dir.join(relative_path);
+
+    match resolve_existing_file(&candidate).await {
+        Ok(Some(file_path)) => serve_file(runtime.as_ref(), file_path, request).await,
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(error) => {
+            error!(
+                plugin_id = OHIF_VIEWER_PLUGIN_ID,
+                path = %candidate.display(),
+                error = %error,
+                "Failed to resolve root viewer asset alias"
+            );
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
 async fn resolve_existing_asset(
     candidate: &Path,
     index_file: &Path,
@@ -316,6 +368,15 @@ async fn resolve_existing_asset(
                 Err(error) => Err(error),
             }
         }
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+async fn resolve_existing_file(candidate: &Path) -> Result<Option<PathBuf>, std::io::Error> {
+    match fs::metadata(candidate).await {
+        Ok(metadata) if metadata.is_file() => Ok(Some(candidate.to_path_buf())),
         Ok(_) => Ok(None),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
@@ -892,6 +953,60 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn root_asset_alias_serves_generated_bundle_chunk() {
+        let dir = TestViewerDir::new();
+        dir.write("index.html", "<html>viewer</html>");
+        dir.write(
+            "6409.bundle.573c619db7f5fd651882.js",
+            "console.log('chunk');",
+        );
+        let plugin = init_plugin(&dir).await;
+        let app = plugin.routes().with_state(app_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/6409.bundle.573c619db7f5fd651882.js")
+                    .header(header::ACCEPT, "*/*")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            String::from_utf8(body.to_vec()).unwrap(),
+            "console.log('chunk');"
+        );
+    }
+
+    #[tokio::test]
+    async fn root_asset_alias_serves_assets_subdirectory_files() {
+        let dir = TestViewerDir::new();
+        dir.write("index.html", "<html>viewer</html>");
+        dir.write("assets/android-chrome-144x144.png", "png-bytes");
+        let plugin = init_plugin(&dir).await;
+        let app = plugin.routes().with_state(app_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/android-chrome-144x144.png")
+                    .header(header::ACCEPT, "*/*")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.as_ref(), b"png-bytes");
     }
 
     #[tokio::test]

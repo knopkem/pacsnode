@@ -52,8 +52,11 @@ window.config = {
 ```
 
 `pacsnode` also rewrites common root-absolute asset references in the served HTML
-shell to the configured `route_prefix`, which helps with stock OHIF builds, but a
-subpath-aware OHIF build is still the supported deployment configuration.
+shell to the configured `route_prefix`, and serves common root-level generated
+bundle/icon requests from the viewer static directory. That helps with stock OHIF
+builds whose runtime still asks for chunk files such as `/6409.bundle....js` or
+icons under `/assets/...`, but a subpath-aware OHIF build is still the supported
+deployment configuration.
 
 ## Enable the plugin
 
@@ -116,3 +119,6 @@ The viewer shell can stay public while your DICOMweb routes remain protected.
 - The plugin validates `static_dir`, `index_file`, and `fallback_file` during startup.
 - Missing browser navigation routes under the viewer prefix return the configured fallback HTML document.
 - Missing asset requests such as JavaScript bundles still return `404 Not Found`.
+- Some OHIF builds request generated chunk files and icons from the site root even
+  when the viewer is mounted under `/viewer`; the plugin now aliases common
+  root-level asset requests into the configured `static_dir`.

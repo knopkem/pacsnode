@@ -192,7 +192,9 @@ mod tests {
     use bytes::Bytes;
     use pacs_core::{
         AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson, DicomNode, Instance,
-        InstanceQuery, MetadataStore, NewAuditLogEntry, PacsError, PacsResult, PacsStatistics, Series, SeriesQuery, SeriesUid, ServerSettings, SopInstanceUid, Study, StudyQuery, StudyUid,
+        InstanceQuery, MetadataStore, NewAuditLogEntry, PacsError, PacsResult, PacsStatistics,
+        Series, SeriesQuery, SeriesUid, ServerSettings, SopInstanceUid, Study, StudyQuery,
+        StudyUid,
     };
     use pacs_plugin::{EventBus, ServerInfo};
 

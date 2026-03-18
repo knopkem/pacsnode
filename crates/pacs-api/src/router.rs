@@ -82,6 +82,10 @@ pub fn build_router_without_state() -> Router<AppState> {
             get(wado::render_instance),
         )
         .route(
+            "/wado/studies/{study_uid}/series/{series_uid}/instances/{instance_uid}/thumbnail",
+            get(wado::thumbnail_instance),
+        )
+        .route(
             "/wado/studies/{study_uid}/series/{series_uid}/instances/{instance_uid}/frames/{frame_list}",
             get(wado::retrieve_frames),
         )

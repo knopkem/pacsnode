@@ -285,7 +285,10 @@ async fn test_server_settings_round_trip() {
     let (pool, _c) = setup_pool().await;
     let store = PgMetadataStore::new(pool);
 
-    assert_eq!(store.get_server_settings().await.expect("get settings"), None);
+    assert_eq!(
+        store.get_server_settings().await.expect("get settings"),
+        None
+    );
 
     let settings = make_server_settings();
     store

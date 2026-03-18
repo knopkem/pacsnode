@@ -7,10 +7,11 @@ use axum::{
 };
 use chrono::NaiveDate;
 use pacs_core::{
-    InstanceQuery, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
+    DicomJson, InstanceQuery, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery,
+    StudyUid,
 };
 use pacs_plugin::{AuthenticatedUser, PacsEvent, QuerySource};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::{json, Map, Value};
 
 use crate::{error::ApiError, state::AppState};
@@ -42,6 +43,13 @@ pub struct StudySearchParams {
     pub offset: Option<u32>,
     /// Enable fuzzy matching for string attributes.
     pub fuzzymatching: Option<bool>,
+    /// Additional tags to include in the response.
+    #[serde(
+        rename = "includeField",
+        default,
+        deserialize_with = "deserialize_include_fields"
+    )]
+    pub include_fields: Vec<String>,
 }
 
 /// QIDO-RS query parameters for series-level searches.
@@ -60,6 +68,13 @@ pub struct SeriesSearchParams {
     pub limit: Option<u32>,
     /// Results to skip (pagination).
     pub offset: Option<u32>,
+    /// Additional tags to include in the response.
+    #[serde(
+        rename = "includeField",
+        default,
+        deserialize_with = "deserialize_include_fields"
+    )]
+    pub include_fields: Vec<String>,
 }
 
 /// QIDO-RS query parameters for instance-level searches.
@@ -78,6 +93,32 @@ pub struct InstanceSearchParams {
     pub limit: Option<u32>,
     /// Results to skip (pagination).
     pub offset: Option<u32>,
+    /// Additional tags to include in the response.
+    #[serde(
+        rename = "includeField",
+        default,
+        deserialize_with = "deserialize_include_fields"
+    )]
+    pub include_fields: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum OneOrManyStrings {
+    One(String),
+    Many(Vec<String>),
+}
+
+fn deserialize_include_fields<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<OneOrManyStrings>::deserialize(deserializer)?;
+    Ok(match value {
+        None => Vec::new(),
+        Some(OneOrManyStrings::One(item)) => normalize_include_fields(vec![item]),
+        Some(OneOrManyStrings::Many(items)) => normalize_include_fields(items),
+    })
 }
 
 /// `GET /wado/studies` — QIDO-RS study search.
@@ -100,10 +141,13 @@ pub async fn search_studies(
         limit: params.limit,
         offset: params.offset,
         fuzzy_matching: params.fuzzymatching.unwrap_or(false),
-        include_fields: vec![],
+        include_fields: params.include_fields.clone(),
     };
     let studies = state.store.query_studies(&query).await?;
-    let metadata: Vec<serde_json::Value> = studies.iter().map(study_qido_metadata).collect();
+    let metadata: Vec<serde_json::Value> = studies
+        .iter()
+        .map(|study| study_qido_metadata(study, &query.include_fields))
+        .collect();
     state
         .plugins
         .emit_event(PacsEvent::QueryPerformed {
@@ -132,7 +176,10 @@ pub async fn search_series(
         offset: params.offset,
     };
     let series = state.store.query_series(&query).await?;
-    let metadata: Vec<serde_json::Value> = series.iter().map(series_qido_metadata).collect();
+    let metadata: Vec<serde_json::Value> = series
+        .iter()
+        .map(|series| series_qido_metadata(series, &params.include_fields))
+        .collect();
     state
         .plugins
         .emit_event(PacsEvent::QueryPerformed {
@@ -179,7 +226,7 @@ pub async fn search_instances(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn study_qido_metadata(study: &Study) -> Value {
+fn study_qido_metadata(study: &Study, include_fields: &[String]) -> Value {
     let mut object = Map::new();
     object.insert(
         "0020000D".into(),
@@ -219,10 +266,11 @@ fn study_qido_metadata(study: &Study) -> Value {
         "00201208".into(),
         integer_string_attribute(study.num_instances),
     );
+    append_requested_metadata_fields(&mut object, &study.metadata, include_fields);
     Value::Object(object)
 }
 
-fn series_qido_metadata(series: &Series) -> Value {
+fn series_qido_metadata(series: &Series, include_fields: &[String]) -> Value {
     let mut object = Map::new();
     object.insert(
         "0020000D".into(),
@@ -240,7 +288,55 @@ fn series_qido_metadata(series: &Series) -> Value {
         "00201209".into(),
         integer_string_attribute(series.num_instances),
     );
+    append_requested_metadata_fields(&mut object, &series.metadata, include_fields);
     Value::Object(object)
+}
+
+fn normalize_include_fields(values: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for value in values {
+        for field in value.split(',') {
+            let trimmed = field.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let candidate = trimmed.to_ascii_uppercase();
+            if candidate == "ALL" {
+                return vec![candidate];
+            }
+            if !normalized.iter().any(|existing| existing == &candidate) {
+                normalized.push(candidate);
+            }
+        }
+    }
+    normalized
+}
+
+fn append_requested_metadata_fields(
+    object: &mut Map<String, Value>,
+    metadata: &DicomJson,
+    include_fields: &[String],
+) {
+    if include_fields.is_empty() {
+        return;
+    }
+
+    let Some(metadata_object) = metadata.as_value().as_object() else {
+        return;
+    };
+
+    if include_fields.iter().any(|field| field == "ALL") {
+        for (tag, value) in metadata_object {
+            object.entry(tag.clone()).or_insert_with(|| value.clone());
+        }
+        return;
+    }
+
+    for field in include_fields {
+        if let Some(value) = metadata_object.get(field) {
+            object.entry(field.clone()).or_insert_with(|| value.clone());
+        }
+    }
 }
 
 fn string_attribute(vr: &'static str, value: impl Into<String>) -> Value {
@@ -418,6 +514,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_search_studies_passes_include_fields_to_store() {
+        let mut store = MockMetaStore::new();
+        store.expect_query_studies().once().returning(|query| {
+            assert_eq!(query.include_fields, vec!["00080016", "00280010"]);
+            Ok(vec![])
+        });
+
+        let app = build_router(make_test_state(store, MockBlobStr::new()));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies?includeField=00080016,00280010")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_search_studies_includes_requested_metadata_fields() {
+        let mut store = MockMetaStore::new();
+        store.expect_query_studies().once().returning(|_| {
+            Ok(vec![Study {
+                study_uid: StudyUid::from("1.2.3"),
+                patient_id: Some("PID001".into()),
+                patient_name: Some("Doe^Jane".into()),
+                study_date: None,
+                study_time: None,
+                accession_number: None,
+                modalities: vec!["CT".into()],
+                referring_physician: None,
+                description: Some("Chest CT".into()),
+                num_series: 1,
+                num_instances: 5,
+                metadata: DicomJson::from(json!({
+                    "00080016": {"vr": "UI", "Value": ["1.2.840.10008.5.1.4.1.1.2"]},
+                    "00280010": {"vr": "US", "Value": [512]}
+                })),
+                created_at: None,
+                updated_at: None,
+            }])
+        });
+
+        let app = build_router(make_test_state(store, MockBlobStr::new()));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies?includeField=00080016")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            json[0]["00080016"]["Value"][0],
+            json!("1.2.840.10008.5.1.4.1.1.2")
+        );
+        assert!(json[0].get("00280010").is_none());
+    }
+
+    #[tokio::test]
     async fn test_search_series_returns_aggregate_dicom_json() {
         let mut store = MockMetaStore::new();
         store.expect_query_series().once().returning(|_| {
@@ -453,5 +615,42 @@ mod tests {
         assert_eq!(json[0]["0020000E"]["Value"][0], json!("1.2.3.4"));
         assert_eq!(json[0]["00201209"]["Value"][0], json!("5"));
         assert!(json[0].get("00080018").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_search_series_includes_all_requested_metadata_fields() {
+        let mut store = MockMetaStore::new();
+        store.expect_query_series().once().returning(|_| {
+            Ok(vec![Series {
+                series_uid: SeriesUid::from("1.2.3.4"),
+                study_uid: StudyUid::from("1.2.3"),
+                modality: Some("CT".into()),
+                series_number: Some(7),
+                description: Some("Axial".into()),
+                body_part: Some("CHEST".into()),
+                num_instances: 5,
+                metadata: DicomJson::from(json!({
+                    "00080021": {"vr": "DA", "Value": ["20240102"]},
+                    "00080031": {"vr": "TM", "Value": ["101112"]}
+                })),
+                created_at: None,
+            }])
+        });
+
+        let app = build_router(make_test_state(store, MockBlobStr::new()));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies/1.2.3/series?includeField=all")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json[0]["00080021"]["Value"][0], json!("20240102"));
+        assert_eq!(json[0]["00080031"]["Value"][0], json!("101112"));
     }
 }

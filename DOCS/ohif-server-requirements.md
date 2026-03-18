@@ -74,7 +74,7 @@ These endpoints are required for any study to load at all.
 | Parameter | Notes | pacsnode status |
 |-----------|-------|-----------------|
 | `fuzzymatching=true` | Fuzzy patient-name matching | ⚠️ Unclear — verify |
-| `includeField=00080016` | SOP Class UID, Rows, Columns, etc. | ⚠️ Not tested — verify |
+| `includeField=00080016` | SOP Class UID, Rows, Columns, etc. | ✅ Implemented for study/series QIDO shaping; instance QIDO already returns stored metadata |
 | `AccessionNumber` | Required for worklist / order matching | ✅ Stored in JSONB |
 | `StudyDescription` | Display field | ✅ Stored |
 | `ModalitiesInStudy` | Multi-modality filter | ✅ Stored |
@@ -110,7 +110,7 @@ hanging protocols to work correctly.
 |----------|--------|---------|-----------------|
 | `GET /studies/{uid}/series/{uid}/instances` | `application/dicom+json` | Retrieve all instance metadata for a series | ✅ Implemented |
 | `GET /studies/{uid}/series/{uid}/instances/{uid}` | `multipart/related; type="application/octet-stream"` | Full DICOM P10 instance | ✅ Implemented |
-| `GET /studies/{uid}/series/{uid}/instances/{uid}/frames/{n}` | `image/jpeg`, `image/png`, or multipart | Individual frame retrieval | ⚠️ Partial — check frame routing |
+| `GET /studies/{uid}/series/{uid}/instances/{uid}/frames/{n}` | `image/jpeg`, `image/png`, or multipart | Individual frame retrieval | ✅ Implemented, including comma-separated frame lists and rendered variants |
 | `GET /studies/{uid}/series/{uid}/instances/{uid}/bulkdata/{tag}` | varies | BulkDataURI target | ⚠️ Needs verification |
 | `GET /studies/{uid}/series/{uid}/instances/{uid}/metadata` | `application/dicom+json` | Single-instance metadata | ✅ Implemented via wado.rs |
 
@@ -164,8 +164,7 @@ GET /studies/{uid}/series/{uid}/instances?SOPClassUID=1.2.840.10008.5.1.4.1.1.88
 
 SOPClassUID filtering must work in pacsnode's QIDO implementation.
 
-**pacsnode status:** ⚠️ SOPClassUID instance-level filtering — verify it is
-indexed and returned correctly in QIDO responses.
+**pacsnode status:** ✅ Implemented in instance-level QIDO query handling.
 
 ### 3.4 Per-user measurement storage
 
@@ -286,8 +285,8 @@ OHIF supports four thumbnail strategies, configurable per deployment.
 | Strategy | Endpoint | Auth | Server requirement |
 |----------|----------|------|--------------------|
 | `wadors` | WADO-RS full instance, client renders | Bearer header | No extra endpoint |
-| `thumbnail` | `GET .../instances/{uid}/thumbnail?accept=image/jpeg` | Bearer header | ✅ Recommended — pacsnode must implement |
-| `rendered` | `GET .../instances/{uid}/rendered?accept=image/jpeg` | Bearer header | Optional |
+| `thumbnail` | `GET .../instances/{uid}/thumbnail?accept=image/jpeg` | Bearer header | ✅ Implemented |
+| `rendered` | `GET .../instances/{uid}/rendered?accept=image/jpeg` | Bearer header | ✅ Implemented |
 | `thumbnailDirect` | Direct URL, no auth | None | Not recommended — bypasses auth |
 
 ### 7.2 `/thumbnail` endpoint specification
@@ -301,13 +300,12 @@ Content-Type: image/jpeg
 Body: JPEG bytes
 ```
 
-pacsnode should render the representative frame of the instance at a small size
-(128×128 or similar) using `dicom-toolkit-image`'s `render_frame_u8()` → JPEG
-export helper.
+pacsnode renders the first frame of the requested instance through the existing
+rendered-image pipeline, defaults thumbnails to JPEG, and defaults missing size
+parameters to 128×128.
 
-**pacsnode status:** ❌ Not implemented.  This is a high-value addition: without
-it, OHIF falls back to the `wadors` strategy which downloads the full instance
-for each thumbnail — very expensive for large studies.
+**pacsnode status:** ✅ Implemented at
+`GET /wado/studies/{studyUID}/series/{seriesUID}/instances/{sopUID}/thumbnail`.
 
 ### 7.3 `/rendered` endpoint specification
 
@@ -323,7 +321,8 @@ Body: rendered image bytes
 Used by OHIF when `thumbnailRendering: 'rendered'` is configured.  Similar to
 `/thumbnail` but full-resolution or at the requested `rows`/`columns`.
 
-**pacsnode status:** ❌ Not implemented.
+**pacsnode status:** ✅ Implemented for study, series, instance, and frame
+render routes. Supports `Accept: image/jpeg|image/png` and `?accept=image/jpeg|image/png`.
 
 ---
 
@@ -656,11 +655,11 @@ following areas warrant load testing:
 
 | Item | Effort | Description |
 |------|--------|-------------|
-| `/thumbnail` endpoint | Medium | Render representative frame to JPEG at 128×128; uses existing `render_frame_u8()` + JPEG export |
-| `/rendered` endpoint | Medium | Full-resolution or `?rows=`/`?columns=` server render; reuses same toolkit path |
-| Multi-frame `/frames/{n1,n2,...}` | Low | Accept comma-separated frame list in WADO-RS frame endpoint |
-| SOPClassUID filtering in QIDO-RS | Low | Ensure `SOPClassUID` query param filters instance-level QIDO responses |
-| `includeField` support | Low | Return additional tags requested via `?includeField=HHHHEEEE` |
+| `/thumbnail` endpoint | Done | Implemented as an instance-level JPEG-first alias over the existing rendered-image pipeline |
+| `/rendered` endpoint | Done | Already implemented; now also honors `?accept=` in addition to the `Accept` header |
+| Multi-frame `/frames/{n1,n2,...}` | Done | Comma-separated frame lists are accepted by WADO-RS frame retrieval and rendered-frame routes |
+| SOPClassUID filtering in QIDO-RS | Done | Instance-level QIDO query passes `SOPClassUID` through to the metadata store |
+| `includeField` support | Done | Study and series QIDO responses now merge requested metadata tags from stored DICOM JSON |
 
 ### Priority 3 — Enables advanced OHIF features
 
@@ -704,9 +703,9 @@ window.config = {
       wadoRoot: 'http://localhost:4000/wado',
 
       // Feature flags (match to pacsnode capabilities)
-      qidoSupportsIncludeField: false,    // set true once implemented
+      qidoSupportsIncludeField: true,
       imageRendering: 'wadors',
-      thumbnailRendering: 'wadors',       // change to 'thumbnail' once /thumbnail is implemented
+      thumbnailRendering: 'thumbnail',
       enableStudyLazyLoad: true,
       supportsFuzzyMatching: false,       // set true once pg_trgm matching is implemented
       supportsWildcard: true,
@@ -748,10 +747,10 @@ WADO-RS
   GET .../instances (metadata, dicom+json)        ✅
   GET .../instances/{uid} (full P10)              ✅
   GET .../instances/{uid}/metadata                ✅
-  GET .../instances/{uid}/frames/{n}              ⚠️ verify comma-list
+  GET .../instances/{uid}/frames/{n}              ✅ comma-list supported
   GET .../instances/{uid}/bulkdata/{tag}          ⚠️ verify content-type
-  GET .../instances/{uid}/thumbnail               ❌ not implemented
-  GET .../instances/{uid}/rendered                ❌ not implemented
+  GET .../instances/{uid}/thumbnail               ✅
+  GET .../instances/{uid}/rendered                ✅
 
 STOW-RS
   POST /wado/studies                             ✅

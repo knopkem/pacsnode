@@ -195,7 +195,11 @@ pub async fn render_study(
 ) -> Result<Response, ApiError> {
     let study_uid = StudyUid::from(study_uid.as_str());
     let instance = representative_instance_for_study(&state, &study_uid).await?;
-    let media_type = parse_rendered_accept(&headers)?;
+    let media_type = parse_rendered_media_type(
+        rendered_query.accept.as_deref(),
+        &headers,
+        RenderedMediaType::Png,
+    )?;
     let render_options = parse_rendered_query(&rendered_query)?;
     render_instance_blob(&state, &instance, &[1], media_type, &render_options).await
 }
@@ -210,7 +214,11 @@ pub async fn render_series(
 ) -> Result<Response, ApiError> {
     let series_uid = SeriesUid::from(series_uid.as_str());
     let instance = representative_instance_for_series(&state, &series_uid).await?;
-    let media_type = parse_rendered_accept(&headers)?;
+    let media_type = parse_rendered_media_type(
+        rendered_query.accept.as_deref(),
+        &headers,
+        RenderedMediaType::Png,
+    )?;
     let render_options = parse_rendered_query(&rendered_query)?;
     render_instance_blob(&state, &instance, &[1], media_type, &render_options).await
 }
@@ -225,8 +233,33 @@ pub async fn render_instance(
 ) -> Result<Response, ApiError> {
     let uid = SopInstanceUid::from(instance_uid.as_str());
     let instance = state.store.get_instance(&uid).await?;
-    let media_type = parse_rendered_accept(&headers)?;
+    let media_type = parse_rendered_media_type(
+        rendered_query.accept.as_deref(),
+        &headers,
+        RenderedMediaType::Png,
+    )?;
     let render_options = parse_rendered_query(&rendered_query)?;
+    render_instance_blob(&state, &instance, &[1], media_type, &render_options).await
+}
+
+/// `GET /wado/studies/:study_uid/series/:series_uid/instances/:instance_uid/thumbnail`
+/// — render a thumbnail image for an instance.
+pub async fn thumbnail_instance(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(rendered_query): Query<RenderedQuery>,
+    Path((_study_uid, _series_uid, instance_uid)): Path<(String, String, String)>,
+) -> Result<Response, ApiError> {
+    let uid = SopInstanceUid::from(instance_uid.as_str());
+    let instance = state.store.get_instance(&uid).await?;
+    let media_type = parse_rendered_media_type(
+        rendered_query.accept.as_deref(),
+        &headers,
+        RenderedMediaType::Jpeg {
+            quality: DEFAULT_JPEG_QUALITY,
+        },
+    )?;
+    let render_options = parse_thumbnail_query(&rendered_query)?;
     render_instance_blob(&state, &instance, &[1], media_type, &render_options).await
 }
 
@@ -245,7 +278,11 @@ pub async fn render_frames(
 ) -> Result<Response, ApiError> {
     let frames = parse_frame_list(&frame_list)?;
     let blob = load_instance_blob(&state, &SopInstanceUid::from(instance_uid.as_str())).await?;
-    let media_type = parse_rendered_accept(&headers)?;
+    let media_type = parse_rendered_media_type(
+        rendered_query.accept.as_deref(),
+        &headers,
+        RenderedMediaType::Png,
+    )?;
     let render_options = parse_rendered_query(&rendered_query)?;
     let rendered = render_frames_with_options(blob, &frames, media_type, &render_options)
         .map_err(PacsError::from)
@@ -409,6 +446,8 @@ pub struct WadoUriQuery {
 #[derive(Debug, Default, Deserialize, Clone)]
 /// Query parameters accepted by rendered WADO-RS and WADO-URI responses.
 pub struct RenderedQuery {
+    #[serde(rename = "accept")]
+    accept: Option<String>,
     #[serde(rename = "windowCenter")]
     window_center: Option<String>,
     #[serde(rename = "windowWidth")]
@@ -634,6 +673,27 @@ fn parse_rendered_accept(headers: &HeaderMap) -> Result<RenderedMediaType, ApiEr
     )))
 }
 
+fn parse_rendered_media_type(
+    accept_query: Option<&str>,
+    headers: &HeaderMap,
+    default: RenderedMediaType,
+) -> Result<RenderedMediaType, ApiError> {
+    if let Some(query_accept) = accept_query {
+        let normalized = normalize_content_type(query_accept);
+        return parse_rendered_accept_candidate(&normalized).ok_or_else(|| {
+            ApiError(PacsError::NotAcceptable(
+                "only image/png and image/jpeg rendered responses are supported".into(),
+            ))
+        });
+    }
+
+    if headers.contains_key(header::ACCEPT) {
+        return parse_rendered_accept(headers);
+    }
+
+    Ok(default)
+}
+
 fn parse_rendered_accept_candidate(candidate: &str) -> Option<RenderedMediaType> {
     let mut parts = candidate.split(';').map(str::trim);
     let media_type = parts.next().unwrap_or_default().to_ascii_lowercase();
@@ -716,6 +776,17 @@ fn parse_rendered_query(query: &RenderedQuery) -> Result<RenderedFrameOptions, A
         region,
         burn_in_overlays: false,
     })
+}
+
+fn parse_thumbnail_query(query: &RenderedQuery) -> Result<RenderedFrameOptions, ApiError> {
+    let mut options = parse_rendered_query(query)?;
+    if options.rows.is_none() {
+        options.rows = Some(128);
+    }
+    if options.columns.is_none() {
+        options.columns = Some(128);
+    }
+    Ok(options)
 }
 
 fn parse_optional_query_number<T>(
@@ -1442,6 +1513,110 @@ mod tests {
         );
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         assert!(body.starts_with(&[0xFF, 0xD8, 0xFF]));
+    }
+
+    #[tokio::test]
+    async fn test_render_instance_honors_query_accept_jpeg() {
+        let mut store = MockMetaStore::new();
+        let instance = make_instance();
+        store
+            .expect_get_instance()
+            .once()
+            .returning(move |_| Ok(instance.clone()));
+
+        let dicom = make_multiframe_dicom();
+        let mut blobs = MockBlobStr::new();
+        blobs
+            .expect_get()
+            .once()
+            .returning(move |_| Ok(dicom.clone()));
+
+        let app = build_router(make_test_state(store, blobs));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies/1.2.3/series/1.2.3.4/instances/1.2.3.4.5/rendered?accept=image/jpeg")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/jpeg"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_thumbnail_instance_defaults_to_jpeg_and_128_square() {
+        let mut store = MockMetaStore::new();
+        let instance = make_instance();
+        store
+            .expect_get_instance()
+            .once()
+            .returning(move |_| Ok(instance.clone()));
+
+        let dicom = make_multiframe_dicom();
+        let mut blobs = MockBlobStr::new();
+        blobs
+            .expect_get()
+            .once()
+            .returning(move |_| Ok(dicom.clone()));
+
+        let app = build_router(make_test_state(store, blobs));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies/1.2.3/series/1.2.3.4/instances/1.2.3.4.5/thumbnail")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/jpeg"
+        );
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert!(body.starts_with(&[0xFF, 0xD8, 0xFF]));
+    }
+
+    #[tokio::test]
+    async fn test_thumbnail_instance_honors_png_query_accept() {
+        let mut store = MockMetaStore::new();
+        let instance = make_instance();
+        store
+            .expect_get_instance()
+            .once()
+            .returning(move |_| Ok(instance.clone()));
+
+        let dicom = make_multiframe_dicom();
+        let mut blobs = MockBlobStr::new();
+        blobs
+            .expect_get()
+            .once()
+            .returning(move |_| Ok(dicom.clone()));
+
+        let app = build_router(make_test_state(store, blobs));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies/1.2.3/series/1.2.3.4/instances/1.2.3.4.5/thumbnail?accept=image/png")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/png"
+        );
     }
 
     #[tokio::test]

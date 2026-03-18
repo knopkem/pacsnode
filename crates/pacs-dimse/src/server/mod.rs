@@ -1264,8 +1264,8 @@ mod ae_whitelist_tests {
     use pacs_core::{
         AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson,
         DicomNode as RegisteredDicomNode, Instance, InstanceQuery, MetadataStore, NewAuditLogEntry,
-        PacsResult, PacsStatistics, Series, SeriesQuery, SeriesUid, ServerSettings,
-        SopInstanceUid, Study, StudyQuery, StudyUid,
+        PacsResult, PacsStatistics, Series, SeriesQuery, SeriesUid, ServerSettings, SopInstanceUid,
+        Study, StudyQuery, StudyUid,
     };
 
     use super::*;
@@ -1470,8 +1470,8 @@ mod tests {
     use pacs_core::{
         AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson,
         DicomNode as RegisteredDicomNode, Instance, InstanceQuery, MetadataStore, NewAuditLogEntry,
-        PacsResult, PacsStatistics, Series, SeriesQuery, SeriesUid, ServerSettings,
-        SopInstanceUid, Study, StudyQuery, StudyUid,
+        PacsResult, PacsStatistics, Series, SeriesQuery, SeriesUid, ServerSettings, SopInstanceUid,
+        Study, StudyQuery, StudyUid,
     };
     use tokio::{
         io::AsyncWriteExt,

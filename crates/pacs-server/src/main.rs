@@ -840,5 +840,4 @@ mod tests {
             .to_string()
             .contains("configured DICOM node AE title must not be empty"));
     }
-
 }

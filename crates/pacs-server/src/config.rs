@@ -710,7 +710,10 @@ mod tests {
             "./data/blobs"
         );
         assert!(cfg.storage.is_none());
-        assert_eq!(cfg.server.bootstrap_server_settings(), ServerSettings::default());
+        assert_eq!(
+            cfg.server.bootstrap_server_settings(),
+            ServerSettings::default()
+        );
         assert!(cfg
             .plugins
             .enabled
@@ -723,7 +726,9 @@ mod tests {
         assert!(!toml.contains("ae_title ="));
         assert!(toml.contains("[plugins.admin-dashboard]"));
         assert!(toml.contains("[plugins.ohif-viewer]"));
-        assert!(toml.contains("[plugins.admin-dashboard]\nroute_prefix = \"/admin\"\nredirect_root = false"));
+        assert!(toml.contains(
+            "[plugins.admin-dashboard]\nroute_prefix = \"/admin\"\nredirect_root = false"
+        ));
         assert!(toml.contains("[plugins.ohif-viewer]\nstatic_dir = \"./web/viewer\"\nroute_prefix = \"/viewer\"\nredirect_root = true"));
     }
 
@@ -746,7 +751,10 @@ mod tests {
             "dicom"
         );
         assert!(cfg.filesystem_storage.is_none());
-        assert_eq!(cfg.server.bootstrap_server_settings(), ServerSettings::default());
+        assert_eq!(
+            cfg.server.bootstrap_server_settings(),
+            ServerSettings::default()
+        );
         assert!(cfg
             .plugins
             .enabled
@@ -759,7 +767,9 @@ mod tests {
         assert!(!toml.contains("ae_title ="));
         assert!(toml.contains("[plugins.admin-dashboard]"));
         assert!(toml.contains("[plugins.ohif-viewer]"));
-        assert!(toml.contains("[plugins.admin-dashboard]\nroute_prefix = \"/admin\"\nredirect_root = false"));
+        assert!(toml.contains(
+            "[plugins.admin-dashboard]\nroute_prefix = \"/admin\"\nredirect_root = false"
+        ));
         assert!(toml.contains("[plugins.ohif-viewer]\nstatic_dir = \"./web/viewer\"\nroute_prefix = \"/viewer\"\nredirect_root = true"));
     }
 }

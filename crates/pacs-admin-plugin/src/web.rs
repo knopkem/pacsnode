@@ -1,4 +1,9 @@
-use std::{collections::{BTreeSet, HashSet}, convert::Infallible, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeSet, HashSet},
+    convert::Infallible,
+    sync::Arc,
+    time::Duration,
+};
 
 use askama::Template;
 use async_stream::stream;
@@ -13,8 +18,8 @@ use axum::{
     Router,
 };
 use pacs_core::{
-    AuditLogEntry, AuditLogQuery, DicomNode, InstanceQuery, PacsError, SeriesQuery, Study,
-    ServerSettings, StudyQuery, StudyUid,
+    AuditLogEntry, AuditLogQuery, DicomNode, InstanceQuery, PacsError, SeriesQuery, ServerSettings,
+    Study, StudyQuery, StudyUid,
 };
 use pacs_dicom::supported_retrieve_transfer_syntaxes;
 use pacs_dimse::DicomClient;
@@ -516,7 +521,8 @@ async fn save_system_settings(
     let settings = match input.into_settings() {
         Ok(settings) => settings,
         Err(flash) => {
-            return render_system_response(&state, &runtime, &headers, Some(form), Some(flash)).await;
+            return render_system_response(&state, &runtime, &headers, Some(form), Some(flash))
+                .await;
         }
     };
 
@@ -580,11 +586,16 @@ async fn delete_study(
     let study_uid = StudyUid::from(study_uid.as_str());
     let blob_keys = match collect_study_blob_keys(&state, &study_uid).await {
         Ok(blob_keys) => blob_keys,
-        Err(status) => return error_response(status, "admin studies browser failed to collect blobs"),
+        Err(status) => {
+            return error_response(status, "admin studies browser failed to collect blobs")
+        }
     };
 
     if let Err(error) = state.store.delete_study(&study_uid).await {
-        return error_response(pacs_error_to_status(&error), "admin studies browser failed to delete study");
+        return error_response(
+            pacs_error_to_status(&error),
+            "admin studies browser failed to delete study",
+        );
     }
 
     cleanup_blob_keys(&state, blob_keys).await;
@@ -599,24 +610,33 @@ async fn delete_study(
 
     let current_page = filters.page();
     let mut response_filters = filters.clone();
-    let initial_markup = match build_studies_results_view(&state, runtime.route_prefix(), &response_filters).await {
-        Ok(view) => {
-            if !view.has_results && current_page > 1 {
-                response_filters = response_filters.with_page(current_page - 1);
-                None
-            } else {
-                Some(render_studies_results_view(view))
+    let initial_markup =
+        match build_studies_results_view(&state, runtime.route_prefix(), &response_filters).await {
+            Ok(view) => {
+                if !view.has_results && current_page > 1 {
+                    response_filters = response_filters.with_page(current_page - 1);
+                    None
+                } else {
+                    Some(render_studies_results_view(view))
+                }
             }
-        }
-        Err(status) => return error_response(status, "admin studies browser failed to refresh after delete"),
-    };
+            Err(status) => {
+                return error_response(
+                    status,
+                    "admin studies browser failed to refresh after delete",
+                )
+            }
+        };
 
     let markup = match initial_markup {
         Some(markup) => markup,
         None => match render_studies_results_markup(&state, &runtime, &response_filters).await {
             Ok(markup) => markup,
             Err(status) => {
-                return error_response(status, "admin studies browser failed to refresh after delete")
+                return error_response(
+                    status,
+                    "admin studies browser failed to refresh after delete",
+                )
             }
         },
     };
@@ -628,10 +648,11 @@ async fn nodes_page(
     State(state): State<AppState>,
     Extension(runtime): Extension<Arc<AdminRuntime>>,
 ) -> Response {
-    let nodes_markup = match render_nodes_panel_markup(&state, &runtime, NodeFormView::default(), None).await {
-        Ok(markup) => markup,
-        Err(status) => return error_response(status, "admin node management failed to load"),
-    };
+    let nodes_markup =
+        match render_nodes_panel_markup(&state, &runtime, NodeFormView::default(), None).await {
+            Ok(markup) => markup,
+            Err(status) => return error_response(status, "admin node management failed to load"),
+        };
 
     render_html(&NodesPageTemplate {
         page_title: "Nodes",
@@ -668,7 +689,10 @@ async fn edit_node(
         NodeFormView::from_node(&node),
         Some(FlashView {
             title: "Node loaded".into(),
-            detail: format!("Editing {}. Update the fields and save to persist changes.", node.ae_title),
+            detail: format!(
+                "Editing {}. Update the fields and save to persist changes.",
+                node.ae_title
+            ),
             tone_class: "flash-info",
         }),
     )
@@ -702,10 +726,20 @@ async fn save_node(
 
     let flash = FlashView {
         title: "Node saved".into(),
-        detail: format!("{} now points to {}:{}.", node.ae_title, node.host, node.port),
+        detail: format!(
+            "{} now points to {}:{}.",
+            node.ae_title, node.host, node.port
+        ),
         tone_class: "flash-success",
     };
-    render_nodes_response(&state, &runtime, &headers, NodeFormView::default(), Some(flash)).await
+    render_nodes_response(
+        &state,
+        &runtime,
+        &headers,
+        NodeFormView::default(),
+        Some(flash),
+    )
+    .await
 }
 
 async fn delete_node(
@@ -730,7 +764,14 @@ async fn delete_node(
         detail: format!("{} was removed from the registered AE list.", ae_title),
         tone_class: "flash-warning",
     };
-    render_nodes_response(&state, &runtime, &headers, NodeFormView::default(), Some(flash)).await
+    render_nodes_response(
+        &state,
+        &runtime,
+        &headers,
+        NodeFormView::default(),
+        Some(flash),
+    )
+    .await
 }
 
 async fn verify_node(
@@ -764,11 +805,15 @@ async fn verify_node(
         }
     } else {
         let client = DicomClient::new(state.server_info.ae_title.clone(), NODE_VERIFY_TIMEOUT_SECS);
-        let verify_target = pacs_dimse::DicomNode::new(node.ae_title.clone(), node.host.clone(), node.port);
+        let verify_target =
+            pacs_dimse::DicomNode::new(node.ae_title.clone(), node.host.clone(), node.port);
         match client.echo(&verify_target).await {
             Ok(()) => FlashView {
                 title: "Verification succeeded".into(),
-                detail: format!("{} responded to C-ECHO at {}:{}.", node.ae_title, node.host, node.port),
+                detail: format!(
+                    "{} responded to C-ECHO at {}:{}.",
+                    node.ae_title, node.host, node.port
+                ),
                 tone_class: "flash-success",
             },
             Err(error) => FlashView {
@@ -779,7 +824,14 @@ async fn verify_node(
         }
     };
 
-    render_nodes_response(&state, &runtime, &headers, NodeFormView::default(), Some(flash)).await
+    render_nodes_response(
+        &state,
+        &runtime,
+        &headers,
+        NodeFormView::default(),
+        Some(flash),
+    )
+    .await
 }
 
 async fn audit_page(
@@ -948,9 +1000,11 @@ async fn render_system_settings_markup(
     flash: Option<FlashView>,
 ) -> Result<String, StatusCode> {
     let persisted_settings = load_saved_server_settings(state).await?;
-    let form = form_override.unwrap_or_else(|| ServerSettingsFormView::from_settings(&persisted_settings));
+    let form =
+        form_override.unwrap_or_else(|| ServerSettingsFormView::from_settings(&persisted_settings));
     let syntax_options = transfer_syntax_option_views(&form.accepted_transfer_syntaxes);
-    let preferred_syntax_order = preferred_transfer_syntax_item_views(&form.preferred_transfer_syntaxes);
+    let preferred_syntax_order =
+        preferred_transfer_syntax_item_views(&form.preferred_transfer_syntaxes);
 
     SystemSettingsPanelTemplate {
         system_path: format!("{}/system", runtime.route_prefix()),
@@ -1072,7 +1126,11 @@ async fn render_nodes_panel_markup(
     form: NodeFormView,
     flash: Option<FlashView>,
 ) -> Result<String, StatusCode> {
-    let nodes = state.store.list_nodes().await.map_err(internal_store_error)?;
+    let nodes = state
+        .store
+        .list_nodes()
+        .await
+        .map_err(internal_store_error)?;
     let rows = nodes
         .into_iter()
         .map(|node| node_row_view(runtime.route_prefix(), node))
@@ -1096,10 +1154,11 @@ async fn render_system_response(
     form_override: Option<ServerSettingsFormView>,
     flash: Option<FlashView>,
 ) -> Response {
-    let settings_markup = match render_system_settings_markup(state, runtime, form_override, flash).await {
-        Ok(markup) => markup,
-        Err(status) => return error_response(status, "admin system settings failed to render"),
-    };
+    let settings_markup =
+        match render_system_settings_markup(state, runtime, form_override, flash).await {
+            Ok(markup) => markup,
+            Err(status) => return error_response(status, "admin system settings failed to render"),
+        };
 
     if is_htmx_request(headers) {
         html_markup_response(settings_markup)
@@ -1162,9 +1221,14 @@ async fn build_audit_results_view(
         .map_err(internal_store_error)?;
     let has_results = !result_page.entries.is_empty();
     let has_prev = result_page.offset > 0;
-    let has_next = (result_page.offset as i64 + result_page.entries.len() as i64) < result_page.total;
+    let has_next =
+        (result_page.offset as i64 + result_page.entries.len() as i64) < result_page.total;
     let current_page = (result_page.offset / result_page.limit) + 1;
-    let start_index = if has_results { result_page.offset + 1 } else { 0 };
+    let start_index = if has_results {
+        result_page.offset + 1
+    } else {
+        0
+    };
     let end_index = result_page.offset + result_page.entries.len() as u32;
 
     let page_href = path_with_query(
@@ -1173,11 +1237,15 @@ async fn build_audit_results_view(
     );
     let prev_page_href = path_with_query(
         &audit_page_path(route_prefix),
-        &filters.with_page(current_page.saturating_sub(1)).to_query_string(),
+        &filters
+            .with_page(current_page.saturating_sub(1))
+            .to_query_string(),
     );
     let prev_results_href = path_with_query(
         &audit_results_path(route_prefix),
-        &filters.with_page(current_page.saturating_sub(1)).to_query_string(),
+        &filters
+            .with_page(current_page.saturating_sub(1))
+            .to_query_string(),
     );
     let next_page_href = path_with_query(
         &audit_page_path(route_prefix),
@@ -1197,7 +1265,10 @@ async fn build_audit_results_view(
         has_results,
         has_active_filters: filters.has_active_filters(),
         result_summary: if has_results {
-            format!("Showing audit rows {start_index}-{end_index} of {}", result_page.total)
+            format!(
+                "Showing audit rows {start_index}-{end_index} of {}",
+                result_page.total
+            )
         } else {
             "No audit rows found".into()
         },
@@ -1333,7 +1404,10 @@ fn node_row_view(route_prefix: &str, node: DicomNode) -> NodeRowView {
 
 fn audit_row_view(entry: AuditLogEntry) -> AuditRowView {
     AuditRowView {
-        occurred_at: entry.occurred_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+        occurred_at: entry
+            .occurred_at
+            .format("%Y-%m-%d %H:%M:%S UTC")
+            .to_string(),
         action: entry.action,
         resource: entry.resource,
         resource_uid: fallback_string(entry.resource_uid),
@@ -1359,7 +1433,8 @@ fn pretty_json(value: &Value) -> String {
 
 async fn load_node(state: &AppState, ae_title: &str) -> Result<DicomNode, PacsError> {
     let nodes = state.store.list_nodes().await?;
-    nodes.into_iter()
+    nodes
+        .into_iter()
         .find(|node| node.ae_title == ae_title)
         .ok_or_else(|| PacsError::NotFound {
             resource: "node",
@@ -1392,17 +1467,13 @@ fn is_htmx_request(headers: &HeaderMap) -> bool {
 }
 
 fn fallback_string(value: Option<String>) -> String {
-    value.filter(|item| !item.trim().is_empty())
+    value
+        .filter(|item| !item.trim().is_empty())
         .unwrap_or_else(|| "-".into())
 }
 
-fn transfer_syntax_option_views(
-    accepted_values: &[String],
-) -> Vec<TransferSyntaxOptionView> {
-    let accepted = accepted_values
-        .iter()
-        .cloned()
-        .collect::<HashSet<_>>();
+fn transfer_syntax_option_views(accepted_values: &[String]) -> Vec<TransferSyntaxOptionView> {
+    let accepted = accepted_values.iter().cloned().collect::<HashSet<_>>();
 
     supported_retrieve_transfer_syntaxes()
         .iter()
@@ -1493,7 +1564,9 @@ fn preferred_transfer_syntaxes_for_form(
     let mut ordered = Vec::new();
 
     for uid in normalize_syntax_selection(preferred_transfer_syntaxes) {
-        if accepted_lookup.contains(uid.as_str()) && !ordered.iter().any(|existing| existing == &uid) {
+        if accepted_lookup.contains(uid.as_str())
+            && !ordered.iter().any(|existing| existing == &uid)
+        {
             ordered.push(uid);
         }
     }
@@ -1518,7 +1591,10 @@ fn preferred_transfer_syntax_item_views(values: &[String]) -> Vec<PreferredTrans
         .collect()
 }
 
-fn first_unsupported_syntax<'a>(values: &'a [String], supported: &HashSet<String>) -> Option<&'a str> {
+fn first_unsupported_syntax<'a>(
+    values: &'a [String],
+    supported: &HashSet<String>,
+) -> Option<&'a str> {
     values
         .iter()
         .find(|value| !supported.contains(value.as_str()))
@@ -1675,7 +1751,9 @@ impl StudiesFilters {
     }
 
     fn offset(&self) -> u32 {
-        self.page().saturating_sub(1).saturating_mul(self.page_size())
+        self.page()
+            .saturating_sub(1)
+            .saturating_mul(self.page_size())
     }
 
     fn with_page(&self, page: u32) -> Self {
@@ -1739,21 +1817,36 @@ impl StudiesFilters {
 impl StudiesFilterView {
     fn from_filters(filters: &StudiesFilters) -> Self {
         Self {
-            patient_id: filters.patient_id.as_deref().unwrap_or_default().trim().to_string(),
+            patient_id: filters
+                .patient_id
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
             patient_name: filters
                 .patient_name
                 .as_deref()
                 .unwrap_or_default()
                 .trim()
                 .to_string(),
-            study_uid: filters.study_uid.as_deref().unwrap_or_default().trim().to_string(),
+            study_uid: filters
+                .study_uid
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
             accession_number: filters
                 .accession_number
                 .as_deref()
                 .unwrap_or_default()
                 .trim()
                 .to_string(),
-            modality: filters.modality.as_deref().unwrap_or_default().trim().to_string(),
+            modality: filters
+                .modality
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
             page_size: filters.page_size(),
         }
     }
@@ -1843,7 +1936,9 @@ impl ServerSettingsFormInput {
             .parse::<usize>()
             .map_err(|_| validation_flash("Max associations must be a positive integer."))?;
         if max_associations == 0 {
-            return Err(validation_flash("Max associations must be greater than zero."));
+            return Err(validation_flash(
+                "Max associations must be greater than zero.",
+            ));
         }
 
         let dimse_timeout_secs = self
@@ -1859,21 +1954,30 @@ impl ServerSettingsFormInput {
             normalize_accepted_transfer_syntax_selection(self.accepted_transfer_syntaxes);
         let submitted_preferred_transfer_syntaxes =
             normalize_syntax_selection(self.preferred_transfer_syntaxes);
-        let accept_all_transfer_syntaxes = supported_retrieve_transfer_syntaxes()
-            .iter()
-            .all(|uid| accepted_transfer_syntaxes.iter().any(|selected| selected == uid));
+        let accept_all_transfer_syntaxes =
+            supported_retrieve_transfer_syntaxes().iter().all(|uid| {
+                accepted_transfer_syntaxes
+                    .iter()
+                    .any(|selected| selected == uid)
+            });
         let preferred_transfer_syntaxes = preferred_transfer_syntaxes_for_form(
             &accepted_transfer_syntaxes,
             submitted_preferred_transfer_syntaxes.clone(),
         );
 
-        if let Some(invalid) = first_unsupported_syntax(&accepted_transfer_syntaxes, &supported_uids) {
-            return Err(validation_flash(&format!("Unsupported accepted transfer syntax: {invalid}")));
+        if let Some(invalid) =
+            first_unsupported_syntax(&accepted_transfer_syntaxes, &supported_uids)
+        {
+            return Err(validation_flash(&format!(
+                "Unsupported accepted transfer syntax: {invalid}"
+            )));
         }
         if let Some(invalid) =
             first_unsupported_syntax(&submitted_preferred_transfer_syntaxes, &supported_uids)
         {
-            return Err(validation_flash(&format!("Unsupported preferred transfer syntax: {invalid}")));
+            return Err(validation_flash(&format!(
+                "Unsupported preferred transfer syntax: {invalid}"
+            )));
         }
 
         Ok(ServerSettings {
@@ -1891,10 +1995,8 @@ impl ServerSettingsFormInput {
 
 impl ServerSettingsFormView {
     fn from_input(input: &ServerSettingsFormInput) -> Self {
-        let accepted_transfer_syntaxes = accepted_transfer_syntaxes_for_form(
-            false,
-            input.accepted_transfer_syntaxes.clone(),
-        );
+        let accepted_transfer_syntaxes =
+            accepted_transfer_syntaxes_for_form(false, input.accepted_transfer_syntaxes.clone());
         Self {
             dicom_port: input.dicom_port.trim().to_string(),
             ae_title: input.ae_title.trim().to_string(),
@@ -1941,7 +2043,9 @@ impl AuditFilters {
     }
 
     fn offset(&self) -> u32 {
-        self.page().saturating_sub(1).saturating_mul(self.page_size())
+        self.page()
+            .saturating_sub(1)
+            .saturating_mul(self.page_size())
     }
 
     fn with_page(&self, page: u32) -> Self {
@@ -2004,11 +2108,36 @@ impl AuditFilters {
 impl AuditFilterView {
     fn from_filters(filters: &AuditFilters) -> Self {
         Self {
-            user_id: filters.user_id.as_deref().unwrap_or_default().trim().to_string(),
-            action: filters.action.as_deref().unwrap_or_default().trim().to_string(),
-            resource: filters.resource.as_deref().unwrap_or_default().trim().to_string(),
-            resource_uid: filters.resource_uid.as_deref().unwrap_or_default().trim().to_string(),
-            status: filters.status.as_deref().unwrap_or_default().trim().to_string(),
+            user_id: filters
+                .user_id
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            action: filters
+                .action
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            resource: filters
+                .resource
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            resource_uid: filters
+                .resource_uid
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            status: filters
+                .status
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
             page_size: filters.page_size(),
         }
     }
@@ -2035,7 +2164,11 @@ fn validation_flash(detail: &str) -> FlashView {
 }
 
 fn normalized_filter(value: &Option<String>) -> Option<String> {
-    value.as_deref().map(str::trim).filter(|value| !value.is_empty()).map(str::to_string)
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn normalized_patient_name(value: &Option<String>) -> Option<String> {
@@ -2145,8 +2278,14 @@ mod tests {
         }))
         .unwrap();
 
-        assert_eq!(input.accepted_transfer_syntaxes, vec!["1.2.840.10008.1.2.1"]);
-        assert_eq!(input.preferred_transfer_syntaxes, vec!["1.2.840.10008.1.2.4.50"]);
+        assert_eq!(
+            input.accepted_transfer_syntaxes,
+            vec!["1.2.840.10008.1.2.1"]
+        );
+        assert_eq!(
+            input.preferred_transfer_syntaxes,
+            vec!["1.2.840.10008.1.2.4.50"]
+        );
     }
 
     #[test]

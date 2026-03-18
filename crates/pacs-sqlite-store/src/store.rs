@@ -170,9 +170,13 @@ impl TryFrom<ServerSettingsRow> for ServerSettings {
             ae_whitelist_enabled: row.ae_whitelist_enabled,
             accept_all_transfer_syntaxes: row.accept_all_transfer_syntaxes,
             accepted_transfer_syntaxes: serde_json::from_str(&row.accepted_transfer_syntaxes)
-                .map_err(|error| PacsError::Config(format!("invalid accepted_transfer_syntaxes JSON: {error}")))?,
+                .map_err(|error| {
+                    PacsError::Config(format!("invalid accepted_transfer_syntaxes JSON: {error}"))
+                })?,
             preferred_transfer_syntaxes: serde_json::from_str(&row.preferred_transfer_syntaxes)
-                .map_err(|error| PacsError::Config(format!("invalid preferred_transfer_syntaxes JSON: {error}")))?,
+                .map_err(|error| {
+                    PacsError::Config(format!("invalid preferred_transfer_syntaxes JSON: {error}"))
+                })?,
             max_associations: row
                 .max_associations
                 .try_into()
@@ -729,10 +733,18 @@ impl MetadataStore for SqliteMetadataStore {
 
     #[instrument(skip(self, settings))]
     async fn upsert_server_settings(&self, settings: &ServerSettings) -> PacsResult<()> {
-        let accepted_transfer_syntaxes = serde_json::to_string(&settings.accepted_transfer_syntaxes)
-            .map_err(|error| PacsError::Config(format!("failed to serialize accepted transfer syntaxes: {error}")))?;
-        let preferred_transfer_syntaxes = serde_json::to_string(&settings.preferred_transfer_syntaxes)
-            .map_err(|error| PacsError::Config(format!("failed to serialize preferred transfer syntaxes: {error}")))?;
+        let accepted_transfer_syntaxes =
+            serde_json::to_string(&settings.accepted_transfer_syntaxes).map_err(|error| {
+                PacsError::Config(format!(
+                    "failed to serialize accepted transfer syntaxes: {error}"
+                ))
+            })?;
+        let preferred_transfer_syntaxes =
+            serde_json::to_string(&settings.preferred_transfer_syntaxes).map_err(|error| {
+                PacsError::Config(format!(
+                    "failed to serialize preferred transfer syntaxes: {error}"
+                ))
+            })?;
 
         sqlx::query(
             r#"
@@ -1151,7 +1163,10 @@ mod tests {
             dimse_timeout_secs: 45,
         };
 
-        assert_eq!(store.get_server_settings().await.expect("get settings"), None);
+        assert_eq!(
+            store.get_server_settings().await.expect("get settings"),
+            None
+        );
 
         store
             .upsert_server_settings(&settings)
@@ -1159,7 +1174,10 @@ mod tests {
             .expect("upsert settings");
 
         assert_eq!(
-            store.get_server_settings().await.expect("reloaded settings"),
+            store
+                .get_server_settings()
+                .await
+                .expect("reloaded settings"),
             Some(settings)
         );
     }

@@ -840,12 +840,12 @@ fn generated_app_config(runtime: &ViewerRuntime) -> String {
                     "wadoUriRoot": "/wado",
                     "qidoRoot": "/wado",
                     "wadoRoot": "/wado",
-                    "qidoSupportsIncludeField": false,
+                    "qidoSupportsIncludeField": true,
                     "supportsReject": false,
                     "supportsFuzzyMatching": true,
                     "supportsWildcard": true,
                     "imageRendering": "wadors",
-                    "thumbnailRendering": "wadors",
+                    "thumbnailRendering": "thumbnail",
                     "enableStudyLazyLoad": true
                 }
             }
@@ -1380,6 +1380,8 @@ mod tests {
         assert!(body.contains(r#""wadoUriRoot": "/wado""#));
         assert!(body.contains(r#""qidoRoot": "/wado""#));
         assert!(body.contains(r#""wadoRoot": "/wado""#));
+        assert!(body.contains(r#""qidoSupportsIncludeField": true"#));
+        assert!(body.contains(r#""thumbnailRendering": "thumbnail""#));
         assert!(body.contains(r#""defaultDataSourceName": "dicomweb""#));
         assert!(!body.contains("example.com"));
     }

@@ -452,9 +452,13 @@ mod tests {
     use axum::{
         body::Body,
         http::{Request, StatusCode},
+        Extension,
     };
     use http_body_util::BodyExt;
-    use pacs_core::{DicomJson, Instance, Series, SeriesUid, SopInstanceUid, Study, StudyUid};
+    use pacs_core::{
+        DicomJson, Instance, Series, SeriesUid, SopInstanceUid, Study, StudyUid, UserRole,
+    };
+    use pacs_plugin::AuthenticatedUser;
     use serde_json::json;
     use tower::ServiceExt;
 
@@ -462,6 +466,10 @@ mod tests {
         router::build_router,
         test_support::{make_test_state, MockBlobStr, MockMetaStore},
     };
+
+    fn auth_user(role: UserRole, attributes: serde_json::Value) -> AuthenticatedUser {
+        AuthenticatedUser::new("1", "alice", role.as_str(), attributes)
+    }
 
     #[test]
     fn test_parse_date_range_none() {
@@ -504,6 +512,85 @@ mod tests {
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_search_studies_forbidden_for_uploader_returns_403() {
+        let app = build_router(make_test_state(MockMetaStore::new(), MockBlobStr::new()))
+            .layer(Extension(auth_user(UserRole::Uploader, json!({}))));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_search_studies_filters_results_for_modality_scoped_viewer() {
+        let mut store = MockMetaStore::new();
+        store.expect_query_studies().once().returning(|query| {
+            assert_eq!(query.modality.as_deref(), Some("CT"));
+            Ok(vec![
+                Study {
+                    study_uid: StudyUid::from("1.2.3"),
+                    patient_id: None,
+                    patient_name: None,
+                    study_date: None,
+                    study_time: None,
+                    accession_number: None,
+                    modalities: vec!["CT".into()],
+                    referring_physician: None,
+                    description: None,
+                    num_series: 1,
+                    num_instances: 1,
+                    metadata: DicomJson::empty(),
+                    created_at: None,
+                    updated_at: None,
+                },
+                Study {
+                    study_uid: StudyUid::from("9.9.9"),
+                    patient_id: None,
+                    patient_name: None,
+                    study_date: None,
+                    study_time: None,
+                    accession_number: None,
+                    modalities: vec!["US".into()],
+                    referring_physician: None,
+                    description: None,
+                    num_series: 1,
+                    num_instances: 1,
+                    metadata: DicomJson::empty(),
+                    created_at: None,
+                    updated_at: None,
+                },
+            ])
+        });
+
+        let app = build_router(make_test_state(store, MockBlobStr::new())).layer(Extension(
+            auth_user(UserRole::Viewer, json!({"modality_access": ["CT"]})),
+        ));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let results = json.as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["0020000D"]["Value"][0], json!("1.2.3"));
     }
 
     #[tokio::test]

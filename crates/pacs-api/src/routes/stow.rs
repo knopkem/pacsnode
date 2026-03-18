@@ -144,11 +144,14 @@ mod tests {
     use axum::{
         body::Body,
         http::{Request, StatusCode},
+        Extension,
     };
     use bytes::Bytes;
     use dicom_toolkit_data::{DataSet, DicomWriter, FileFormat};
     use dicom_toolkit_dict::{tags, Vr};
     use http_body_util::BodyExt;
+    use pacs_core::UserRole;
+    use pacs_plugin::AuthenticatedUser;
     use serde_json::json;
     use tower::ServiceExt;
 
@@ -156,6 +159,10 @@ mod tests {
         router::build_router,
         test_support::{make_test_state, MockBlobStr, MockMetaStore},
     };
+
+    fn auth_user(role: UserRole, attributes: serde_json::Value) -> AuthenticatedUser {
+        AuthenticatedUser::new("1", "alice", role.as_str(), attributes)
+    }
 
     fn make_dicom_part(sop_class_uid: &str, modality: &str, instance_uid: &str) -> Vec<u8> {
         let mut ds = DataSet::new();
@@ -238,6 +245,28 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_stow_forbidden_for_viewer_returns_403() {
+        let app = build_router(make_test_state(MockMetaStore::new(), MockBlobStr::new()))
+            .layer(Extension(auth_user(UserRole::Viewer, json!({}))));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/wado/studies")
+                    .header(
+                        "content-type",
+                        "multipart/related; type=\"application/dicom\"; boundary=blocked",
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

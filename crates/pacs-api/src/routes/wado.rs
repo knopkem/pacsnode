@@ -1293,6 +1293,7 @@ mod tests {
     use axum::{
         body::Body,
         http::{header, Request, StatusCode},
+        Extension,
     };
     use bytes::Bytes;
     use dicom_toolkit_data::{
@@ -1300,8 +1301,11 @@ mod tests {
     };
     use dicom_toolkit_dict::{tags, ts::transfer_syntaxes, Tag, Vr};
     use http_body_util::BodyExt;
-    use pacs_core::{DicomJson, Instance, Series, SeriesUid, SopInstanceUid, Study, StudyUid};
+    use pacs_core::{
+        DicomJson, Instance, Series, SeriesUid, SopInstanceUid, Study, StudyUid, UserRole,
+    };
     use pacs_dicom::ParsedDicom;
+    use pacs_plugin::AuthenticatedUser;
     use serde_json::json;
     use tower::ServiceExt;
 
@@ -1309,6 +1313,10 @@ mod tests {
         router::build_router,
         test_support::{make_test_state, MockBlobStr, MockMetaStore},
     };
+
+    fn auth_user(role: UserRole, attributes: serde_json::Value) -> AuthenticatedUser {
+        AuthenticatedUser::new("1", "alice", role.as_str(), attributes)
+    }
 
     fn make_instance() -> Instance {
         Instance {
@@ -1472,6 +1480,46 @@ mod tests {
             json!("/wado/studies/1.2.3/series/1.2.3.4/instances/1.2.3.4.5/bulkdata/00082112/0/00111011")
         );
         assert!(json[0]["00111010"].get("InlineBinary").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_instance_metadata_forbidden_for_modality_scoped_viewer_returns_403() {
+        let dicom = make_nested_bulkdata_dicom();
+        let instance = make_instance_from_dicom(&dicom);
+
+        let mut store = MockMetaStore::new();
+        store
+            .expect_get_instance()
+            .once()
+            .returning(move |_| Ok(instance.clone()));
+        store.expect_get_series().once().returning(|_| {
+            Ok(Series {
+                series_uid: SeriesUid::from("1.2.3.4"),
+                study_uid: StudyUid::from("1.2.3"),
+                modality: Some("US".into()),
+                series_number: Some(1),
+                description: None,
+                body_part: None,
+                num_instances: 1,
+                metadata: DicomJson::empty(),
+                created_at: None,
+            })
+        });
+
+        let app = build_router(make_test_state(store, MockBlobStr::new())).layer(Extension(
+            auth_user(UserRole::Viewer, json!({"modality_access": ["CT"]})),
+        ));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies/1.2.3/series/1.2.3.4/instances/1.2.3.4.5/metadata")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

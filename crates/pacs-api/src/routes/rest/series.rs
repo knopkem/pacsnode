@@ -92,14 +92,23 @@ mod tests {
     use axum::{
         body::Body,
         http::{Request, StatusCode},
+        Extension,
     };
-    use pacs_core::{DicomJson, Instance, PacsError, SeriesUid, SopInstanceUid, StudyUid};
+    use pacs_core::{
+        DicomJson, Instance, PacsError, Series, SeriesUid, SopInstanceUid, StudyUid, UserRole,
+    };
+    use pacs_plugin::AuthenticatedUser;
+    use serde_json::json;
     use tower::ServiceExt;
 
     use crate::{
         router::build_router,
         test_support::{make_test_state, MockBlobStr, MockMetaStore},
     };
+
+    fn auth_user(role: UserRole, attributes: serde_json::Value) -> AuthenticatedUser {
+        AuthenticatedUser::new("1", "alice", role.as_str(), attributes)
+    }
 
     #[tokio::test]
     async fn test_get_series_not_found_returns_404() {
@@ -121,6 +130,39 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_delete_series_forbidden_for_viewer_returns_403() {
+        let mut store = MockMetaStore::new();
+        store.expect_get_series().once().returning(|_| {
+            Ok(Series {
+                series_uid: SeriesUid::from("1.2.3"),
+                study_uid: StudyUid::from("1.2"),
+                modality: Some("CT".into()),
+                series_number: Some(1),
+                description: None,
+                body_part: None,
+                num_instances: 1,
+                metadata: DicomJson::empty(),
+                created_at: None,
+            })
+        });
+
+        let app = build_router(make_test_state(store, MockBlobStr::new()))
+            .layer(Extension(auth_user(UserRole::Viewer, json!({}))));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/series/1.2.3")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

@@ -80,14 +80,24 @@ mod tests {
     use axum::{
         body::Body,
         http::{Request, StatusCode},
+        Extension,
     };
-    use pacs_core::{DicomJson, Instance, PacsError, Series, SeriesUid, SopInstanceUid, StudyUid};
+    use pacs_core::{
+        DicomJson, Instance, PacsError, Series, SeriesUid, SopInstanceUid, Study, StudyUid,
+        UserRole,
+    };
+    use pacs_plugin::AuthenticatedUser;
+    use serde_json::json;
     use tower::ServiceExt;
 
     use crate::{
         router::build_router,
         test_support::{make_test_state, MockBlobStr, MockMetaStore},
     };
+
+    fn auth_user(role: UserRole, attributes: serde_json::Value) -> AuthenticatedUser {
+        AuthenticatedUser::new("1", "alice", role.as_str(), attributes)
+    }
 
     #[tokio::test]
     async fn test_get_study_not_found_returns_404() {
@@ -109,6 +119,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_get_study_forbidden_for_modality_scoped_viewer_returns_403() {
+        let mut store = MockMetaStore::new();
+        store.expect_get_study().once().returning(|_| {
+            Ok(Study {
+                study_uid: StudyUid::from("1.2.3"),
+                patient_id: None,
+                patient_name: None,
+                study_date: None,
+                study_time: None,
+                accession_number: None,
+                modalities: vec!["US".into()],
+                referring_physician: None,
+                description: None,
+                num_series: 1,
+                num_instances: 1,
+                metadata: DicomJson::empty(),
+                created_at: None,
+                updated_at: None,
+            })
+        });
+
+        let app = build_router(make_test_state(store, MockBlobStr::new())).layer(Extension(
+            auth_user(UserRole::Viewer, json!({"modality_access": ["CT"]})),
+        ));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/studies/1.2.3")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

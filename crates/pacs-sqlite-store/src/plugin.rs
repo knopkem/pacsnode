@@ -1,5 +1,5 @@
-use std::str::FromStr;
 use std::sync::Arc;
+use std::{path::PathBuf, str::FromStr};
 
 use async_trait::async_trait;
 use pacs_core::MetadataStore;
@@ -37,6 +37,27 @@ fn default_true() -> bool {
     true
 }
 
+fn sqlite_file_path(url: &str) -> Option<PathBuf> {
+    let path = url.trim().strip_prefix("sqlite://")?;
+    if path.is_empty() || path == ":memory:" {
+        return None;
+    }
+    Some(PathBuf::from(path))
+}
+
+fn ensure_sqlite_parent_directory(url: &str) -> Result<(), std::io::Error> {
+    let Some(path) = sqlite_file_path(url) else {
+        return Ok(());
+    };
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    if parent.as_os_str().is_empty() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(parent)
+}
+
 #[async_trait]
 impl Plugin for SqliteMetadataStorePlugin {
     fn manifest(&self) -> PluginManifest {
@@ -54,6 +75,11 @@ impl Plugin for SqliteMetadataStorePlugin {
                 plugin_id: SQLITE_METADATA_STORE_PLUGIN_ID.into(),
                 message: error.to_string(),
             })?;
+
+        ensure_sqlite_parent_directory(&config.url).map_err(|source| PluginError::InitFailed {
+            plugin_id: SQLITE_METADATA_STORE_PLUGIN_ID.into(),
+            source: Box::new(source),
+        })?;
 
         let options = SqliteConnectOptions::from_str(&config.url)
             .map_err(|source| PluginError::InitFailed {
@@ -160,5 +186,36 @@ mod tests {
         let store = plugin.metadata_store().expect("metadata store");
         let stats = store.get_statistics().await.expect("stats");
         assert_eq!(stats.num_studies, 0);
+    }
+
+    #[tokio::test]
+    async fn init_creates_missing_parent_directory_for_sqlite_db() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let db_path = tempdir.path().join("data/metadata/metadata.db");
+        let mut plugin = SqliteMetadataStorePlugin::default();
+        let ctx = PluginContext {
+            config: serde_json::json!({
+                "url": format!("sqlite://{}", db_path.display()),
+                "max_connections": 1,
+                "run_migrations": true,
+            }),
+            metadata_store: None,
+            blob_store: None,
+            server_info: ServerInfo {
+                ae_title: "PACSNODE".into(),
+                http_port: 8042,
+                dicom_port: 4242,
+                version: "test",
+            },
+            event_bus: Arc::new(EventBus::default()),
+        };
+
+        plugin
+            .init(&ctx)
+            .await
+            .expect("sqlite plugin should create parent directories");
+
+        assert!(db_path.parent().unwrap().is_dir());
+        assert!(db_path.is_file());
     }
 }

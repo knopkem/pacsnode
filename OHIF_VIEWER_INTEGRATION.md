@@ -13,9 +13,19 @@ When enabled, the plugin:
 
 The plugin is compiled in, but it is disabled by default.
 
+The default `pacsnode` binary also embeds a repo-bundled OHIF build. When the
+plugin is enabled with the default `static_dir = "./web/viewer"`, pacsnode
+extracts that bundle automatically on first start if the directory is missing or
+empty.
+
 ## Prepare the viewer assets
 
-Build or obtain an OHIF distribution and copy the generated static files onto the pacsnode host. For example:
+For the default bundled setup, you do not need to copy any viewer files manually.
+Generate a config, enable `ohif-viewer`, and start `pacsnode`; the embedded
+archive is extracted into `./web/viewer` automatically.
+
+If you want to replace the bundled viewer with your own OHIF build, copy the
+generated static files onto the pacsnode host. For example:
 
 ```bash
 mkdir -p web/viewer
@@ -25,8 +35,8 @@ cp -R /path/to/ohif-build/* web/viewer/
 Make sure the directory contains `index.html` and the rest of the generated assets.
 
 For the repo-bundled setup, `./web/viewer` is the default `static_dir`. If you
-copy the built viewer there and enable the plugin, you do not need to configure
-`static_dir` manually.
+replace the built viewer there and enable the plugin, you do not need to
+configure `static_dir` manually.
 
 ### OHIF subpath build requirement
 
@@ -78,6 +88,7 @@ redirect_root = true
 index_file = "index.html"
 fallback_file = "index.html"
 generate_app_config = true
+provision_embedded_bundle = true
 ```
 
 `route_prefix` must be an absolute path and cannot be `/`.
@@ -106,6 +117,9 @@ cp -R /path/to/new-ohif-build/* web/viewer/
 systemctl restart pacsnode
 ```
 
+If you want pacsnode to leave a custom viewer directory completely untouched, set
+`provision_embedded_bundle = false`.
+
 If the new viewer bundle changes asset names aggressively, clear the browser cache
 or do a hard refresh after deployment.
 
@@ -123,6 +137,8 @@ The viewer shell can stay public while your DICOMweb routes remain protected.
 ## Operational notes
 
 - The plugin validates `static_dir`, `index_file`, and `fallback_file` during startup.
+- With `provision_embedded_bundle = true`, pacsnode auto-creates `static_dir`
+  and extracts the embedded OHIF bundle when needed.
 - Missing browser navigation routes under the viewer prefix return the configured fallback HTML document.
 - Missing asset requests such as JavaScript bundles still return `404 Not Found`.
 - Some OHIF builds request generated chunk files and icons from the site root even

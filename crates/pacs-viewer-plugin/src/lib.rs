@@ -4,7 +4,8 @@
 //! prefix and redirects `/` to that viewer entry point when enabled.
 
 use std::{
-    io::ErrorKind,
+    fs as stdfs,
+    io::{Cursor, ErrorKind},
     path::{Component, Path, PathBuf},
     sync::Arc,
 };
@@ -25,10 +26,15 @@ use serde::Deserialize;
 use tokio::fs;
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 /// Compile-time plugin ID for the built-in OHIF/static viewer plugin.
 pub const OHIF_VIEWER_PLUGIN_ID: &str = "ohif-viewer";
+
+const EMBEDDED_VIEWER_ARCHIVE: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/embedded-viewer.zip"));
+const EMBEDDED_VIEWER_BUNDLE_HASH: &str = env!("PACSNODE_EMBEDDED_VIEWER_BUNDLE_HASH");
+const EMBEDDED_VIEWER_MARKER_FILE: &str = ".pacsnode-embedded-viewer.sha256";
 
 /// Serves a static viewer build under a configurable route prefix.
 ///
@@ -60,6 +66,8 @@ struct ViewerPluginConfig {
     fallback_file: String,
     #[serde(default = "default_generate_app_config")]
     generate_app_config: bool,
+    #[serde(default = "default_provision_embedded_bundle")]
+    provision_embedded_bundle: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -102,6 +110,10 @@ fn default_fallback_file() -> String {
 }
 
 fn default_generate_app_config() -> bool {
+    true
+}
+
+fn default_provision_embedded_bundle() -> bool {
     true
 }
 
@@ -228,6 +240,10 @@ impl ViewerRuntime {
         let route_prefix = normalize_route_prefix(&config.route_prefix)?;
         let index_file = normalize_relative_asset_path(&config.index_file, "index_file")?;
         let fallback_file = normalize_relative_asset_path(&config.fallback_file, "fallback_file")?;
+
+        if config.provision_embedded_bundle {
+            provision_embedded_viewer_bundle(&static_dir, &index_file).await?;
+        }
 
         let runtime = Self {
             static_dir,
@@ -528,6 +544,198 @@ async fn validate_file(path: &Path, field_name: &str) -> Result<(), String> {
     }
 }
 
+async fn provision_embedded_viewer_bundle(
+    static_dir: &Path,
+    index_file: &Path,
+) -> Result<(), String> {
+    let static_dir = static_dir.to_path_buf();
+    let index_file = index_file.to_path_buf();
+
+    tokio::task::spawn_blocking(move || {
+        provision_embedded_viewer_bundle_sync(&static_dir, &index_file)
+    })
+    .await
+    .map_err(|error| format!("failed to provision embedded viewer bundle: {error}"))?
+}
+
+fn provision_embedded_viewer_bundle_sync(
+    static_dir: &Path,
+    index_file: &Path,
+) -> Result<(), String> {
+    match determine_embedded_viewer_provision_action(static_dir, index_file)? {
+        EmbeddedViewerProvisionAction::Skip => Ok(()),
+        EmbeddedViewerProvisionAction::Provision { clear_existing } => {
+            stdfs::create_dir_all(static_dir).map_err(|error| {
+                format!(
+                    "failed to create embedded viewer directory {}: {error}",
+                    static_dir.display()
+                )
+            })?;
+
+            if clear_existing {
+                clear_directory_contents(static_dir)?;
+            }
+
+            extract_embedded_viewer_bundle(static_dir)?;
+            info!(
+                plugin_id = OHIF_VIEWER_PLUGIN_ID,
+                path = %static_dir.display(),
+                "Provisioned embedded OHIF viewer bundle"
+            );
+            Ok(())
+        }
+    }
+}
+
+enum EmbeddedViewerProvisionAction {
+    Skip,
+    Provision { clear_existing: bool },
+}
+
+fn determine_embedded_viewer_provision_action(
+    static_dir: &Path,
+    index_file: &Path,
+) -> Result<EmbeddedViewerProvisionAction, String> {
+    match stdfs::metadata(static_dir) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => {
+            return Err(format!(
+                "static_dir is not a directory: {}",
+                static_dir.display()
+            ));
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Ok(EmbeddedViewerProvisionAction::Provision {
+                clear_existing: false,
+            });
+        }
+        Err(error) => {
+            return Err(format!(
+                "failed to read static_dir {}: {error}",
+                static_dir.display()
+            ));
+        }
+    }
+
+    let index_path = static_dir.join(index_file);
+    let marker_path = static_dir.join(EMBEDDED_VIEWER_MARKER_FILE);
+    if let Some(hash) = read_embedded_viewer_marker(&marker_path)? {
+        if hash == EMBEDDED_VIEWER_BUNDLE_HASH && index_path.is_file() {
+            return Ok(EmbeddedViewerProvisionAction::Skip);
+        }
+        return Ok(EmbeddedViewerProvisionAction::Provision {
+            clear_existing: true,
+        });
+    }
+
+    if directory_has_only_placeholder_entries(static_dir)? {
+        return Ok(EmbeddedViewerProvisionAction::Provision {
+            clear_existing: false,
+        });
+    }
+
+    Ok(EmbeddedViewerProvisionAction::Skip)
+}
+
+fn read_embedded_viewer_marker(path: &Path) -> Result<Option<String>, String> {
+    match stdfs::read_to_string(path) {
+        Ok(contents) => Ok(Some(contents.trim().to_string())),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "failed to read embedded viewer marker {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+fn directory_has_only_placeholder_entries(path: &Path) -> Result<bool, String> {
+    let entries = stdfs::read_dir(path)
+        .map_err(|error| format!("failed to read static_dir {}: {error}", path.display()))?;
+
+    for entry in entries {
+        let entry = entry
+            .map_err(|error| format!("failed to inspect static_dir {}: {error}", path.display()))?;
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        if file_name.starts_with('.') {
+            continue;
+        }
+        return Ok(false);
+    }
+
+    Ok(true)
+}
+
+fn clear_directory_contents(path: &Path) -> Result<(), String> {
+    let entries = stdfs::read_dir(path)
+        .map_err(|error| format!("failed to read static_dir {}: {error}", path.display()))?;
+
+    for entry in entries {
+        let entry = entry
+            .map_err(|error| format!("failed to inspect static_dir {}: {error}", path.display()))?;
+        let entry_path = entry.path();
+        let metadata = entry
+            .metadata()
+            .map_err(|error| format!("failed to inspect {}: {error}", entry_path.display()))?;
+        if metadata.is_dir() {
+            stdfs::remove_dir_all(&entry_path)
+                .map_err(|error| format!("failed to remove {}: {error}", entry_path.display()))?;
+        } else {
+            stdfs::remove_file(&entry_path)
+                .map_err(|error| format!("failed to remove {}: {error}", entry_path.display()))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn extract_embedded_viewer_bundle(static_dir: &Path) -> Result<(), String> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(EMBEDDED_VIEWER_ARCHIVE))
+        .map_err(|error| format!("failed to read embedded viewer archive: {error}"))?;
+
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|error| {
+            format!("failed to read embedded viewer archive entry {index}: {error}")
+        })?;
+        let relative_path = entry.enclosed_name().ok_or_else(|| {
+            format!(
+                "embedded viewer archive entry has an unsafe path: {}",
+                entry.name()
+            )
+        })?;
+        let output_path = static_dir.join(relative_path);
+
+        if entry.is_dir() {
+            stdfs::create_dir_all(&output_path)
+                .map_err(|error| format!("failed to create {}: {error}", output_path.display()))?;
+            continue;
+        }
+
+        if let Some(parent) = output_path.parent() {
+            stdfs::create_dir_all(parent)
+                .map_err(|error| format!("failed to create {}: {error}", parent.display()))?;
+        }
+
+        let mut output = stdfs::File::create(&output_path)
+            .map_err(|error| format!("failed to create {}: {error}", output_path.display()))?;
+        std::io::copy(&mut entry, &mut output)
+            .map_err(|error| format!("failed to write {}: {error}", output_path.display()))?;
+    }
+
+    stdfs::write(
+        static_dir.join(EMBEDDED_VIEWER_MARKER_FILE),
+        format!("{EMBEDDED_VIEWER_BUNDLE_HASH}\n"),
+    )
+    .map_err(|error| {
+        format!(
+            "failed to write embedded viewer marker in {}: {error}",
+            static_dir.display()
+        )
+    })?;
+
+    Ok(())
+}
+
 fn accepts_html(headers: &HeaderMap) -> bool {
     let Some(accept) = headers.get(header::ACCEPT) else {
         return true;
@@ -656,7 +864,6 @@ register_plugin!(OhifViewerPlugin::default);
 #[cfg(test)]
 mod tests {
     use std::{
-        fs as stdfs,
         path::PathBuf,
         sync::{
             atomic::{AtomicUsize, Ordering},
@@ -876,15 +1083,71 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn init_rejects_missing_static_dir() {
+    async fn init_rejects_missing_static_dir_when_provisioning_is_disabled() {
         let mut plugin = OhifViewerPlugin::default();
+        let dir = TestViewerDir::new();
+        let missing_dir = dir.root().join("missing-viewer");
         let error = plugin
             .init(&plugin_context(serde_json::json!({
-                "static_dir": "/path/that/does/not/exist",
+                "static_dir": missing_dir,
+                "provision_embedded_bundle": false,
             })))
             .await
             .unwrap_err();
         assert!(matches!(error, PluginError::Config { .. }));
+    }
+
+    #[tokio::test]
+    async fn init_provisions_embedded_bundle_into_missing_static_dir() {
+        let mut plugin = OhifViewerPlugin::default();
+        let dir = TestViewerDir::new();
+        let static_dir = dir.root().join("embedded-viewer");
+
+        plugin
+            .init(&plugin_context(serde_json::json!({
+                "static_dir": static_dir,
+            })))
+            .await
+            .expect("embedded viewer bundle should provision");
+
+        assert!(static_dir.join("index.html").is_file());
+        assert_eq!(
+            stdfs::read_to_string(static_dir.join(EMBEDDED_VIEWER_MARKER_FILE))
+                .unwrap()
+                .trim(),
+            EMBEDDED_VIEWER_BUNDLE_HASH
+        );
+    }
+
+    #[tokio::test]
+    async fn init_replaces_outdated_managed_embedded_bundle() {
+        let mut plugin = OhifViewerPlugin::default();
+        let dir = TestViewerDir::new();
+        let static_dir = dir.root().join("embedded-viewer");
+        stdfs::create_dir_all(&static_dir).unwrap();
+        stdfs::write(
+            static_dir.join(EMBEDDED_VIEWER_MARKER_FILE),
+            "outdated-hash\n",
+        )
+        .unwrap();
+        stdfs::write(static_dir.join("index.html"), "stale").unwrap();
+        stdfs::write(static_dir.join("stale.txt"), "remove me").unwrap();
+
+        plugin
+            .init(&plugin_context(serde_json::json!({
+                "static_dir": static_dir,
+            })))
+            .await
+            .expect("embedded viewer bundle should refresh");
+
+        assert!(!static_dir.join("stale.txt").exists());
+        assert!(static_dir.join("index.html").is_file());
+        assert_eq!(
+            stdfs::read_to_string(static_dir.join(EMBEDDED_VIEWER_MARKER_FILE))
+                .unwrap()
+                .trim(),
+            EMBEDDED_VIEWER_BUNDLE_HASH
+        );
     }
 
     #[tokio::test]

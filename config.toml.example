@@ -169,6 +169,10 @@ enabled = []
 # index_file = "index.html"
 # fallback_file = "index.html"
 # generate_app_config = true
+# provision_embedded_bundle = true
+#
+# By default, pacsnode extracts its embedded OHIF bundle into `./web/viewer`
+# on first start when the directory is missing or empty.
 #
 # If basic-auth and ohif-viewer are both enabled, add "/" and "/viewer" to
 # [plugins.basic-auth].public_paths so the viewer shell can load before it makes

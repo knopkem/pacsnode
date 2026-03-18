@@ -86,6 +86,11 @@ services:
 
       # Logging
       PACS_LOGGING__LEVEL:      ${PACS_LOGGING__LEVEL:-info,pacs_server=debug}
+    volumes:
+      # Mount config.toml from the repo root so you can customise plugins,
+      # set a real jwt_secret, and adjust settings without rebuilding the image.
+      # Edit ../config.toml (or copy it) before running docker compose up.
+      - ../config.toml:/app/config.toml:ro
 
 volumes:
   postgres_data:

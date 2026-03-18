@@ -103,25 +103,68 @@ This starts four services in dependency order:
 
 The first run compiles the Rust binary inside Docker; this takes a few minutes. Subsequent starts use the image cache and are instant.
 
-**Step 3 — Verify**
+**Step 3 — Set a JWT secret**
+
+Open `config.toml` (in the repo root) and replace the placeholder `jwt_secret` with a real secret before the first run:
+
+```bash
+# Generate a strong secret
+openssl rand -hex 32
+```
+
+Then paste the output as `jwt_secret` in `config.toml`:
+
+```toml
+[plugins.basic-auth]
+jwt_secret = "<your-generated-secret>"
+```
+
+> ⚠️ Never use the default `CHANGE_ME_…` value in an internet-facing or clinical deployment.
+
+**Step 4 — Build and start the stack**
+
+```bash
+docker compose up -d
+```
+
+This starts four services in dependency order:
+1. **PostgreSQL 16** — waits until healthy
+2. **MinIO** — waits until healthy
+3. **minio-init** — creates the `dicom` bucket, then exits
+4. **pacsnode** — starts only after the bucket exists and postgres is ready
+
+The first run compiles the Rust binary inside Docker; this takes a few minutes. Subsequent starts use the image cache and are instant.
+
+**Step 5 — Create the first admin user**
+
+```bash
+docker compose exec pacsnode ./pacsnode create-admin \
+  --username admin \
+  --email admin@example.test
+```
+
+The command prints a one-time password. Save it — you'll need it to log in.
+
+**Step 6 — Verify**
 
 ```bash
 curl http://localhost:8042/health
 # {"status":"ok"}
-
-curl http://localhost:8042/statistics
-# {"studies":0,"series":0,"instances":0,"disk_usage_bytes":0}
 ```
+
+Open the admin dashboard at **http://localhost:8042/admin** and the OHIF viewer at **http://localhost:8042/viewer**. Log in with the credentials you just created.
 
 **Services at a glance:**
 
-| Service | Port | Description |
-|---------|------|-------------|
-| pacsnode REST/DICOMweb | `8042` | STOW-RS, QIDO-RS, WADO-RS, REST API |
-| pacsnode DIMSE | `4242` | C-STORE, C-FIND, C-MOVE, C-GET, C-ECHO |
-| MinIO S3 API | `9000` | Pixel data object storage |
-| MinIO web console | `9001` | Browse stored DICOM files (login: see `.env`) |
-| PostgreSQL | `5432` | Metadata database |
+| Service | Port | URL | Description |
+|---------|------|-----|-------------|
+| pacsnode REST/DICOMweb | `8042` | `http://localhost:8042` | STOW-RS, QIDO-RS, WADO-RS, REST API |
+| Admin dashboard | `8042` | `http://localhost:8042/admin` | User, node, and audit management |
+| OHIF viewer | `8042` | `http://localhost:8042/viewer` | Web DICOM viewer |
+| pacsnode DIMSE | `4242` | — | C-STORE, C-FIND, C-MOVE, C-GET, C-ECHO |
+| MinIO S3 API | `9000` | — | Pixel data object storage |
+| MinIO web console | `9001` | `http://localhost:9001` | Browse stored DICOM files (login: see `.env`) |
+| PostgreSQL | `5432` | — | Metadata database |
 
 **Tear down:**
 

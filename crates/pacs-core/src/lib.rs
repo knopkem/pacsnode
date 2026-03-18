@@ -9,6 +9,7 @@
 pub mod blob;
 pub mod domain;
 pub mod error;
+pub mod policy;
 pub mod store;
 
 pub use blob::BlobStore;
@@ -19,4 +20,5 @@ pub use domain::{
     StudyQuery, StudyUid, TokenPair, User, UserId, UserQuery, UserRole,
 };
 pub use error::{PacsError, PacsResult};
+pub use policy::{PolicyAction, PolicyEngine, PolicyResource, PolicyUser};
 pub use store::MetadataStore;

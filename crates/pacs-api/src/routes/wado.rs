@@ -7,17 +7,23 @@ use axum::{
 };
 use bytes::Bytes;
 use pacs_core::{
-    DicomJson, Instance, InstanceQuery, PacsError, SeriesQuery, SeriesUid, SopInstanceUid, StudyUid,
+    DicomJson, Instance, InstanceQuery, PacsError, PolicyAction, Series, SeriesQuery, SeriesUid,
+    SopInstanceUid, Study, StudyUid,
 };
 use pacs_dicom::{
     extract_bulk_data_path, extract_frames, metadata_with_bulk_data_uris,
     render_frames_with_options, supports_retrieve_transfer_syntax, transcode_part10, BulkDataValue,
     RenderedFrameOptions, RenderedMediaType, RenderedRegion,
 };
+use pacs_plugin::AuthenticatedUser;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::{error::ApiError, state::AppState};
+use crate::{
+    error::ApiError,
+    policy::{authorize_action, authorize_series, authorize_study},
+    state::AppState,
+};
 
 const DEFAULT_JPEG_QUALITY: u8 = 90;
 
@@ -25,9 +31,12 @@ const DEFAULT_JPEG_QUALITY: u8 = 90;
 /// — legacy WADO-URI retrieval for a single instance.
 pub async fn wado_uri(
     State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     headers: HeaderMap,
     Query(query): Query<WadoUriQuery>,
 ) -> Result<Response, ApiError> {
+    let auth_user = user.as_ref().map(|extension| &extension.0);
+    authorize_action(auth_user, PolicyAction::Read)?;
     if !query.request_type.eq_ignore_ascii_case("WADO") {
         return Err(ApiError(PacsError::DicomParse(
             "requestType must be WADO".into(),
@@ -51,12 +60,9 @@ pub async fn wado_uri(
     }
 
     let uid = SopInstanceUid::from(query.object_uid.as_str());
-    let instance = state.store.get_instance(&uid).await?;
-    if instance.study_uid.as_ref() != query.study_uid
-        || instance.series_uid.as_ref() != query.series_uid
-    {
-        return Err(not_found("instance", query.object_uid));
-    }
+    let instance =
+        load_authorized_instance(&state, auth_user, &query.study_uid, &query.series_uid, &uid)
+            .await?;
     let blob = state.blobs.get(&instance.blob_key).await?;
 
     match response_kind {
@@ -78,11 +84,15 @@ pub async fn wado_uri(
 /// Returns a `multipart/related; type="application/dicom"` response.
 pub async fn retrieve_study(
     State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     headers: HeaderMap,
     Path(study_uid): Path<String>,
 ) -> Result<Response, ApiError> {
+    let auth_user = user.as_ref().map(|extension| &extension.0);
+    authorize_action(auth_user, PolicyAction::Read)?;
     let retrieve_request = parse_retrieve_request(&headers)?;
     let s_uid = StudyUid::from(study_uid.as_str());
+    let _study = load_authorized_study(&state, auth_user, &s_uid).await?;
     let series_list = state
         .store
         .query_series(&SeriesQuery {
@@ -124,14 +134,20 @@ pub async fn retrieve_study(
 /// `GET /wado/studies/:study_uid/series/:series_uid` — retrieve all instances in a series.
 pub async fn retrieve_series(
     State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     headers: HeaderMap,
-    Path((_study_uid, series_uid)): Path<(String, String)>,
+    Path((study_uid, series_uid)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
+    let auth_user = user.as_ref().map(|extension| &extension.0);
+    authorize_action(auth_user, PolicyAction::Read)?;
     let retrieve_request = parse_retrieve_request(&headers)?;
+    let study_uid = StudyUid::from(study_uid.as_str());
+    let series_uid = SeriesUid::from(series_uid.as_str());
+    let _series = load_authorized_series(&state, auth_user, Some(&study_uid), &series_uid).await?;
     let instances = state
         .store
         .query_instances(&InstanceQuery {
-            series_uid: SeriesUid::from(series_uid.as_str()),
+            series_uid,
             instance_uid: None,
             sop_class_uid: None,
             instance_number: None,
@@ -157,11 +173,17 @@ pub async fn retrieve_series(
 /// — retrieve a single DICOM instance.
 pub async fn retrieve_instance(
     State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     headers: HeaderMap,
-    Path((_study_uid, _series_uid, instance_uid)): Path<(String, String, String)>,
+    Path((study_uid, series_uid, instance_uid)): Path<(String, String, String)>,
 ) -> Result<Response, ApiError> {
+    let auth_user = user.as_ref().map(|extension| &extension.0);
+    authorize_action(auth_user, PolicyAction::Read)?;
     let retrieve_request = parse_retrieve_request(&headers)?;
-    let blob = load_instance_blob(&state, &SopInstanceUid::from(instance_uid.as_str())).await?;
+    let uid = SopInstanceUid::from(instance_uid.as_str());
+    let instance =
+        load_authorized_instance(&state, auth_user, &study_uid, &series_uid, &uid).await?;
+    let blob = state.blobs.get(&instance.blob_key).await?;
     let body = transcode_blob_if_requested(blob, retrieve_request.transfer_syntax.as_deref())?;
     multipart_dicom_response(vec![body], retrieve_request.transfer_syntax.as_deref())
 }
@@ -170,15 +192,16 @@ pub async fn retrieve_instance(
 /// — retrieve one or more raw frames as native octet-stream parts.
 pub async fn retrieve_frames(
     State(state): State<AppState>,
-    Path((_study_uid, _series_uid, instance_uid, frame_list)): Path<(
-        String,
-        String,
-        String,
-        String,
-    )>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
+    Path((study_uid, series_uid, instance_uid, frame_list)): Path<(String, String, String, String)>,
 ) -> Result<Response, ApiError> {
+    let auth_user = user.as_ref().map(|extension| &extension.0);
+    authorize_action(auth_user, PolicyAction::Read)?;
     let frames = parse_frame_list(&frame_list)?;
-    let blob = load_instance_blob(&state, &SopInstanceUid::from(instance_uid.as_str())).await?;
+    let uid = SopInstanceUid::from(instance_uid.as_str());
+    let instance =
+        load_authorized_instance(&state, auth_user, &study_uid, &series_uid, &uid).await?;
+    let blob = state.blobs.get(&instance.blob_key).await?;
     let parts = extract_frames(blob, &frames)
         .map_err(PacsError::from)
         .map_err(ApiError)?;
@@ -189,11 +212,15 @@ pub async fn retrieve_frames(
 /// retrievable instance in a study as PNG.
 pub async fn render_study(
     State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     headers: HeaderMap,
     Query(rendered_query): Query<RenderedQuery>,
     Path(study_uid): Path<String>,
 ) -> Result<Response, ApiError> {
+    let auth_user = user.as_ref().map(|extension| &extension.0);
+    authorize_action(auth_user, PolicyAction::Read)?;
     let study_uid = StudyUid::from(study_uid.as_str());
+    let _study = load_authorized_study(&state, auth_user, &study_uid).await?;
     let instance = representative_instance_for_study(&state, &study_uid).await?;
     let media_type = parse_rendered_media_type(
         rendered_query.accept.as_deref(),
@@ -208,11 +235,16 @@ pub async fn render_study(
 /// frame of the first retrievable instance in a series as PNG.
 pub async fn render_series(
     State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     headers: HeaderMap,
     Query(rendered_query): Query<RenderedQuery>,
-    Path((_study_uid, series_uid)): Path<(String, String)>,
+    Path((study_uid, series_uid)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
+    let auth_user = user.as_ref().map(|extension| &extension.0);
+    authorize_action(auth_user, PolicyAction::Read)?;
+    let study_uid = StudyUid::from(study_uid.as_str());
     let series_uid = SeriesUid::from(series_uid.as_str());
+    let _series = load_authorized_series(&state, auth_user, Some(&study_uid), &series_uid).await?;
     let instance = representative_instance_for_series(&state, &series_uid).await?;
     let media_type = parse_rendered_media_type(
         rendered_query.accept.as_deref(),
@@ -227,12 +259,16 @@ pub async fn render_series(
 /// — render the first frame of an instance as PNG.
 pub async fn render_instance(
     State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     headers: HeaderMap,
     Query(rendered_query): Query<RenderedQuery>,
-    Path((_study_uid, _series_uid, instance_uid)): Path<(String, String, String)>,
+    Path((study_uid, series_uid, instance_uid)): Path<(String, String, String)>,
 ) -> Result<Response, ApiError> {
+    let auth_user = user.as_ref().map(|extension| &extension.0);
+    authorize_action(auth_user, PolicyAction::Read)?;
     let uid = SopInstanceUid::from(instance_uid.as_str());
-    let instance = state.store.get_instance(&uid).await?;
+    let instance =
+        load_authorized_instance(&state, auth_user, &study_uid, &series_uid, &uid).await?;
     let media_type = parse_rendered_media_type(
         rendered_query.accept.as_deref(),
         &headers,
@@ -246,12 +282,16 @@ pub async fn render_instance(
 /// — render a thumbnail image for an instance.
 pub async fn thumbnail_instance(
     State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     headers: HeaderMap,
     Query(rendered_query): Query<RenderedQuery>,
-    Path((_study_uid, _series_uid, instance_uid)): Path<(String, String, String)>,
+    Path((study_uid, series_uid, instance_uid)): Path<(String, String, String)>,
 ) -> Result<Response, ApiError> {
+    let auth_user = user.as_ref().map(|extension| &extension.0);
+    authorize_action(auth_user, PolicyAction::Read)?;
     let uid = SopInstanceUid::from(instance_uid.as_str());
-    let instance = state.store.get_instance(&uid).await?;
+    let instance =
+        load_authorized_instance(&state, auth_user, &study_uid, &series_uid, &uid).await?;
     let media_type = parse_rendered_media_type(
         rendered_query.accept.as_deref(),
         &headers,
@@ -267,17 +307,18 @@ pub async fn thumbnail_instance(
 /// — render one or more frames as PNG images.
 pub async fn render_frames(
     State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     headers: HeaderMap,
     Query(rendered_query): Query<RenderedQuery>,
-    Path((_study_uid, _series_uid, instance_uid, frame_list)): Path<(
-        String,
-        String,
-        String,
-        String,
-    )>,
+    Path((study_uid, series_uid, instance_uid, frame_list)): Path<(String, String, String, String)>,
 ) -> Result<Response, ApiError> {
+    let auth_user = user.as_ref().map(|extension| &extension.0);
+    authorize_action(auth_user, PolicyAction::Read)?;
     let frames = parse_frame_list(&frame_list)?;
-    let blob = load_instance_blob(&state, &SopInstanceUid::from(instance_uid.as_str())).await?;
+    let uid = SopInstanceUid::from(instance_uid.as_str());
+    let instance =
+        load_authorized_instance(&state, auth_user, &study_uid, &series_uid, &uid).await?;
+    let blob = state.blobs.get(&instance.blob_key).await?;
     let media_type = parse_rendered_media_type(
         rendered_query.accept.as_deref(),
         &headers,
@@ -304,12 +345,14 @@ pub async fn render_frames(
 /// — retrieve raw bulk data for a top-level element such as `7FE00010`.
 pub async fn instance_bulkdata(
     State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     Path((study_uid, series_uid, instance_uid, tag_path)): Path<(String, String, String, String)>,
 ) -> Result<Response, ApiError> {
-    let instance = state
-        .store
-        .get_instance(&SopInstanceUid::from(instance_uid.as_str()))
-        .await?;
+    let auth_user = user.as_ref().map(|extension| &extension.0);
+    authorize_action(auth_user, PolicyAction::Read)?;
+    let uid = SopInstanceUid::from(instance_uid.as_str());
+    let instance =
+        load_authorized_instance(&state, auth_user, &study_uid, &series_uid, &uid).await?;
     let blob = state.blobs.get(&instance.blob_key).await?;
     let normalized_tag_path = tag_path.trim_matches('/').to_owned();
     let content_type = bulkdata_content_type(&instance, &normalized_tag_path);
@@ -391,11 +434,14 @@ fn encapsulated_document_content_type(metadata: &DicomJson) -> Option<String> {
 /// `GET /wado/studies/:study_uid/metadata` — study-level DICOM JSON metadata.
 pub async fn study_metadata(
     State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     headers: HeaderMap,
     Path(study_uid): Path<String>,
 ) -> Result<Response, ApiError> {
+    let auth_user = user.as_ref().map(|extension| &extension.0);
+    authorize_action(auth_user, PolicyAction::Read)?;
     let study_uid = StudyUid::from(study_uid.as_str());
-    state.store.get_study(&study_uid).await?;
+    let _study = load_authorized_study(&state, auth_user, &study_uid).await?;
 
     let series = state
         .store
@@ -434,15 +480,15 @@ pub async fn study_metadata(
 /// `GET /wado/studies/:study_uid/series/:series_uid/metadata` — series-level DICOM JSON metadata.
 pub async fn series_metadata(
     State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     headers: HeaderMap,
     Path((study_uid, series_uid)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
+    let auth_user = user.as_ref().map(|extension| &extension.0);
+    authorize_action(auth_user, PolicyAction::Read)?;
     let study_uid = StudyUid::from(study_uid.as_str());
     let series_uid = SeriesUid::from(series_uid.as_str());
-    let series = state.store.get_series(&series_uid).await?;
-    if series.study_uid != study_uid {
-        return Err(not_found("series", series_uid.to_string()));
-    }
+    let _series = load_authorized_series(&state, auth_user, Some(&study_uid), &series_uid).await?;
 
     let instances = state
         .store
@@ -468,14 +514,15 @@ pub async fn series_metadata(
 /// — instance-level DICOM JSON metadata with a `BulkDataURI` for Pixel Data when present.
 pub async fn instance_metadata(
     State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     headers: HeaderMap,
     Path((study_uid, series_uid, instance_uid)): Path<(String, String, String)>,
 ) -> Result<Response, ApiError> {
+    let auth_user = user.as_ref().map(|extension| &extension.0);
+    authorize_action(auth_user, PolicyAction::Read)?;
     let uid = SopInstanceUid::from(instance_uid.as_str());
-    let instance = state.store.get_instance(&uid).await?;
-    if instance.study_uid.as_ref() != study_uid || instance.series_uid.as_ref() != series_uid {
-        return Err(not_found("instance", instance_uid));
-    }
+    let instance =
+        load_authorized_instance(&state, auth_user, &study_uid, &series_uid, &uid).await?;
     let metadata = instance_metadata_with_bulk_data_uris(&state, &headers, &instance).await?;
     dicom_json_response(&[metadata.as_value()])
 }
@@ -544,9 +591,52 @@ async fn render_instance_blob(
     render_blob_response(blob, frames, media_type, render_options)
 }
 
-async fn load_instance_blob(state: &AppState, uid: &SopInstanceUid) -> Result<Bytes, ApiError> {
-    let instance = state.store.get_instance(uid).await?;
-    state.blobs.get(&instance.blob_key).await.map_err(ApiError)
+async fn load_authorized_study(
+    state: &AppState,
+    user: Option<&AuthenticatedUser>,
+    study_uid: &StudyUid,
+) -> Result<Study, ApiError> {
+    let study = state.store.get_study(study_uid).await?;
+    if user.is_some() {
+        authorize_study(user, &study, PolicyAction::Read)?;
+    }
+    Ok(study)
+}
+
+async fn load_authorized_series(
+    state: &AppState,
+    user: Option<&AuthenticatedUser>,
+    study_uid: Option<&StudyUid>,
+    series_uid: &SeriesUid,
+) -> Result<Series, ApiError> {
+    let series = state.store.get_series(series_uid).await?;
+    if let Some(study_uid) = study_uid {
+        if series.study_uid != *study_uid {
+            return Err(not_found("series", series_uid.to_string()));
+        }
+    }
+    if user.is_some() {
+        authorize_series(user, &series, PolicyAction::Read)?;
+    }
+    Ok(series)
+}
+
+async fn load_authorized_instance(
+    state: &AppState,
+    user: Option<&AuthenticatedUser>,
+    study_uid: &str,
+    series_uid: &str,
+    instance_uid: &SopInstanceUid,
+) -> Result<Instance, ApiError> {
+    let instance = state.store.get_instance(instance_uid).await?;
+    if instance.study_uid.as_ref() != study_uid || instance.series_uid.as_ref() != series_uid {
+        return Err(not_found("instance", instance_uid.to_string()));
+    }
+    if user.is_some() {
+        let series = state.store.get_series(&instance.series_uid).await?;
+        authorize_series(user, &series, PolicyAction::Read)?;
+    }
+    Ok(instance)
 }
 
 /// Selects the representative instance for a study by taking the lowest

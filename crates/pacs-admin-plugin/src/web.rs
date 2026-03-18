@@ -522,6 +522,12 @@ struct UserRowView {
     is_current_user: bool,
 }
 
+#[derive(Default)]
+struct UsersPanelOverrides {
+    policy: Option<PasswordPolicy>,
+    policy_form: Option<PasswordPolicyFormView>,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 struct PasswordPolicyFormInput {
     min_length: String,
@@ -801,8 +807,7 @@ async fn users_page(
         &filters,
         UserFormView::default_with_filters(&filters),
         None,
-        None,
-        None,
+        UsersPanelOverrides::default(),
     )
     .await
     {
@@ -844,8 +849,7 @@ async fn edit_user(
                     detail: format!("Invalid user id: {error}"),
                     tone_class: "flash-warning",
                 }),
-                None,
-                None,
+                UsersPanelOverrides::default(),
             )
             .await;
         }
@@ -861,8 +865,7 @@ async fn edit_user(
                 &filters,
                 UserFormView::default_with_filters(&filters),
                 Some(store_error_flash("User load failed", &error)),
-                None,
-                None,
+                UsersPanelOverrides::default(),
             )
             .await;
         }
@@ -882,8 +885,7 @@ async fn edit_user(
             ),
             tone_class: "flash-info",
         }),
-        None,
-        None,
+        UsersPanelOverrides::default(),
     )
     .await
 }
@@ -912,8 +914,7 @@ async fn save_user(
                 &filters,
                 form,
                 Some(store_error_flash("Password policy load failed", &error)),
-                None,
-                None,
+                UsersPanelOverrides::default(),
             )
             .await;
         }
@@ -930,8 +931,7 @@ async fn save_user(
                     &filters,
                     form,
                     Some(store_error_flash("User load failed", &error)),
-                    None,
-                    None,
+                    UsersPanelOverrides::default(),
                 )
                 .await;
             }
@@ -945,8 +945,7 @@ async fn save_user(
                 &filters,
                 form,
                 Some(flash),
-                Some(policy),
-                None,
+                users_panel_overrides(Some(policy), None),
             )
             .await;
         }
@@ -962,8 +961,7 @@ async fn save_user(
                 &filters,
                 form,
                 Some(flash),
-                Some(policy),
-                None,
+                users_panel_overrides(Some(policy), None),
             )
             .await;
         }
@@ -978,8 +976,7 @@ async fn save_user(
                 &filters,
                 form,
                 Some(flash),
-                Some(policy),
-                None,
+                users_panel_overrides(Some(policy), None),
             )
             .await;
         }
@@ -994,8 +991,7 @@ async fn save_user(
                 &filters,
                 form,
                 Some(flash),
-                Some(policy),
-                None,
+                users_panel_overrides(Some(policy), None),
             )
             .await;
         }
@@ -1011,8 +1007,7 @@ async fn save_user(
                     &filters,
                     form,
                     Some(validation_flash("Username is already in use.")),
-                    Some(policy),
-                    None,
+                    users_panel_overrides(Some(policy), None),
                 )
                 .await;
             }
@@ -1026,8 +1021,7 @@ async fn save_user(
                 &filters,
                 form,
                 Some(store_error_flash("Username check failed", &error)),
-                Some(policy),
-                None,
+                users_panel_overrides(Some(policy), None),
             )
             .await;
         }
@@ -1048,8 +1042,7 @@ async fn save_user(
             &filters,
             form,
             Some(validation_flash("You cannot deactivate your own account.")),
-            Some(policy),
-            None,
+            users_panel_overrides(Some(policy), None),
         )
         .await;
     }
@@ -1067,8 +1060,7 @@ async fn save_user(
             Some(validation_flash(
                 "You cannot remove the admin role from your own account.",
             )),
-            Some(policy),
-            None,
+            users_panel_overrides(Some(policy), None),
         )
         .await;
     }
@@ -1115,8 +1107,7 @@ async fn save_user(
                         &filters,
                         form,
                         Some(store_error_flash("Admin safety check failed", &error)),
-                        Some(policy),
-                        None,
+                        users_panel_overrides(Some(policy), None),
                     )
                     .await;
                 }
@@ -1131,8 +1122,7 @@ async fn save_user(
                     Some(validation_flash(
                         "At least one active admin account must remain enabled.",
                     )),
-                    Some(policy),
-                    None,
+                    users_panel_overrides(Some(policy), None),
                 )
                 .await;
             }
@@ -1154,8 +1144,7 @@ async fn save_user(
                 Some(validation_flash(
                     "Password is required for new local users.",
                 )),
-                Some(policy),
-                None,
+                users_panel_overrides(Some(policy), None),
             )
             .await;
         }
@@ -1168,8 +1157,7 @@ async fn save_user(
                 &filters,
                 form,
                 Some(flash),
-                Some(policy),
-                None,
+                users_panel_overrides(Some(policy), None),
             )
             .await;
         }
@@ -1187,8 +1175,7 @@ async fn save_user(
                         detail,
                         tone_class: "flash-danger",
                     }),
-                    Some(policy),
-                    None,
+                    users_panel_overrides(Some(policy), None),
                 )
                 .await;
             }
@@ -1214,8 +1201,7 @@ async fn save_user(
             &filters,
             form,
             Some(store_error_flash("User save failed", &error)),
-            Some(policy),
-            None,
+            users_panel_overrides(Some(policy), None),
         )
         .await;
     }
@@ -1229,8 +1215,7 @@ async fn save_user(
                 &filters,
                 UserFormView::default_with_filters(&filters),
                 Some(store_error_flash("Session revocation failed", &error)),
-                Some(policy),
-                None,
+                users_panel_overrides(Some(policy), None),
             )
             .await;
         }
@@ -1284,8 +1269,7 @@ async fn save_user(
         &filters,
         UserFormView::default_with_filters(&filters),
         Some(flash),
-        Some(policy),
-        None,
+        users_panel_overrides(Some(policy), None),
     )
     .await
 }
@@ -1313,8 +1297,7 @@ async fn save_password_policy(
                 &filters,
                 UserFormView::default_with_filters(&filters),
                 Some(flash),
-                None,
-                Some(policy_form),
+                users_panel_overrides(None, Some(policy_form)),
             )
             .await;
         }
@@ -1328,8 +1311,7 @@ async fn save_password_policy(
             &filters,
             UserFormView::default_with_filters(&filters),
             Some(store_error_flash("Password policy save failed", &error)),
-            Some(policy.clone()),
-            Some(policy_form),
+            users_panel_overrides(Some(policy.clone()), Some(policy_form)),
         )
         .await;
     }
@@ -1367,8 +1349,10 @@ async fn save_password_policy(
             detail: "New local password rules were saved and apply to future password changes immediately. Existing password hashes remain unchanged.".into(),
             tone_class: "flash-success",
         }),
-        Some(policy.clone()),
-        Some(PasswordPolicyFormView::from_policy(&policy, &filters)),
+        users_panel_overrides(
+            Some(policy.clone()),
+            Some(PasswordPolicyFormView::from_policy(&policy, &filters)),
+        ),
     )
     .await
 }
@@ -1399,8 +1383,7 @@ async fn delete_user(
                     detail: format!("Invalid user id: {error}"),
                     tone_class: "flash-warning",
                 }),
-                None,
-                None,
+                UsersPanelOverrides::default(),
             )
             .await;
         }
@@ -1416,8 +1399,7 @@ async fn delete_user(
                 &filters,
                 UserFormView::default_with_filters(&filters),
                 Some(store_error_flash("User removal failed", &error)),
-                None,
-                None,
+                UsersPanelOverrides::default(),
             )
             .await;
         }
@@ -1431,8 +1413,7 @@ async fn delete_user(
             &filters,
             UserFormView::default_with_filters(&filters),
             Some(validation_flash("You cannot delete your own account.")),
-            None,
-            None,
+            UsersPanelOverrides::default(),
         )
         .await;
     }
@@ -1448,8 +1429,7 @@ async fn delete_user(
                     &filters,
                     UserFormView::default_with_filters(&filters),
                     Some(store_error_flash("Admin safety check failed", &error)),
-                    None,
-                    None,
+                    UsersPanelOverrides::default(),
                 )
                 .await;
             }
@@ -1464,8 +1444,7 @@ async fn delete_user(
                 Some(validation_flash(
                     "At least one active admin account must remain enabled.",
                 )),
-                None,
-                None,
+                UsersPanelOverrides::default(),
             )
             .await;
         }
@@ -1479,8 +1458,7 @@ async fn delete_user(
             &filters,
             UserFormView::default_with_filters(&filters),
             Some(store_error_flash("Session revocation failed", &error)),
-            None,
-            None,
+            UsersPanelOverrides::default(),
         )
         .await;
     }
@@ -1493,8 +1471,7 @@ async fn delete_user(
             &filters,
             UserFormView::default_with_filters(&filters),
             Some(store_error_flash("User removal failed", &error)),
-            None,
-            None,
+            UsersPanelOverrides::default(),
         )
         .await;
     }
@@ -1531,8 +1508,7 @@ async fn delete_user(
             ),
             tone_class: "flash-warning",
         }),
-        None,
-        None,
+        UsersPanelOverrides::default(),
     )
     .await
 }
@@ -2046,10 +2022,14 @@ async fn render_users_panel_markup(
     filters: &UserFilters,
     form: UserFormView,
     flash: Option<FlashView>,
-    policy_override: Option<PasswordPolicy>,
-    policy_form_override: Option<PasswordPolicyFormView>,
+    overrides: UsersPanelOverrides,
 ) -> Result<String, StatusCode> {
-    let policy = match policy_override {
+    let UsersPanelOverrides {
+        policy,
+        policy_form,
+    } = overrides;
+
+    let policy = match policy {
         Some(policy) => policy,
         None => state
             .store
@@ -2067,8 +2047,8 @@ async fn render_users_panel_markup(
         .map(|user| user_row_view(runtime.route_prefix(), filters, user, &form.user_id))
         .collect::<Vec<_>>();
     let row_count = rows.len();
-    let policy_form = policy_form_override
-        .unwrap_or_else(|| PasswordPolicyFormView::from_policy(&policy, filters));
+    let policy_form =
+        policy_form.unwrap_or_else(|| PasswordPolicyFormView::from_policy(&policy, filters));
 
     UsersPanelTemplate {
         users_path: users_page_path(runtime.route_prefix()),
@@ -2265,23 +2245,13 @@ async fn render_users_response(
     filters: &UserFilters,
     form: UserFormView,
     flash: Option<FlashView>,
-    policy_override: Option<PasswordPolicy>,
-    policy_form_override: Option<PasswordPolicyFormView>,
+    overrides: UsersPanelOverrides,
 ) -> Response {
-    let markup = match render_users_panel_markup(
-        state,
-        runtime,
-        filters,
-        form,
-        flash,
-        policy_override,
-        policy_form_override,
-    )
-    .await
-    {
-        Ok(markup) => markup,
-        Err(status) => return error_response(status, "admin user management failed to render"),
-    };
+    let markup =
+        match render_users_panel_markup(state, runtime, filters, form, flash, overrides).await {
+            Ok(markup) => markup,
+            Err(status) => return error_response(status, "admin user management failed to render"),
+        };
 
     if is_htmx_request(headers) {
         html_markup_response(markup)
@@ -2848,6 +2818,7 @@ fn internal_store_error(error: pacs_core::PacsError) -> StatusCode {
 fn pacs_error_to_status(error: &PacsError) -> StatusCode {
     match error {
         PacsError::NotFound { .. } => StatusCode::NOT_FOUND,
+        PacsError::Forbidden(_) => StatusCode::FORBIDDEN,
         PacsError::InvalidUid(_) | PacsError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
         PacsError::NotAcceptable(_) => StatusCode::NOT_ACCEPTABLE,
         PacsError::UnsupportedMediaType(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -3678,6 +3649,16 @@ fn validation_flash(detail: &str) -> FlashView {
         title: "Validation failed".into(),
         detail: detail.into(),
         tone_class: "flash-warning",
+    }
+}
+
+fn users_panel_overrides(
+    policy: Option<PasswordPolicy>,
+    policy_form: Option<PasswordPolicyFormView>,
+) -> UsersPanelOverrides {
+    UsersPanelOverrides {
+        policy,
+        policy_form,
     }
 }
 

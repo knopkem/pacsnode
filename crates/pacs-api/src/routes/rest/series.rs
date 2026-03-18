@@ -6,41 +6,57 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use pacs_core::{SeriesQuery, SeriesUid, StudyUid};
+use pacs_core::{PolicyAction, SeriesQuery, SeriesUid, StudyUid};
 use pacs_plugin::{AuthenticatedUser, PacsEvent, ResourceLevel};
 
-use crate::{error::ApiError, state::AppState};
+use crate::{
+    error::ApiError,
+    policy::{apply_series_query_filters, authorize_action, authorize_series, filter_series},
+    state::AppState,
+};
 
 use super::{cleanup_blob_keys, collect_series_blob_keys};
 
 /// `GET /api/studies/:study_uid/series` — list series for a study.
 pub async fn list_series_for_study(
     State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     Path(study_uid): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let series = state
-        .store
-        .query_series(&SeriesQuery {
-            study_uid: StudyUid::from(study_uid.as_str()),
-            series_uid: None,
-            modality: None,
-            series_number: None,
-            limit: None,
-            offset: None,
-        })
-        .await?;
+    let auth_user = user.as_ref().map(|extension| &extension.0);
+    authorize_action(auth_user, PolicyAction::Read)?;
+    let mut query = SeriesQuery {
+        study_uid: StudyUid::from(study_uid.as_str()),
+        series_uid: None,
+        modality: None,
+        series_number: None,
+        limit: None,
+        offset: None,
+    };
+    apply_series_query_filters(auth_user, &mut query)?;
+    let series = filter_series(
+        auth_user,
+        state.store.query_series(&query).await?,
+        PolicyAction::Read,
+    )?;
     Ok(Json(series))
 }
 
 /// `GET /api/series/:series_uid` — fetch a single series by UID.
 pub async fn get_series(
     State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     Path(uid): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let series = state
         .store
         .get_series(&SeriesUid::from(uid.as_str()))
         .await?;
+    authorize_series(
+        user.as_ref().map(|extension| &extension.0),
+        &series,
+        PolicyAction::Read,
+    )?;
     Ok(Json(series))
 }
 
@@ -53,6 +69,10 @@ pub async fn delete_series(
     Path(uid): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let series_uid = SeriesUid::from(uid.as_str());
+    if let Some(auth_user) = user.as_ref().map(|extension| &extension.0) {
+        let series = state.store.get_series(&series_uid).await?;
+        authorize_series(Some(auth_user), &series, PolicyAction::Delete)?;
+    }
     let blob_keys = collect_series_blob_keys(&state, &series_uid).await?;
     state.store.delete_series(&series_uid).await?;
     cleanup_blob_keys(&state, blob_keys).await;

@@ -7,14 +7,21 @@ use axum::{
 };
 use chrono::NaiveDate;
 use pacs_core::{
-    DicomJson, InstanceQuery, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery,
-    StudyUid,
+    DicomJson, InstanceQuery, PolicyAction, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study,
+    StudyQuery, StudyUid,
 };
 use pacs_plugin::{AuthenticatedUser, PacsEvent, QuerySource};
 use serde::{Deserialize, Deserializer};
 use serde_json::{json, Map, Value};
 
-use crate::{error::ApiError, state::AppState};
+use crate::{
+    error::ApiError,
+    policy::{
+        apply_series_query_filters, apply_study_query_filters, authorize_action, authorize_series,
+        filter_series, filter_studies,
+    },
+    state::AppState,
+};
 
 /// QIDO-RS query parameters for study-level searches (`GET /wado/studies`).
 #[derive(Debug, Default, Deserialize)]
@@ -129,8 +136,10 @@ pub async fn search_studies(
     user: Option<axum::Extension<AuthenticatedUser>>,
     Query(params): Query<StudySearchParams>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let auth_user = user.as_ref().map(|extension| &extension.0);
+    authorize_action(auth_user, PolicyAction::Query)?;
     let (date_from, date_to) = parse_date_range(params.study_date.as_deref());
-    let query = StudyQuery {
+    let mut query = StudyQuery {
         patient_id: params.patient_id,
         patient_name: params.patient_name,
         study_date_from: date_from,
@@ -143,7 +152,12 @@ pub async fn search_studies(
         fuzzy_matching: params.fuzzymatching.unwrap_or(false),
         include_fields: params.include_fields.clone(),
     };
-    let studies = state.store.query_studies(&query).await?;
+    apply_study_query_filters(auth_user, &mut query)?;
+    let studies = filter_studies(
+        auth_user,
+        state.store.query_studies(&query).await?,
+        PolicyAction::Query,
+    )?;
     let metadata: Vec<serde_json::Value> = studies
         .iter()
         .map(|study| study_qido_metadata(study, &query.include_fields))
@@ -167,15 +181,23 @@ pub async fn search_series(
     Path(study_uid): Path<String>,
     Query(params): Query<SeriesSearchParams>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let query = SeriesQuery {
-        study_uid: StudyUid::from(study_uid.as_str()),
+    let auth_user = user.as_ref().map(|extension| &extension.0);
+    authorize_action(auth_user, PolicyAction::Query)?;
+    let study_uid = StudyUid::from(study_uid.as_str());
+    let mut query = SeriesQuery {
+        study_uid: study_uid.clone(),
         series_uid: params.series_instance_uid.map(SeriesUid::from),
         modality: params.modality,
         series_number: params.series_number,
         limit: params.limit,
         offset: params.offset,
     };
-    let series = state.store.query_series(&query).await?;
+    apply_series_query_filters(auth_user, &mut query)?;
+    let series = filter_series(
+        auth_user,
+        state.store.query_series(&query).await?,
+        PolicyAction::Query,
+    )?;
     let metadata: Vec<serde_json::Value> = series
         .iter()
         .map(|series| series_qido_metadata(series, &params.include_fields))
@@ -199,8 +221,22 @@ pub async fn search_instances(
     Path((_study_uid, series_uid)): Path<(String, String)>,
     Query(params): Query<InstanceSearchParams>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let auth_user = user.as_ref().map(|extension| &extension.0);
+    authorize_action(auth_user, PolicyAction::Query)?;
+    let study_uid = StudyUid::from(_study_uid.as_str());
+    let series_uid = SeriesUid::from(series_uid.as_str());
+    if auth_user.is_some() {
+        let series = state.store.get_series(&series_uid).await?;
+        if series.study_uid != study_uid {
+            return Err(ApiError(pacs_core::PacsError::NotFound {
+                resource: "series",
+                uid: series_uid.to_string(),
+            }));
+        }
+        authorize_series(auth_user, &series, PolicyAction::Query)?;
+    }
     let query = InstanceQuery {
-        series_uid: SeriesUid::from(series_uid.as_str()),
+        series_uid,
         instance_uid: params.sop_instance_uid.map(SopInstanceUid::from),
         sop_class_uid: params.sop_class_uid,
         instance_number: params.instance_number,

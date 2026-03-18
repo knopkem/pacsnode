@@ -7,11 +7,11 @@ use axum::{
     Json,
 };
 use bytes::Bytes;
-use pacs_core::{blob_key_for, PacsError};
+use pacs_core::{blob_key_for, PacsError, PolicyAction, PolicyEngine, PolicyResource, UserRole};
 use pacs_plugin::{AuthenticatedUser, PacsEvent};
 use serde_json::json;
 
-use crate::{error::ApiError, state::AppState};
+use crate::{error::ApiError, policy::authorize_action, state::AppState};
 
 /// `POST /wado/studies` — STOW-RS store endpoint (PS3.18 §10.5).
 ///
@@ -24,6 +24,9 @@ pub async fn stow_store(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
+    let auth_user = user.as_ref().map(|extension| &extension.0);
+    authorize_action(auth_user, PolicyAction::Upload)?;
+
     // Extract Content-Type and boundary.
     let content_type = headers
         .get(axum::http::header::CONTENT_TYPE)
@@ -43,8 +46,32 @@ pub async fn stow_store(
 
     // Persist each instance.
     let study_uid_str = parsed[0].instance.study_uid.to_string();
-    let user_id = user.map(|extension| extension.0.user_id);
+    let user_id = auth_user.map(|user| user.user_id.clone());
     let mut stored = Vec::new();
+
+    if let Some(user) = auth_user {
+        let role = user
+            .role
+            .parse::<UserRole>()
+            .map_err(|_| PacsError::Internal("authenticated user has invalid role state".into()))?;
+        let subject = pacs_core::PolicyUser::new(role, &user.attributes);
+        let engine = PolicyEngine::new();
+        for part in &parsed {
+            if !engine.check_permission(
+                &subject,
+                PolicyAction::Upload,
+                PolicyResource::Series {
+                    modality: part.series.modality.as_deref(),
+                },
+            ) {
+                return Err(PacsError::Forbidden(format!(
+                    "role '{}' cannot upload this series modality",
+                    user.role
+                ))
+                .into());
+            }
+        }
+    }
 
     for p in &parsed {
         let blob_key = blob_key_for(

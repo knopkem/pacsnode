@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use pacs_core::{InstanceQuery, PacsError, SeriesQuery, SeriesUid, SopInstanceUid, StudyUid};
+use pacs_core::{InstanceQuery, PacsError, SeriesQuery, SeriesUid, StudyUid};
 use tracing::warn;
 
 use crate::{error::ApiError, state::AppState};
@@ -12,14 +12,6 @@ pub mod instances;
 pub mod nodes;
 pub mod series;
 pub mod studies;
-
-pub(super) async fn collect_instance_blob_keys(
-    state: &AppState,
-    instance_uid: &SopInstanceUid,
-) -> Result<BTreeSet<String>, ApiError> {
-    let instance = state.store.get_instance(instance_uid).await?;
-    Ok(BTreeSet::from([instance.blob_key]))
-}
 
 pub(super) async fn collect_series_blob_keys(
     state: &AppState,

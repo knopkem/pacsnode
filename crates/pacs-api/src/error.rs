@@ -24,6 +24,7 @@ impl IntoResponse for ApiError {
             PacsError::DicomParse(msg)
             | PacsError::InvalidUid(msg)
             | PacsError::InvalidRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+            PacsError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             PacsError::NotAcceptable(msg) => (StatusCode::NOT_ACCEPTABLE, msg.clone()),
             PacsError::UnsupportedMediaType(msg) => {
                 (StatusCode::UNSUPPORTED_MEDIA_TYPE, msg.clone())
@@ -72,6 +73,12 @@ mod tests {
     fn test_invalid_request_is_400() {
         let err = ApiError(PacsError::InvalidRequest("bad request".into()));
         assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_forbidden_is_403() {
+        let err = ApiError(PacsError::Forbidden("not allowed".into()));
+        assert_eq!(err.into_response().status(), StatusCode::FORBIDDEN);
     }
 
     #[test]

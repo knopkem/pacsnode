@@ -27,6 +27,10 @@ pub enum PacsError {
     #[error("invalid request: {0}")]
     InvalidRequest(String),
 
+    /// The authenticated caller is not allowed to perform the requested action.
+    #[error("forbidden: {0}")]
+    Forbidden(String),
+
     /// A configuration value was invalid or missing.
     #[error("configuration error: {0}")]
     Config(String),
@@ -72,6 +76,15 @@ mod tests {
         assert_eq!(
             e.to_string(),
             "invalid request: limit must be greater than zero"
+        );
+    }
+
+    #[test]
+    fn test_forbidden_display() {
+        let e = PacsError::Forbidden("viewer role cannot delete studies".into());
+        assert_eq!(
+            e.to_string(),
+            "forbidden: viewer role cannot delete studies"
         );
     }
 

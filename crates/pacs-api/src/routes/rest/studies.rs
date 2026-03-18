@@ -6,25 +6,44 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use pacs_core::{StudyQuery, StudyUid};
+use pacs_core::{PolicyAction, StudyQuery, StudyUid};
 use pacs_plugin::{AuthenticatedUser, PacsEvent, ResourceLevel};
 
-use crate::{error::ApiError, state::AppState};
+use crate::{
+    error::ApiError,
+    policy::{authorize_action, authorize_study, filter_studies},
+    state::AppState,
+};
 
 use super::{cleanup_blob_keys, collect_study_blob_keys};
 
 /// `GET /api/studies` — list all studies.
-pub async fn list_studies(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
-    let studies = state.store.query_studies(&StudyQuery::default()).await?;
+pub async fn list_studies(
+    State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let auth_user = user.as_ref().map(|extension| &extension.0);
+    authorize_action(auth_user, PolicyAction::Read)?;
+    let studies = filter_studies(
+        auth_user,
+        state.store.query_studies(&StudyQuery::default()).await?,
+        PolicyAction::Read,
+    )?;
     Ok(Json(studies))
 }
 
 /// `GET /api/studies/:study_uid` — fetch a single study by UID.
 pub async fn get_study(
     State(state): State<AppState>,
+    user: Option<axum::Extension<AuthenticatedUser>>,
     Path(uid): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let study = state.store.get_study(&StudyUid::from(uid.as_str())).await?;
+    authorize_study(
+        user.as_ref().map(|extension| &extension.0),
+        &study,
+        PolicyAction::Read,
+    )?;
     Ok(Json(study))
 }
 
@@ -36,7 +55,12 @@ pub async fn delete_study(
     user: Option<axum::Extension<AuthenticatedUser>>,
     Path(uid): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let auth_user = user.as_ref().map(|extension| &extension.0);
     let study_uid = StudyUid::from(uid.as_str());
+    if let Some(auth_user) = auth_user {
+        let study = state.store.get_study(&study_uid).await?;
+        authorize_study(Some(auth_user), &study, PolicyAction::Delete)?;
+    }
     let blob_keys = collect_study_blob_keys(&state, &study_uid).await?;
     state.store.delete_study(&study_uid).await?;
     cleanup_blob_keys(&state, blob_keys).await;

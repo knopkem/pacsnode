@@ -9,6 +9,7 @@
 //! - A REST management API for studies, series, instances, and DICOM nodes
 
 pub mod error;
+mod policy;
 pub mod router;
 pub mod routes;
 pub mod state;

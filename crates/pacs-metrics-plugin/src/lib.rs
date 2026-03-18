@@ -389,7 +389,7 @@ mod tests {
     use pacs_core::{
         AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson, DicomNode, Instance,
         InstanceQuery, MetadataStore, PacsError, PacsResult, PacsStatistics, Series, SeriesQuery,
-        SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
+        SeriesUid, ServerSettings, SopInstanceUid, Study, StudyQuery, StudyUid,
     };
     use tower::ServiceExt;
 
@@ -466,6 +466,12 @@ mod tests {
         async fn delete_node(&self, _ae_title: &str) -> PacsResult<()> {
             Ok(())
         }
+        async fn get_server_settings(&self) -> PacsResult<Option<ServerSettings>> {
+            Ok(None)
+        }
+        async fn upsert_server_settings(&self, _settings: &ServerSettings) -> PacsResult<()> {
+            Ok(())
+        }
         async fn search_audit_logs(&self, _q: &AuditLogQuery) -> PacsResult<AuditLogPage> {
             Ok(AuditLogPage {
                 entries: vec![],
@@ -534,6 +540,7 @@ mod tests {
                 dicom_port: 4242,
                 version: "test",
             },
+            server_settings: ServerSettings::default(),
             store: Arc::new(NoopMetadataStore),
             blobs: Arc::new(NoopBlobStore),
             plugins: Arc::new(pacs_plugin::PluginRegistry::new()),

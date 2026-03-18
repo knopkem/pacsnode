@@ -1,0 +1,128 @@
+<section id="nodes-panel" class="stack-gap">
+  {% match flash %}
+  {% when Some with (item) %}
+  <article class="flash-banner {{ item.tone_class }}">
+    <strong>{{ item.title }}</strong>
+    <p>{{ item.detail }}</p>
+  </article>
+  {% when None %}{% endmatch %}
+
+  <section class="panel stack-gap">
+    <header class="panel-header">
+      <div>
+        <p class="eyebrow">Node registry</p>
+        <h3>Register or update a remote AE</h3>
+      </div>
+    </header>
+    <form
+      class="filter-form"
+      action="{{ nodes_path }}"
+      method="post"
+      hx-post="{{ nodes_path }}"
+      hx-target="#nodes-panel"
+      hx-swap="outerHTML"
+    >
+      <div class="filter-grid filter-grid-nodes">
+        <label class="field">
+          <span>AE Title</span>
+          <input type="text" name="ae_title" value="{{ form.ae_title }}" maxlength="16" placeholder="REMOTE_AE" required />
+        </label>
+        <label class="field">
+          <span>Host</span>
+          <input type="text" name="host" value="{{ form.host }}" placeholder="pacs.example.net" required />
+        </label>
+        <label class="field">
+          <span>Port</span>
+          <input type="number" name="port" value="{{ form.port }}" min="1" max="65535" required />
+        </label>
+        <label class="field field-wide">
+          <span>Description</span>
+          <input type="text" name="description" value="{{ form.description }}" placeholder="Optional operator-facing label" />
+        </label>
+      </div>
+      <label class="checkbox-row">
+        <input type="checkbox" name="tls_enabled" {% if form.tls_enabled %}checked{% endif %} />
+        <span>Connect using TLS</span>
+      </label>
+      <div class="toolbar">
+        <button type="submit" class="button">Save node</button>
+        <button type="reset" class="button button-secondary">Reset form</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel stack-gap">
+    <header class="panel-header panel-header-wrap">
+      <div>
+        <p class="eyebrow">Registered AEs</p>
+        <h3>Known remote nodes</h3>
+      </div>
+    </header>
+
+    {% if has_nodes %}
+    <div class="table-shell">
+      <table class="data-table data-table-nodes">
+        <thead>
+          <tr>
+            <th class="col-patient-id">AE Title</th>
+            <th class="col-study-uid">Host</th>
+            <th>Port</th>
+            <th>TLS</th>
+            <th class="col-description">Description</th>
+            <th class="actions-cell actions-cell-wide"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr>
+            <td class="mono col-patient-id"><span class="truncate-text" data-full="{{ row.ae_title }}" title="{{ row.ae_title }}">{{ row.ae_title }}</span></td>
+            <td class="col-study-uid"><span class="truncate-text" data-full="{{ row.host }}" title="{{ row.host }}">{{ row.host }}</span></td>
+            <td class="numeric">{{ row.port }}</td>
+            <td><span class="{{ row.tls_class }}">{{ row.tls_label }}</span></td>
+            <td class="truncate-cell col-description"><span class="truncate-text" data-full="{{ row.description }}" title="{{ row.description }}">{{ row.description }}</span></td>
+            <td class="actions-cell actions-cell-wide">
+              <div class="row-actions">
+                <button
+                  type="button"
+                  class="button button-secondary"
+                  hx-get="{{ row.edit_href }}"
+                  hx-target="#nodes-panel"
+                  hx-swap="outerHTML"
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  class="button button-secondary"
+                  hx-post="{{ row.verify_href }}"
+                  hx-target="#nodes-panel"
+                  hx-swap="outerHTML"
+                >
+                  Verify {{ row.verification_state }}
+                </button>
+                <button
+                  type="button"
+                  class="button button-danger"
+                  hx-delete="{{ row.delete_href }}"
+                  hx-target="#nodes-panel"
+                  hx-swap="outerHTML"
+                  hx-confirm="Remove node {{ row.ae_title }}?"
+                >
+                  Delete
+                </button>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <p class="eyebrow">No nodes</p>
+      <h3>No remote AEs have been registered yet.</h3>
+      <p>Add modalities, peer PACS nodes, or route targets here before using DIMSE operations.</p>
+    </div>
+    {% endif %}
+  </section>
+</section>

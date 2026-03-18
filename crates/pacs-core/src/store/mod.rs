@@ -2,8 +2,8 @@ use async_trait::async_trait;
 
 use crate::domain::{
     AuditLogEntry, AuditLogPage, AuditLogQuery, DicomJson, DicomNode, Instance, InstanceQuery,
-    NewAuditLogEntry, PacsStatistics, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study,
-    StudyQuery, StudyUid,
+    NewAuditLogEntry, PacsStatistics, Series, SeriesQuery, SeriesUid, ServerSettings,
+    SopInstanceUid, Study, StudyQuery, StudyUid,
 };
 use crate::error::PacsResult;
 
@@ -88,6 +88,12 @@ pub trait MetadataStore: Send + Sync {
     /// Returns [`crate::error::PacsError::NotFound`] if no node with the given AE title exists.
     async fn delete_node(&self, ae_title: &str) -> PacsResult<()>;
 
+    /// Returns the persisted DIMSE listener settings, if they have been saved.
+    async fn get_server_settings(&self) -> PacsResult<Option<ServerSettings>>;
+
+    /// Inserts or updates the persisted DIMSE listener settings.
+    async fn upsert_server_settings(&self, settings: &ServerSettings) -> PacsResult<()>;
+
     /// Searches the append-only audit log using the supplied filters.
     async fn search_audit_logs(&self, q: &AuditLogQuery) -> PacsResult<AuditLogPage>;
 
@@ -105,7 +111,7 @@ pub trait MetadataStore: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::{MetadataStore, MockMetadataStore};
-    use crate::domain::{PacsStatistics, StudyUid};
+    use crate::domain::{PacsStatistics, ServerSettings, StudyUid};
     use crate::error::PacsError;
 
     #[tokio::test]
@@ -195,5 +201,16 @@ mod tests {
         });
         let result = mock.delete_node("MISSING").await;
         assert!(matches!(result, Err(PacsError::NotFound { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_mock_get_server_settings() {
+        let mut mock = MockMetadataStore::new();
+        mock.expect_get_server_settings()
+            .once()
+            .returning(|| Ok(Some(ServerSettings::default())));
+
+        let settings = mock.get_server_settings().await.unwrap();
+        assert_eq!(settings, Some(ServerSettings::default()));
     }
 }

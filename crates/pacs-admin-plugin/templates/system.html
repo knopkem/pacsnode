@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero-panel compact">
+  <div>
+    <p class="eyebrow">Runtime inventory</p>
+    <h2>Server identity and plugin health.</h2>
+  </div>
+  <div class="server-grid">
+    <div class="server-card">
+      <span>Active AE Title</span>
+      <strong>{{ server_info.ae_title }}</strong>
+    </div>
+    <div class="server-card">
+      <span>HTTP</span>
+      <strong>{{ server_info.http_port }}</strong>
+    </div>
+    <div class="server-card">
+      <span>Active DIMSE Port</span>
+      <strong>{{ server_info.dicom_port }}</strong>
+    </div>
+    <div class="server-card">
+      <span>Version</span>
+      <strong>{{ server_info.version }}</strong>
+    </div>
+  </div>
+</section>
+
+<p class="panel-copy page-copy">
+  These cards show the live listener state for the running process. Saved DIMSE settings below are persisted immediately, but they do not replace the active AE title or DIMSE port until pacsnode restarts.
+</p>
+
+{{ settings_markup|safe }}
+
+<section class="panel stack-gap">
+  <header class="panel-header">
+    <div>
+      <p class="eyebrow">Plugins</p>
+      <h3>Health overview</h3>
+    </div>
+  </header>
+  <div class="health-table">
+    {% for row in plugin_rows %}
+    <article class="health-row">
+      <div>
+        <strong>{{ row.plugin_id }}</strong>
+        <p>{{ row.detail }}</p>
+      </div>
+      <span class="status-pill {{ row.status_class }}">{{ row.status_label }}</span>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

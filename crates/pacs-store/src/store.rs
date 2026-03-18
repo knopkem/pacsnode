@@ -13,12 +13,12 @@ use async_trait::async_trait;
 use pacs_core::{
     AuditLogEntry, AuditLogPage, AuditLogQuery, DicomJson, DicomNode, Instance, InstanceQuery,
     MetadataStore, NewAuditLogEntry, PacsError, PacsResult, PacsStatistics, Series, SeriesQuery,
-    SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
+    SeriesUid, ServerSettings, SopInstanceUid, Study, StudyQuery, StudyUid,
 };
 use sqlx::PgPool;
 use tracing::instrument;
 
-use crate::queries::{audit, instance, node, series, study};
+use crate::queries::{audit, instance, node, series, server_settings, study};
 
 /// PostgreSQL-backed [`MetadataStore`] for pacsnode.
 ///
@@ -125,6 +125,16 @@ impl MetadataStore for PgMetadataStore {
     #[instrument(skip(self), fields(ae_title = %ae_title))]
     async fn delete_node(&self, ae_title: &str) -> PacsResult<()> {
         node::delete(&self.pool, ae_title).await
+    }
+
+    #[instrument(skip(self))]
+    async fn get_server_settings(&self) -> PacsResult<Option<ServerSettings>> {
+        server_settings::get(&self.pool).await
+    }
+
+    #[instrument(skip(self, settings))]
+    async fn upsert_server_settings(&self, settings: &ServerSettings) -> PacsResult<()> {
+        server_settings::upsert(&self.pool, settings).await
     }
 
     #[instrument(skip(self, q))]

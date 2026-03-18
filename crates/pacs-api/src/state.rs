@@ -7,6 +7,7 @@ pub use pacs_plugin::{AppState, ServerInfo};
 mod tests {
     use std::sync::Arc;
 
+    use pacs_core::ServerSettings;
     use pacs_plugin::PluginRegistry;
 
     use super::*;
@@ -64,6 +65,7 @@ mod tests {
                 dicom_port: 4242,
                 version: "0.1.0",
             },
+            server_settings: ServerSettings::default(),
             store: Arc::new(MockMetaStore::new()),
             blobs: Arc::new(MockBlobStr::new()),
             plugins: Arc::new(PluginRegistry::new()),

@@ -1,0 +1,89 @@
+<section id="audit-results" class="panel stack-gap">
+  <header class="panel-header panel-header-wrap">
+    <div>
+      <p class="eyebrow">Results</p>
+      <h3>{{ result_summary }}</h3>
+    </div>
+    <div class="results-meta">
+      <span>{{ page_summary }}</span>
+      {% if has_active_filters %}
+      <span class="status-pill">Filtered</span>
+      {% endif %}
+    </div>
+  </header>
+
+  {% if has_results %}
+  <div class="audit-list">
+    {% for row in rows %}
+    <article class="audit-card">
+      <div class="audit-card-header">
+        <div class="audit-card-title">
+          <strong>{{ row.action }}</strong>
+          <span>{{ row.resource }}</span>
+        </div>
+        <div class="audit-card-meta">
+          <span class="status-pill {{ row.status_class }}">{{ row.status }}</span>
+          <time>{{ row.occurred_at }}</time>
+        </div>
+      </div>
+      <div class="audit-card-grid">
+        <div>
+          <span class="audit-label">User</span>
+          <p>{{ row.user_id }}</p>
+        </div>
+        <div>
+          <span class="audit-label">Source IP</span>
+          <p>{{ row.source_ip }}</p>
+        </div>
+        <div>
+          <span class="audit-label">Resource UID</span>
+          <p class="mono"><span class="truncate-text" data-full="{{ row.resource_uid }}" title="{{ row.resource_uid }}">{{ row.resource_uid }}</span></p>
+        </div>
+      </div>
+      <details class="audit-details">
+        <summary>Details JSON</summary>
+        <pre>{{ row.details_pretty }}</pre>
+      </details>
+    </article>
+    {% endfor %}
+  </div>
+
+  <footer class="pager">
+    {% if has_prev %}
+    <a
+      href="{{ prev_page_href }}"
+      class="button button-secondary"
+      hx-get="{{ prev_results_href }}"
+      hx-target="#audit-results"
+      hx-swap="outerHTML"
+    >
+      Previous
+    </a>
+    {% else %}
+    <span class="button button-secondary is-disabled">Previous</span>
+    {% endif %}
+
+    <a href="{{ page_href }}" class="pager-link">Open this page</a>
+
+    {% if has_next %}
+    <a
+      href="{{ next_page_href }}"
+      class="button button-secondary"
+      hx-get="{{ next_results_href }}"
+      hx-target="#audit-results"
+      hx-swap="outerHTML"
+    >
+      Next
+    </a>
+    {% else %}
+    <span class="button button-secondary is-disabled">Next</span>
+    {% endif %}
+  </footer>
+  {% else %}
+  <div class="empty-state">
+    <p class="eyebrow">No matches</p>
+    <h3>No audit rows available for this view.</h3>
+    <p>{{ empty_summary }}</p>
+  </div>
+  {% endif %}
+</section>

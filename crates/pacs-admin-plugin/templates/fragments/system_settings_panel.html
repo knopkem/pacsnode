@@ -1,0 +1,106 @@
+<section id="system-settings-panel" class="panel stack-gap">
+  {% match flash %}
+  {% when Some with (item) %}
+  <article class="flash-banner {{ item.tone_class }}">
+    <strong>{{ item.title }}</strong>
+    <p>{{ item.detail }}</p>
+  </article>
+  {% when None %}{% endmatch %}
+
+  <header class="panel-header panel-header-wrap">
+    <div>
+      <p class="eyebrow">DIMSE settings</p>
+      <h3>{{ source_label }}</h3>
+    </div>
+    {% if restart_required %}
+    <span class="status-pill status-degraded">Restart required</span>
+    {% else %}
+    <span class="status-pill status-healthy">Active</span>
+    {% endif %}
+  </header>
+
+  <p class="panel-copy">
+    These settings are persisted in the metadata store and applied on process start. Save here, then restart pacsnode to update the active DIMSE listener.
+  </p>
+
+  <form
+    class="filter-form stack-gap"
+    action="{{ system_path }}"
+    method="post"
+    hx-post="{{ system_path }}"
+    hx-target="#system-settings-panel"
+    hx-swap="outerHTML"
+    data-transfer-syntax-editor
+  >
+    <div class="filter-grid filter-grid-system">
+      <label class="field">
+        <span>DICOM Port</span>
+        <input type="number" name="dicom_port" min="1" max="65535" value="{{ form.dicom_port }}" required />
+      </label>
+      <label class="field">
+        <span>AE Title</span>
+        <input type="text" name="ae_title" maxlength="16" value="{{ form.ae_title }}" required />
+      </label>
+      <label class="field">
+        <span>Max Associations</span>
+        <input type="number" name="max_associations" min="1" value="{{ form.max_associations }}" required />
+      </label>
+      <label class="field">
+        <span>DIMSE Timeout (s)</span>
+        <input type="number" name="dimse_timeout_secs" min="1" value="{{ form.dimse_timeout_secs }}" required />
+      </label>
+    </div>
+
+    <div class="checkbox-group">
+      <label class="checkbox-row">
+        <input type="checkbox" name="ae_whitelist_enabled" {% if form.ae_whitelist_enabled %}checked{% endif %} />
+        <span>Require inbound AE titles to exist in the node registry</span>
+      </label>
+    </div>
+
+    <div class="filter-grid filter-grid-system-syntaxes">
+      <label class="field field-wide">
+        <span>Accepted Transfer Syntaxes</span>
+        <div class="syntax-checklist" role="group" aria-label="Accepted transfer syntaxes">
+          {% for option in syntax_options %}
+          <label class="syntax-option {% if option.is_required %}syntax-option-locked{% endif %}">
+            <input type="checkbox" name="accepted_transfer_syntaxes" value="{{ option.uid }}" data-label="{{ option.label }}" data-required="{% if option.is_required %}true{% else %}false{% endif %}" {% if option.accepted_selected %}checked{% endif %} {% if option.is_required %}disabled{% endif %} />
+            <span class="syntax-option-copy syntax-option-inline">
+              <strong>{{ option.label }}</strong>
+              <small>- {{ option.uid }}</small>
+            </span>
+          </label>
+          {% endfor %}
+        </div>
+        <small>All supported transfer syntaxes start enabled. Deselect the ones this listener should reject. Implicit VR Little Endian is always enabled.</small>
+      </label>
+      <label class="field field-wide">
+        <span>Preferred Transfer Syntaxes</span>
+        <div class="syntax-order-list" role="list" aria-label="Preferred transfer syntax order" data-preferred-syntax-list>
+          {% for item in preferred_syntax_order %}
+          <div
+            class="syntax-order-item {% if item.is_required %}syntax-order-item-required{% endif %}"
+            draggable="true"
+            role="listitem"
+            data-preferred-syntax-item
+            data-uid="{{ item.uid }}"
+            data-label="{{ item.label }}"
+          >
+            <input type="hidden" name="preferred_transfer_syntaxes" value="{{ item.uid }}" />
+            <button type="button" class="syntax-drag-handle" aria-label="Reorder {{ item.label }}">::</button>
+            <span class="syntax-option-copy syntax-option-inline">
+              <strong>{{ item.label }}</strong>
+              <small>- {{ item.uid }}</small>
+            </span>
+          </div>
+          {% endfor %}
+        </div>
+        <small>The preferred list mirrors the accepted list automatically. Drag items here to set negotiation priority; the top item is tried first.</small>
+      </label>
+    </div>
+
+    <div class="toolbar">
+      <button type="submit" class="button">Save DIMSE settings</button>
+    </div>
+  </form>
+</section>

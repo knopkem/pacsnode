@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ page_title }} · pacsnode</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
+    <link rel="stylesheet" href="{{ route_prefix }}/static/admin.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div>
+          <p class="eyebrow">pacsnode</p>
+          <h1>Admin Console</h1>
+          <p class="sidebar-copy">Operational visibility for storage, ingest, and runtime health.</p>
+        </div>
+        <nav class="nav-list">
+          <a href="{{ route_prefix }}" class="{% if active_nav == "dashboard" %}active{% endif %}">Dashboard</a>
+          <a href="{{ route_prefix }}/system" class="{% if active_nav == "system" %}active{% endif %}">System</a>
+          <a href="{{ route_prefix }}/studies" class="{% if active_nav == "studies" %}active{% endif %}">Studies</a>
+          <a href="{{ route_prefix }}/nodes" class="{% if active_nav == "nodes" %}active{% endif %}">Nodes</a>
+          <a href="{{ route_prefix }}/audit" class="{% if active_nav == "audit" %}active{% endif %}">Audit</a>
+        </nav>
+      </aside>
+      <main class="content">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+    <script>
+      (() => {
+        function initTransferSyntaxEditor(root) {
+          const editors = root.querySelectorAll('[data-transfer-syntax-editor]');
+          for (const editor of editors) {
+            if (editor.dataset.transferSyntaxInitialized === 'true') {
+              continue;
+            }
+
+            editor.dataset.transferSyntaxInitialized = 'true';
+
+            const acceptedCheckboxes = Array.from(
+              editor.querySelectorAll('input[name="accepted_transfer_syntaxes"]')
+            );
+            const preferredList = editor.querySelector('[data-preferred-syntax-list]');
+            if (!preferredList || acceptedCheckboxes.length === 0) {
+              continue;
+            }
+
+            let preferredOrder = Array.from(
+              preferredList.querySelectorAll('[data-preferred-syntax-item]')
+            ).map((item) => item.dataset.uid);
+
+            function acceptedEntries() {
+              return acceptedCheckboxes
+                .filter((checkbox) => checkbox.checked)
+                .map((checkbox) => ({
+                  uid: checkbox.value,
+                  label: checkbox.dataset.label || checkbox.value,
+                  required: checkbox.dataset.required === 'true',
+                }));
+            }
+
+            function renderPreferredList() {
+              const selected = acceptedEntries();
+              const selectedUids = selected.map((entry) => entry.uid);
+              preferredOrder = preferredOrder.filter((uid) => selectedUids.includes(uid));
+              for (const entry of selected) {
+                if (!preferredOrder.includes(entry.uid)) {
+                  preferredOrder.push(entry.uid);
+                }
+              }
+
+              const selectedByUid = new Map(selected.map((entry) => [entry.uid, entry]));
+              preferredList.replaceChildren();
+
+              for (const uid of preferredOrder) {
+                const entry = selectedByUid.get(uid);
+                if (!entry) {
+                  continue;
+                }
+
+                const item = document.createElement('div');
+                item.className = 'syntax-order-item';
+                if (entry.required) {
+                  item.classList.add('syntax-order-item-required');
+                }
+                item.draggable = true;
+                item.setAttribute('role', 'listitem');
+                item.dataset.preferredSyntaxItem = 'true';
+                item.dataset.uid = entry.uid;
+                item.dataset.label = entry.label;
+
+                const hidden = document.createElement('input');
+                hidden.type = 'hidden';
+                hidden.name = 'preferred_transfer_syntaxes';
+                hidden.value = entry.uid;
+
+                const handle = document.createElement('button');
+                handle.type = 'button';
+                handle.className = 'syntax-drag-handle';
+                handle.setAttribute('aria-label', `Reorder ${entry.label}`);
+                handle.textContent = '::';
+
+                const copy = document.createElement('span');
+                copy.className = 'syntax-option-copy syntax-option-inline';
+
+                const strong = document.createElement('strong');
+                strong.textContent = entry.label;
+
+                const small = document.createElement('small');
+                small.textContent = `- ${entry.uid}`;
+
+                copy.append(strong, small);
+                item.append(hidden, handle, copy);
+                preferredList.append(item);
+              }
+            }
+
+            function dragAfterElement(container, pointerY) {
+              const items = Array.from(
+                container.querySelectorAll('[data-preferred-syntax-item]:not(.dragging)')
+              );
+
+              return items.reduce(
+                (closest, item) => {
+                  const box = item.getBoundingClientRect();
+                  const offset = pointerY - box.top - box.height / 2;
+                  if (offset < 0 && offset > closest.offset) {
+                    return { offset, element: item };
+                  }
+                  return closest;
+                },
+                { offset: Number.NEGATIVE_INFINITY, element: null }
+              ).element;
+            }
+
+            editor.addEventListener('change', (event) => {
+              if (event.target instanceof HTMLInputElement && event.target.name === 'accepted_transfer_syntaxes') {
+                renderPreferredList();
+              }
+            });
+
+            preferredList.addEventListener('dragstart', (event) => {
+              if (!(event.target instanceof HTMLElement)) {
+                return;
+              }
+              const item = event.target.closest('[data-preferred-syntax-item]');
+              if (!(item instanceof HTMLElement)) {
+                return;
+              }
+              item.classList.add('dragging');
+              if (event.dataTransfer) {
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('text/plain', item.dataset.uid || '');
+              }
+            });
+
+            preferredList.addEventListener('dragend', (event) => {
+              if (!(event.target instanceof HTMLElement)) {
+                return;
+              }
+              const item = event.target.closest('[data-preferred-syntax-item]');
+              if (!(item instanceof HTMLElement)) {
+                return;
+              }
+              item.classList.remove('dragging');
+              preferredOrder = Array.from(
+                preferredList.querySelectorAll('[data-preferred-syntax-item]')
+              ).map((entry) => entry.dataset.uid);
+            });
+
+            preferredList.addEventListener('dragover', (event) => {
+              event.preventDefault();
+              const dragging = preferredList.querySelector('.dragging');
+              if (!(dragging instanceof HTMLElement)) {
+                return;
+              }
+              const afterElement = dragAfterElement(preferredList, event.clientY);
+              if (afterElement) {
+                preferredList.insertBefore(dragging, afterElement);
+              } else {
+                preferredList.append(dragging);
+              }
+            });
+
+            renderPreferredList();
+          }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => initTransferSyntaxEditor(document));
+        document.addEventListener('htmx:load', (event) => initTransferSyntaxEditor(event.target));
+      })();
+    </script>
+  </body>
+</html>

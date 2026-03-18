@@ -14,8 +14,6 @@
 //! ```toml
 //! [server]
 //! http_port  = 8042
-//! dicom_port = 4242
-//! ae_title   = "PACSNODE"
 //!
 //! [database]
 //! url             = "postgres://pacsnode:secret@localhost/pacsnode"
@@ -36,7 +34,8 @@
 use std::collections::HashMap;
 
 use config::{Config, ConfigError, Environment, File};
-use pacs_core::DicomNode;
+use pacs_admin_plugin::ADMIN_DASHBOARD_PLUGIN_ID;
+use pacs_core::{DicomNode, ServerSettings};
 use pacs_viewer_plugin::OHIF_VIEWER_PLUGIN_ID;
 use serde::{Deserialize, Serialize};
 
@@ -66,7 +65,7 @@ pub struct AppConfig {
     pub plugins: PluginsConfig,
 }
 
-/// HTTP + DIMSE listener configuration.
+/// HTTP configuration and bootstrap DIMSE defaults.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ServerConfig {
@@ -97,6 +96,23 @@ pub struct ServerConfig {
     /// DIMSE association timeout in seconds.
     #[serde(default = "default_dimse_timeout_secs")]
     pub dimse_timeout_secs: u64,
+}
+
+impl ServerConfig {
+    /// Returns the DIMSE settings used to seed persisted admin-managed server
+    /// settings when the metadata store does not have a saved row yet.
+    pub fn bootstrap_server_settings(&self) -> ServerSettings {
+        ServerSettings {
+            dicom_port: self.dicom_port,
+            ae_title: self.ae_title.clone(),
+            ae_whitelist_enabled: self.ae_whitelist_enabled,
+            accept_all_transfer_syntaxes: self.accept_all_transfer_syntaxes,
+            accepted_transfer_syntaxes: self.accepted_transfer_syntaxes.clone(),
+            preferred_transfer_syntaxes: self.preferred_transfer_syntaxes.clone(),
+            max_associations: self.max_associations,
+            dimse_timeout_secs: self.dimse_timeout_secs,
+        }
+    }
 }
 
 /// Metadata database connection configuration.
@@ -247,14 +263,6 @@ region = "us-east-1"
 
 [server]
 http_port = 8042
-dicom_port = 4242
-ae_title = "PACSNODE"
-ae_whitelist_enabled = false
-accept_all_transfer_syntaxes = true
-accepted_transfer_syntaxes = []
-preferred_transfer_syntaxes = []
-max_associations = 64
-dimse_timeout_secs = 30
 
 {backend}
 [logging]
@@ -262,7 +270,12 @@ level = "info"
 format = "json"
 
 [plugins]
-enabled = ["{viewer_plugin_id}"]
+enabled = ["{admin_plugin_id}", "{viewer_plugin_id}"]
+
+[plugins.{admin_plugin_id}]
+route_prefix = "/admin"
+redirect_root = false
+activity_limit = 24
 
 [plugins.{viewer_plugin_id}]
 static_dir = "./web/viewer"
@@ -275,6 +288,7 @@ provision_embedded_bundle = true
 "#,
             profile = self.as_str(),
             backend = backend,
+            admin_plugin_id = ADMIN_DASHBOARD_PLUGIN_ID,
             viewer_plugin_id = OHIF_VIEWER_PLUGIN_ID,
         )
     }
@@ -675,7 +689,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_standalone_config_is_valid_and_enables_viewer() {
+    fn generated_standalone_config_is_valid_and_enables_admin_and_viewer() {
         let toml = GeneratedConfigProfile::Standalone.render();
         let cfg: AppConfig = config::Config::builder()
             .add_source(config::File::from_str(&toml, config::FileFormat::Toml))
@@ -696,14 +710,25 @@ mod tests {
             "./data/blobs"
         );
         assert!(cfg.storage.is_none());
+        assert_eq!(cfg.server.bootstrap_server_settings(), ServerSettings::default());
+        assert!(cfg
+            .plugins
+            .enabled
+            .contains(&ADMIN_DASHBOARD_PLUGIN_ID.to_string()));
         assert!(cfg
             .plugins
             .enabled
             .contains(&OHIF_VIEWER_PLUGIN_ID.to_string()));
+        assert!(!toml.contains("dicom_port ="));
+        assert!(!toml.contains("ae_title ="));
+        assert!(toml.contains("[plugins.admin-dashboard]"));
+        assert!(toml.contains("[plugins.ohif-viewer]"));
+        assert!(toml.contains("[plugins.admin-dashboard]\nroute_prefix = \"/admin\"\nredirect_root = false"));
+        assert!(toml.contains("[plugins.ohif-viewer]\nstatic_dir = \"./web/viewer\"\nroute_prefix = \"/viewer\"\nredirect_root = true"));
     }
 
     #[test]
-    fn generated_production_config_is_valid_and_enables_viewer() {
+    fn generated_production_config_is_valid_and_enables_admin_and_viewer() {
         let toml = GeneratedConfigProfile::Production.render();
         let cfg: AppConfig = config::Config::builder()
             .add_source(config::File::from_str(&toml, config::FileFormat::Toml))
@@ -721,9 +746,20 @@ mod tests {
             "dicom"
         );
         assert!(cfg.filesystem_storage.is_none());
+        assert_eq!(cfg.server.bootstrap_server_settings(), ServerSettings::default());
+        assert!(cfg
+            .plugins
+            .enabled
+            .contains(&ADMIN_DASHBOARD_PLUGIN_ID.to_string()));
         assert!(cfg
             .plugins
             .enabled
             .contains(&OHIF_VIEWER_PLUGIN_ID.to_string()));
+        assert!(!toml.contains("dicom_port ="));
+        assert!(!toml.contains("ae_title ="));
+        assert!(toml.contains("[plugins.admin-dashboard]"));
+        assert!(toml.contains("[plugins.ohif-viewer]"));
+        assert!(toml.contains("[plugins.admin-dashboard]\nroute_prefix = \"/admin\"\nredirect_root = false"));
+        assert!(toml.contains("[plugins.ohif-viewer]\nstatic_dir = \"./web/viewer\"\nroute_prefix = \"/viewer\"\nredirect_root = true"));
     }
 }

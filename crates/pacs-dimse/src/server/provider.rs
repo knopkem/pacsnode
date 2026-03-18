@@ -842,7 +842,7 @@ mod tests {
     use mockall::mock;
     use pacs_core::{
         AuditLogEntry, AuditLogPage, AuditLogQuery, NewAuditLogEntry, PacsResult, PacsStatistics,
-        SeriesUid, StudyUid,
+        SeriesUid, ServerSettings, StudyUid,
     };
 
     // ── Mock MetadataStore ────────────────────────────────────────────────────
@@ -869,6 +869,8 @@ mod tests {
             async fn list_nodes(&self) -> PacsResult<Vec<pacs_core::DicomNode>>;
             async fn upsert_node(&self, node: &pacs_core::DicomNode) -> PacsResult<()>;
             async fn delete_node(&self, ae_title: &str) -> PacsResult<()>;
+            async fn get_server_settings(&self) -> PacsResult<Option<ServerSettings>>;
+            async fn upsert_server_settings(&self, settings: &ServerSettings) -> PacsResult<()>;
             async fn search_audit_logs(&self, q: &AuditLogQuery) -> PacsResult<AuditLogPage>;
             async fn get_audit_log(&self, id: i64) -> PacsResult<AuditLogEntry>;
             async fn store_audit_log(&self, entry: &NewAuditLogEntry) -> PacsResult<()>;

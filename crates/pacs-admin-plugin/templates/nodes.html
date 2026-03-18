@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div id="nodes-page" class="stack-gap">
+  <section class="hero-panel compact">
+    <div>
+      <p class="eyebrow">DICOM network</p>
+      <h2>Register remote AEs, verify reachability, and maintain the whitelist.</h2>
+    </div>
+  </section>
+
+  {{ nodes_markup|safe }}
+</div>
+{% endblock %}

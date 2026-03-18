@@ -15,7 +15,7 @@ pub use blob::BlobStore;
 pub use domain::{
     blob_key_for, AuditLogEntry, AuditLogPage, AuditLogQuery, DicomJson, DicomNode, Instance,
     InstanceQuery, NewAuditLogEntry, PacsStatistics, Series, SeriesQuery, SeriesUid,
-    SopInstanceUid, Study, StudyQuery, StudyUid,
+    ServerSettings, SopInstanceUid, Study, StudyQuery, StudyUid,
 };
 pub use error::{PacsError, PacsResult};
 pub use store::MetadataStore;

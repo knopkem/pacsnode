@@ -1,0 +1,100 @@
+<section id="studies-results" class="panel stack-gap">
+  <header class="panel-header panel-header-wrap">
+    <div>
+      <p class="eyebrow">Results</p>
+      <h3>{{ result_summary }}</h3>
+    </div>
+    <div class="results-meta">
+      <span>{{ page_summary }}</span>
+      {% if has_active_filters %}
+      <span class="status-pill">Filtered</span>
+      {% endif %}
+    </div>
+  </header>
+
+  {% if has_results %}
+  <div class="table-shell">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th class="col-study-uid">Study UID</th>
+          <th class="col-patient-id">Patient ID</th>
+          <th class="col-patient-name">Patient Name</th>
+          <th>Study Date</th>
+          <th>Accession</th>
+          <th>Modalities</th>
+          <th class="col-description">Description</th>
+          <th>Series</th>
+          <th>Instances</th>
+          <th class="actions-cell"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td class="mono col-study-uid"><span class="truncate-text" data-full="{{ row.study_uid }}" title="{{ row.study_uid }}">{{ row.study_uid }}</span></td>
+          <td class="col-patient-id"><span class="truncate-text" data-full="{{ row.patient_id }}" title="{{ row.patient_id }}">{{ row.patient_id }}</span></td>
+          <td class="col-patient-name"><span class="truncate-text" data-full="{{ row.patient_name }}" title="{{ row.patient_name }}">{{ row.patient_name }}</span></td>
+          <td><span class="truncate-text" data-full="{{ row.study_date }}" title="{{ row.study_date }}">{{ row.study_date }}</span></td>
+          <td><span class="truncate-text" data-full="{{ row.accession_number }}" title="{{ row.accession_number }}">{{ row.accession_number }}</span></td>
+          <td><span class="truncate-text" data-full="{{ row.modalities }}" title="{{ row.modalities }}">{{ row.modalities }}</span></td>
+          <td class="truncate-cell col-description"><span class="truncate-text" data-full="{{ row.description }}" title="{{ row.description }}">{{ row.description }}</span></td>
+          <td class="numeric">{{ row.num_series }}</td>
+          <td class="numeric">{{ row.num_instances }}</td>
+          <td class="actions-cell">
+            <button
+              type="button"
+              class="button button-danger"
+              hx-delete="{{ row.delete_href }}"
+              hx-target="#studies-results"
+              hx-swap="outerHTML"
+              hx-confirm="Delete study {{ row.study_uid }}? Metadata and blobs will be removed."
+            >
+              Delete
+            </button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <footer class="pager">
+    {% if has_prev %}
+    <a
+      href="{{ prev_page_href }}"
+      class="button button-secondary"
+      hx-get="{{ prev_results_href }}"
+      hx-target="#studies-results"
+      hx-swap="outerHTML"
+    >
+      Previous
+    </a>
+    {% else %}
+    <span class="button button-secondary is-disabled">Previous</span>
+    {% endif %}
+
+    <a href="{{ page_href }}" class="pager-link">Open this page</a>
+
+    {% if has_next %}
+    <a
+      href="{{ next_page_href }}"
+      class="button button-secondary"
+      hx-get="{{ next_results_href }}"
+      hx-target="#studies-results"
+      hx-swap="outerHTML"
+    >
+      Next
+    </a>
+    {% else %}
+    <span class="button button-secondary is-disabled">Next</span>
+    {% endif %}
+  </footer>
+  {% else %}
+  <div class="empty-state">
+    <p class="eyebrow">No matches</p>
+    <h3>No studies available for this view.</h3>
+    <p>{{ empty_summary }}</p>
+  </div>
+  {% endif %}
+</section>

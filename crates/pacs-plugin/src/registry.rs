@@ -504,7 +504,8 @@ mod tests {
     use pacs_core::{
         AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson, DicomNode, Instance,
         InstanceQuery, MetadataStore, NewAuditLogEntry, PacsError, PacsResult, PacsStatistics,
-        Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
+        Series, SeriesQuery, SeriesUid, ServerSettings, SopInstanceUid, Study, StudyQuery,
+        StudyUid,
     };
     use tokio::sync::Mutex;
 
@@ -585,6 +586,12 @@ mod tests {
             Ok(())
         }
         async fn delete_node(&self, _ae_title: &str) -> PacsResult<()> {
+            Ok(())
+        }
+        async fn get_server_settings(&self) -> PacsResult<Option<ServerSettings>> {
+            Ok(None)
+        }
+        async fn upsert_server_settings(&self, _settings: &ServerSettings) -> PacsResult<()> {
             Ok(())
         }
         async fn search_audit_logs(&self, _q: &AuditLogQuery) -> PacsResult<AuditLogPage> {

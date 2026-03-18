@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero-panel compact">
+  <div>
+    <p class="eyebrow">Study catalog</p>
+    <h2>Search, review, and remove study metadata from the active store.</h2>
+  </div>
+</section>
+
+<section class="panel stack-gap">
+  <header class="panel-header">
+    <div>
+      <p class="eyebrow">Filters</p>
+      <h3>Search studies</h3>
+    </div>
+  </header>
+  <form
+    class="filter-form"
+    action="{{ studies_path }}"
+    method="get"
+    hx-get="{{ studies_results_path }}"
+    hx-target="#studies-results"
+    hx-swap="outerHTML"
+  >
+    <input type="hidden" name="page" value="1" />
+    <div class="filter-grid">
+      <label class="field">
+        <span>Study UID</span>
+        <input type="text" name="study_uid" value="{{ filters.study_uid }}" placeholder="1.2.840..." />
+      </label>
+      <label class="field">
+        <span>Patient ID</span>
+        <input type="text" name="patient_id" value="{{ filters.patient_id }}" placeholder="MRN / external ID" />
+      </label>
+      <label class="field">
+        <span>Patient Name</span>
+        <input type="text" name="patient_name" value="{{ filters.patient_name }}" placeholder="Prefix match" />
+      </label>
+      <label class="field">
+        <span>Accession</span>
+        <input type="text" name="accession_number" value="{{ filters.accession_number }}" placeholder="Accession number" />
+      </label>
+      <label class="field">
+        <span>Modality</span>
+        <input type="text" name="modality" value="{{ filters.modality }}" placeholder="CT, MR, US" />
+      </label>
+      <label class="field">
+        <span>Page Size</span>
+        <select name="page_size">
+          <option value="10" {% if filters.page_size == 10 %}selected{% endif %}>10</option>
+          <option value="20" {% if filters.page_size == 20 %}selected{% endif %}>20</option>
+          <option value="50" {% if filters.page_size == 50 %}selected{% endif %}>50</option>
+          <option value="100" {% if filters.page_size == 100 %}selected{% endif %}>100</option>
+        </select>
+      </label>
+    </div>
+    <div class="toolbar">
+      <button type="submit" class="button">Apply filters</button>
+      <a href="{{ studies_path }}" class="button button-secondary">Reset</a>
+    </div>
+  </form>
+</section>
+
+{{ results_markup|safe }}
+{% endblock %}

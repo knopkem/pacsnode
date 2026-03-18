@@ -1,0 +1,10 @@
+{% for entry in entries %}
+<li class="activity-item {{ entry.tone_class }}">
+  <div class="activity-meta">
+    <span class="activity-badge">{{ entry.badge }}</span>
+    <time>{{ entry.timestamp }}</time>
+  </div>
+  <strong>{{ entry.title }}</strong>
+  <p>{{ entry.detail }}</p>
+</li>
+{% endfor %}

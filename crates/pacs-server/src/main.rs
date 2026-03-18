@@ -19,7 +19,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use pacs_audit_plugin::AUDIT_LOGGER_PLUGIN_ID;
 use pacs_auth_plugin::BASIC_AUTH_PLUGIN_ID;
-use pacs_core::{DicomNode, MetadataStore};
+use pacs_core::{DicomNode, MetadataStore, ServerSettings};
 #[cfg(feature = "filesystem")]
 use pacs_fs_storage::{self as _, FS_BLOB_STORE_PLUGIN_ID};
 use pacs_plugin::{PluginRegistry, ServerInfo};
@@ -36,6 +36,7 @@ use tracing::{info, warn};
 mod config;
 
 use config::{AppConfig, GeneratedConfigProfile, LogFormat};
+use pacs_admin_plugin as _;
 use pacs_audit_plugin as _;
 use pacs_auth_plugin as _;
 use pacs_metrics_plugin as _;
@@ -103,15 +104,16 @@ async fn main() -> Result<()> {
         .register_all_discovered()
         .context("failed to register compiled-in plugins")?;
 
-    let server_info = ServerInfo {
-        ae_title: cfg.server.ae_title.clone(),
+    let bootstrap_server_settings = cfg.server.bootstrap_server_settings();
+    let init_server_info = ServerInfo {
+        ae_title: bootstrap_server_settings.ae_title.clone(),
         http_port: cfg.server.http_port,
-        dicom_port: cfg.server.dicom_port,
+        dicom_port: bootstrap_server_settings.dicom_port,
         version: env!("CARGO_PKG_VERSION"),
     };
     let plugin_configs = build_plugin_configs(&cfg, backend_selection)?;
     registry
-        .init_all(server_info.clone(), &plugin_configs)
+        .init_all(init_server_info, &plugin_configs)
         .await
         .context("failed to initialize plugins")?;
     let registry = Arc::new(registry);
@@ -122,11 +124,20 @@ async fn main() -> Result<()> {
     let blob_store = registry
         .blob_store()
         .ok_or_else(|| anyhow!("no BlobStore plugin is active"))?;
+    let runtime_server_settings =
+        load_or_bootstrap_server_settings(meta_store.as_ref(), &cfg.server).await?;
+    let server_info = ServerInfo {
+        ae_title: runtime_server_settings.ae_title.clone(),
+        http_port: cfg.server.http_port,
+        dicom_port: runtime_server_settings.dicom_port,
+        version: env!("CARGO_PKG_VERSION"),
+    };
     bootstrap_configured_nodes(meta_store.as_ref(), &cfg.nodes).await?;
 
     // ── HTTP server ───────────────────────────────────────────────────────────
     let app_state = pacs_api::AppState {
         server_info: server_info.clone(),
+        server_settings: runtime_server_settings.clone(),
         store: meta_store.clone(),
         blobs: blob_store.clone(),
         plugins: Arc::clone(&registry),
@@ -143,14 +154,14 @@ async fn main() -> Result<()> {
 
     // ── DIMSE server ──────────────────────────────────────────────────────────
     let dimse_config = pacs_dimse::DimseConfig {
-        ae_title: cfg.server.ae_title.clone(),
-        port: cfg.server.dicom_port,
-        ae_whitelist_enabled: cfg.server.ae_whitelist_enabled,
-        accept_all_transfer_syntaxes: cfg.server.accept_all_transfer_syntaxes,
-        accepted_transfer_syntaxes: cfg.server.accepted_transfer_syntaxes.clone(),
-        preferred_transfer_syntaxes: cfg.server.preferred_transfer_syntaxes.clone(),
-        max_associations: cfg.server.max_associations,
-        timeout_secs: cfg.server.dimse_timeout_secs,
+        ae_title: runtime_server_settings.ae_title.clone(),
+        port: runtime_server_settings.dicom_port,
+        ae_whitelist_enabled: runtime_server_settings.ae_whitelist_enabled,
+        accept_all_transfer_syntaxes: runtime_server_settings.accept_all_transfer_syntaxes,
+        accepted_transfer_syntaxes: runtime_server_settings.accepted_transfer_syntaxes.clone(),
+        preferred_transfer_syntaxes: runtime_server_settings.preferred_transfer_syntaxes.clone(),
+        max_associations: runtime_server_settings.max_associations,
+        timeout_secs: runtime_server_settings.dimse_timeout_secs,
     };
     let dicom_server = Arc::new(pacs_dimse::DicomServer::with_plugins(
         dimse_config,
@@ -158,28 +169,36 @@ async fn main() -> Result<()> {
         blob_store,
         Some(Arc::clone(&registry)),
     ));
-    let shutdown_token = CancellationToken::new();
-    let shutdown_token2 = shutdown_token.clone();
+    let app_shutdown = CancellationToken::new();
+    let dimse_shutdown = CancellationToken::new();
+    let signal_shutdown = app_shutdown.clone();
+    let signal_dimse_shutdown = dimse_shutdown.clone();
 
-    // ── Start both servers concurrently ───────────────────────────────────────
-    tokio::select! {
-        result = axum::serve(http_listener, router)
-            .with_graceful_shutdown(ctrl_c_signal()) =>
-        {
-            if let Err(e) = result {
-                warn!(error = %e, "HTTP server exited with error");
-            }
+    let signal_task = tokio::spawn(async move {
+        ctrl_c_signal().await;
+        info!("shutdown signal received");
+        signal_dimse_shutdown.cancel();
+        signal_shutdown.cancel();
+    });
+
+    let dimse_task = tokio::spawn(async move {
+        if let Err(error) = dicom_server.serve(dimse_shutdown).await {
+            warn!(error = %error, "DIMSE server exited with error; HTTP/admin will remain available");
         }
-        result = dicom_server.serve(shutdown_token) => {
-            if let Err(e) = result {
-                warn!(error = %e, "DIMSE server exited with error");
-            }
-        }
-        _ = ctrl_c_signal() => {
-            info!("shutdown signal received");
-            shutdown_token2.cancel();
-        }
+    });
+
+    // ── Serve HTTP independently so admin recovery remains available even when
+    // ── DIMSE startup fails (for example after persisting an occupied port).
+    if let Err(error) = axum::serve(http_listener, router)
+        .with_graceful_shutdown(app_shutdown.clone().cancelled_owned())
+        .await
+    {
+        warn!(error = %error, "HTTP server exited with error");
     }
+
+    app_shutdown.cancel();
+    signal_task.abort();
+    let _ = dimse_task.await;
 
     registry
         .shutdown_all()
@@ -486,6 +505,31 @@ fn merge_json(base: &mut serde_json::Value, overlay: serde_json::Value) {
         }
         (base_slot, overlay_value) => *base_slot = overlay_value,
     }
+}
+
+async fn load_or_bootstrap_server_settings(
+    store: &dyn MetadataStore,
+    server_config: &config::ServerConfig,
+) -> Result<ServerSettings> {
+    if let Some(settings) = store
+        .get_server_settings()
+        .await
+        .context("failed to load persisted DIMSE server settings")?
+    {
+        return Ok(settings);
+    }
+
+    let settings = server_config.bootstrap_server_settings();
+    store
+        .upsert_server_settings(&settings)
+        .await
+        .context("failed to bootstrap persisted DIMSE server settings")?;
+    info!(
+        dicom_port = settings.dicom_port,
+        ae_title = %settings.ae_title,
+        "Bootstrapped persisted DIMSE settings from config/defaults"
+    );
+    Ok(settings)
 }
 
 async fn bootstrap_configured_nodes(store: &dyn MetadataStore, nodes: &[DicomNode]) -> Result<()> {
@@ -796,4 +840,5 @@ mod tests {
             .to_string()
             .contains("configured DICOM node AE title must not be empty"));
     }
+
 }

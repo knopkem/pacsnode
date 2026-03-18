@@ -15,7 +15,7 @@
 use chrono::NaiveDate;
 use pacs_core::{
     DicomJson, Instance, InstanceQuery, MetadataStore, PacsError, Series, SeriesQuery, SeriesUid,
-    SopInstanceUid, Study, StudyQuery, StudyUid,
+    ServerSettings, SopInstanceUid, Study, StudyQuery, StudyUid,
 };
 use pacs_store::PgMetadataStore;
 use rstest::rstest;
@@ -121,6 +121,22 @@ fn make_instance(inst_uid: SopInstanceUid, series: &Series, study: &Study) -> In
         blob_key: format!("{}/{}/{}", study.study_uid, series.series_uid, "3.4.5.1"),
         metadata: DicomJson::empty(),
         created_at: None,
+    }
+}
+
+fn make_server_settings() -> ServerSettings {
+    ServerSettings {
+        dicom_port: 11112,
+        ae_title: "PACSNODE_UI".into(),
+        ae_whitelist_enabled: true,
+        accept_all_transfer_syntaxes: false,
+        accepted_transfer_syntaxes: vec![
+            "1.2.840.10008.1.2.1".into(),
+            "1.2.840.10008.1.2.4.50".into(),
+        ],
+        preferred_transfer_syntaxes: vec!["1.2.840.10008.1.2.4.50".into()],
+        max_associations: 24,
+        dimse_timeout_secs: 40,
     }
 }
 
@@ -262,6 +278,25 @@ async fn test_delete_nonexistent_study_returns_not_found() {
         .await
         .expect_err("should be NotFound");
     assert!(matches!(err, PacsError::NotFound { .. }));
+}
+
+#[tokio::test]
+async fn test_server_settings_round_trip() {
+    let (pool, _c) = setup_pool().await;
+    let store = PgMetadataStore::new(pool);
+
+    assert_eq!(store.get_server_settings().await.expect("get settings"), None);
+
+    let settings = make_server_settings();
+    store
+        .upsert_server_settings(&settings)
+        .await
+        .expect("upsert settings");
+
+    assert_eq!(
+        store.get_server_settings().await.expect("reload settings"),
+        Some(settings)
+    );
 }
 
 // ---------------------------------------------------------------------------

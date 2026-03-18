@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use pacs_core::{BlobStore, MetadataStore};
+use pacs_core::{BlobStore, MetadataStore, ServerSettings};
 use serde::Serialize;
 
 use crate::registry::PluginRegistry;
@@ -23,6 +23,8 @@ pub struct ServerInfo {
 pub struct AppState {
     /// Static server identity.
     pub server_info: ServerInfo,
+    /// DIMSE listener settings currently active in this process.
+    pub server_settings: ServerSettings,
     /// Active metadata store.
     pub store: Arc<dyn MetadataStore>,
     /// Active blob store.

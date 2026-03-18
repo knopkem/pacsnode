@@ -1,0 +1,9 @@
+<section id="stats-shell" class="stats-grid">
+  {% for card in cards %}
+  <article class="stat-card">
+    <span>{{ card.eyebrow }}</span>
+    <strong>{{ card.value }}</strong>
+    <p>{{ card.detail }}</p>
+  </article>
+  {% endfor %}
+</section>

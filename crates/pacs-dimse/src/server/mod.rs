@@ -1264,8 +1264,8 @@ mod ae_whitelist_tests {
     use pacs_core::{
         AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson,
         DicomNode as RegisteredDicomNode, Instance, InstanceQuery, MetadataStore, NewAuditLogEntry,
-        PacsResult, PacsStatistics, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study,
-        StudyQuery, StudyUid,
+        PacsResult, PacsStatistics, Series, SeriesQuery, SeriesUid, ServerSettings,
+        SopInstanceUid, Study, StudyQuery, StudyUid,
     };
 
     use super::*;
@@ -1374,6 +1374,14 @@ mod ae_whitelist_tests {
             Err(PacsError::Internal("unused".into()))
         }
 
+        async fn get_server_settings(&self) -> PacsResult<Option<ServerSettings>> {
+            Ok(None)
+        }
+
+        async fn upsert_server_settings(&self, _settings: &ServerSettings) -> PacsResult<()> {
+            Ok(())
+        }
+
         async fn search_audit_logs(&self, _q: &AuditLogQuery) -> PacsResult<AuditLogPage> {
             Err(PacsError::Internal("unused".into()))
         }
@@ -1462,8 +1470,8 @@ mod tests {
     use pacs_core::{
         AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson,
         DicomNode as RegisteredDicomNode, Instance, InstanceQuery, MetadataStore, NewAuditLogEntry,
-        PacsResult, PacsStatistics, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study,
-        StudyQuery, StudyUid,
+        PacsResult, PacsStatistics, Series, SeriesQuery, SeriesUid, ServerSettings,
+        SopInstanceUid, Study, StudyQuery, StudyUid,
     };
     use tokio::{
         io::AsyncWriteExt,
@@ -1492,6 +1500,8 @@ mod tests {
             async fn list_nodes(&self) -> PacsResult<Vec<RegisteredDicomNode>>;
             async fn upsert_node(&self, node: &RegisteredDicomNode) -> PacsResult<()>;
             async fn delete_node(&self, ae_title: &str) -> PacsResult<()>;
+            async fn get_server_settings(&self) -> PacsResult<Option<ServerSettings>>;
+            async fn upsert_server_settings(&self, settings: &ServerSettings) -> PacsResult<()>;
             async fn search_audit_logs(&self, q: &AuditLogQuery) -> PacsResult<AuditLogPage>;
             async fn get_audit_log(&self, id: i64) -> PacsResult<AuditLogEntry>;
             async fn store_audit_log(&self, entry: &NewAuditLogEntry) -> PacsResult<()>;

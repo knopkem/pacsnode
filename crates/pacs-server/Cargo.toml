@@ -25,6 +25,7 @@ serial_test = { workspace = true }
 
 [dependencies]
 axum         = { workspace = true }
+pacs-admin-plugin = { workspace = true }
 pacs-auth-plugin = { workspace = true }
 pacs-audit-plugin = { workspace = true }
 pacs-core    = { workspace = true }

@@ -27,7 +27,7 @@ pub(crate) mod test_support {
     use pacs_core::{
         AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson, DicomNode, Instance,
         InstanceQuery, MetadataStore, NewAuditLogEntry, PacsResult, PacsStatistics, Series,
-        SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
+        SeriesQuery, SeriesUid, ServerSettings, SopInstanceUid, Study, StudyQuery, StudyUid,
     };
 
     use pacs_plugin::PluginRegistry;
@@ -56,6 +56,8 @@ pub(crate) mod test_support {
             async fn list_nodes(&self) -> PacsResult<Vec<DicomNode>>;
             async fn upsert_node(&self, node: &DicomNode) -> PacsResult<()>;
             async fn delete_node(&self, ae_title: &str) -> PacsResult<()>;
+            async fn get_server_settings(&self) -> PacsResult<Option<ServerSettings>>;
+            async fn upsert_server_settings(&self, settings: &ServerSettings) -> PacsResult<()>;
             async fn search_audit_logs(&self, q: &AuditLogQuery) -> PacsResult<AuditLogPage>;
             async fn get_audit_log(&self, id: i64) -> PacsResult<AuditLogEntry>;
             async fn store_audit_log(&self, entry: &NewAuditLogEntry) -> PacsResult<()>;
@@ -86,6 +88,7 @@ pub(crate) mod test_support {
                 dicom_port: 4242,
                 version: env!("CARGO_PKG_VERSION"),
             },
+            server_settings: ServerSettings::default(),
             store: Arc::new(store),
             blobs: Arc::new(blobs),
             plugins: Arc::new(PluginRegistry::new()),

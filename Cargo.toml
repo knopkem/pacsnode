@@ -5,6 +5,7 @@ members = [
     "crates/pacs-plugin",
     "crates/pacs-auth-plugin",
     "crates/pacs-audit-plugin",
+    "crates/pacs-admin-plugin",
     "crates/pacs-dicom",
     "crates/pacs-fs-storage",
     "crates/pacs-sqlite-store",
@@ -31,6 +32,7 @@ pacs-core    = { path = "crates/pacs-core" }
 pacs-plugin  = { path = "crates/pacs-plugin" }
 pacs-auth-plugin = { path = "crates/pacs-auth-plugin" }
 pacs-audit-plugin = { path = "crates/pacs-audit-plugin" }
+pacs-admin-plugin = { path = "crates/pacs-admin-plugin" }
 pacs-dicom   = { path = "crates/pacs-dicom" }
 pacs-fs-storage = { path = "crates/pacs-fs-storage" }
 pacs-sqlite-store = { path = "crates/pacs-sqlite-store" }
@@ -92,6 +94,10 @@ config       = "0.14"
 
 # ── Async trait ───────────────────────────────────────────────────────────────
 async-trait  = "0.1"
+async-stream = "0.3"
+askama       = { version = "0.12", features = ["with-axum"] }
+askama_axum  = "0.4"
+futures-core = "0.3"
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 jsonwebtoken = "9"

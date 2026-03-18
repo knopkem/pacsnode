@@ -5,7 +5,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use pacs_core::{
     AuditLogEntry, AuditLogPage, AuditLogQuery, DicomJson, DicomNode, Instance, InstanceQuery,
     MetadataStore, NewAuditLogEntry, PacsError, PacsResult, PacsStatistics, Series, SeriesQuery,
-    SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
+    SeriesUid, ServerSettings, SopInstanceUid, Study, StudyQuery, StudyUid,
 };
 use sqlx::{types::Json, QueryBuilder, Sqlite, SqlitePool};
 use tracing::instrument;
@@ -143,6 +143,46 @@ struct NodeRow {
     port: i64,
     description: Option<String>,
     tls_enabled: bool,
+}
+
+#[derive(sqlx::FromRow)]
+struct ServerSettingsRow {
+    dicom_port: i64,
+    ae_title: String,
+    ae_whitelist_enabled: bool,
+    accept_all_transfer_syntaxes: bool,
+    accepted_transfer_syntaxes: String,
+    preferred_transfer_syntaxes: String,
+    max_associations: i64,
+    dimse_timeout_secs: i64,
+}
+
+impl TryFrom<ServerSettingsRow> for ServerSettings {
+    type Error = PacsError;
+
+    fn try_from(row: ServerSettingsRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            dicom_port: row
+                .dicom_port
+                .try_into()
+                .map_err(|_| PacsError::Config("invalid persisted dicom_port".into()))?,
+            ae_title: row.ae_title,
+            ae_whitelist_enabled: row.ae_whitelist_enabled,
+            accept_all_transfer_syntaxes: row.accept_all_transfer_syntaxes,
+            accepted_transfer_syntaxes: serde_json::from_str(&row.accepted_transfer_syntaxes)
+                .map_err(|error| PacsError::Config(format!("invalid accepted_transfer_syntaxes JSON: {error}")))?,
+            preferred_transfer_syntaxes: serde_json::from_str(&row.preferred_transfer_syntaxes)
+                .map_err(|error| PacsError::Config(format!("invalid preferred_transfer_syntaxes JSON: {error}")))?,
+            max_associations: row
+                .max_associations
+                .try_into()
+                .map_err(|_| PacsError::Config("invalid persisted max_associations".into()))?,
+            dimse_timeout_secs: row
+                .dimse_timeout_secs
+                .try_into()
+                .map_err(|_| PacsError::Config("invalid persisted dimse_timeout_secs".into()))?,
+        })
+    }
 }
 
 impl From<NodeRow> for DicomNode {
@@ -662,6 +702,85 @@ impl MetadataStore for SqliteMetadataStore {
         Ok(())
     }
 
+    #[instrument(skip(self))]
+    async fn get_server_settings(&self) -> PacsResult<Option<ServerSettings>> {
+        let row = sqlx::query_as::<_, ServerSettingsRow>(
+            r#"
+            SELECT
+                dicom_port,
+                ae_title,
+                ae_whitelist_enabled,
+                accept_all_transfer_syntaxes,
+                accepted_transfer_syntaxes,
+                preferred_transfer_syntaxes,
+                max_associations,
+                dimse_timeout_secs
+            FROM server_settings
+            WHERE settings_key = ?
+            "#,
+        )
+        .bind("default")
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(map_store_err)?;
+
+        row.map(ServerSettings::try_from).transpose()
+    }
+
+    #[instrument(skip(self, settings))]
+    async fn upsert_server_settings(&self, settings: &ServerSettings) -> PacsResult<()> {
+        let accepted_transfer_syntaxes = serde_json::to_string(&settings.accepted_transfer_syntaxes)
+            .map_err(|error| PacsError::Config(format!("failed to serialize accepted transfer syntaxes: {error}")))?;
+        let preferred_transfer_syntaxes = serde_json::to_string(&settings.preferred_transfer_syntaxes)
+            .map_err(|error| PacsError::Config(format!("failed to serialize preferred transfer syntaxes: {error}")))?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO server_settings (
+                settings_key,
+                dicom_port,
+                ae_title,
+                ae_whitelist_enabled,
+                accept_all_transfer_syntaxes,
+                accepted_transfer_syntaxes,
+                preferred_transfer_syntaxes,
+                max_associations,
+                dimse_timeout_secs,
+                created_at,
+                updated_at
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')
+            )
+            ON CONFLICT(settings_key) DO UPDATE SET
+                dicom_port = excluded.dicom_port,
+                ae_title = excluded.ae_title,
+                ae_whitelist_enabled = excluded.ae_whitelist_enabled,
+                accept_all_transfer_syntaxes = excluded.accept_all_transfer_syntaxes,
+                accepted_transfer_syntaxes = excluded.accepted_transfer_syntaxes,
+                preferred_transfer_syntaxes = excluded.preferred_transfer_syntaxes,
+                max_associations = excluded.max_associations,
+                dimse_timeout_secs = excluded.dimse_timeout_secs,
+                updated_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')
+            "#,
+        )
+        .bind("default")
+        .bind(i64::from(settings.dicom_port))
+        .bind(&settings.ae_title)
+        .bind(settings.ae_whitelist_enabled)
+        .bind(settings.accept_all_transfer_syntaxes)
+        .bind(accepted_transfer_syntaxes)
+        .bind(preferred_transfer_syntaxes)
+        .bind(settings.max_associations as i64)
+        .bind(settings.dimse_timeout_secs as i64)
+        .execute(&self.pool)
+        .await
+        .map_err(map_store_err)?;
+
+        Ok(())
+    }
+
     #[instrument(skip(self, query))]
     async fn search_audit_logs(&self, query: &AuditLogQuery) -> PacsResult<AuditLogPage> {
         let limit = query.limit.unwrap_or(100);
@@ -1013,6 +1132,36 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn round_trips_server_settings() {
+        let (_tempdir, store) = test_store().await;
+        let settings = ServerSettings {
+            dicom_port: 11112,
+            ae_title: "PACSNODE_UI".into(),
+            ae_whitelist_enabled: true,
+            accept_all_transfer_syntaxes: false,
+            accepted_transfer_syntaxes: vec![
+                "1.2.840.10008.1.2.1".into(),
+                "1.2.840.10008.1.2.4.50".into(),
+            ],
+            preferred_transfer_syntaxes: vec!["1.2.840.10008.1.2.4.50".into()],
+            max_associations: 32,
+            dimse_timeout_secs: 45,
+        };
+
+        assert_eq!(store.get_server_settings().await.expect("get settings"), None);
+
+        store
+            .upsert_server_settings(&settings)
+            .await
+            .expect("upsert settings");
+
+        assert_eq!(
+            store.get_server_settings().await.expect("reloaded settings"),
+            Some(settings)
+        );
     }
 
     #[tokio::test]

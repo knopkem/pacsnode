@@ -192,8 +192,7 @@ mod tests {
     use bytes::Bytes;
     use pacs_core::{
         AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson, DicomNode, Instance,
-        InstanceQuery, MetadataStore, NewAuditLogEntry, PacsError, PacsResult, PacsStatistics,
-        Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
+        InstanceQuery, MetadataStore, NewAuditLogEntry, PacsError, PacsResult, PacsStatistics, Series, SeriesQuery, SeriesUid, ServerSettings, SopInstanceUid, Study, StudyQuery, StudyUid,
     };
     use pacs_plugin::{EventBus, ServerInfo};
 
@@ -286,6 +285,12 @@ mod tests {
         }
 
         async fn delete_node(&self, _ae_title: &str) -> PacsResult<()> {
+            Ok(())
+        }
+        async fn get_server_settings(&self) -> PacsResult<Option<ServerSettings>> {
+            Ok(None)
+        }
+        async fn upsert_server_settings(&self, _settings: &ServerSettings) -> PacsResult<()> {
             Ok(())
         }
 

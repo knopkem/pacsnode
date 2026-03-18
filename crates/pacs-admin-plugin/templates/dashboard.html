@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero-panel">
+  <div>
+    <p class="eyebrow">Live operations</p>
+    <h2>Monitor ingest, storage pressure, and association churn.</h2>
+  </div>
+  <div class="server-grid">
+    <div class="server-card">
+      <span>AE Title</span>
+      <strong>{{ server_info.ae_title }}</strong>
+    </div>
+    <div class="server-card">
+      <span>HTTP</span>
+      <strong>{{ server_info.http_port }}</strong>
+    </div>
+    <div class="server-card">
+      <span>DIMSE</span>
+      <strong>{{ server_info.dicom_port }}</strong>
+    </div>
+    <div class="server-card">
+      <span>Version</span>
+      <strong>{{ server_info.version }}</strong>
+    </div>
+  </div>
+</section>
+
+<div hx-ext="sse" sse-connect="{{ route_prefix }}/events">
+  <div id="stats-shell" sse-swap="stats" hx-swap="outerHTML">
+    {{ stats_markup|safe }}
+  </div>
+
+  <section class="panel stack-gap">
+    <header class="panel-header">
+      <div>
+        <p class="eyebrow">Recent activity</p>
+        <h3>Runtime events</h3>
+      </div>
+    </header>
+    <ol id="recent-activity-list" class="activity-list" sse-swap="activity" hx-swap="afterbegin">
+      {{ recent_activity_markup|safe }}
+    </ol>
+  </section>
+
+  <div id="toast-stack" class="toast-stack" sse-swap="toast" hx-swap="afterbegin"></div>
+</div>
+{% endblock %}

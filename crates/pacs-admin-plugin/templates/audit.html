@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero-panel compact">
+  <div>
+    <p class="eyebrow">Audit explorer</p>
+    <h2>Search persisted runtime events and inspect the structured details for each operation.</h2>
+  </div>
+</section>
+
+<section class="panel stack-gap">
+  <header class="panel-header">
+    <div>
+      <p class="eyebrow">Filters</p>
+      <h3>Search audit rows</h3>
+    </div>
+  </header>
+  <form
+    class="filter-form"
+    action="{{ audit_path }}"
+    method="get"
+    hx-get="{{ audit_results_path }}"
+    hx-target="#audit-results"
+    hx-swap="outerHTML"
+  >
+    <input type="hidden" name="page" value="1" />
+    <div class="filter-grid filter-grid-audit">
+      <label class="field">
+        <span>User ID</span>
+        <input type="text" name="user_id" value="{{ filters.user_id }}" placeholder="admin" />
+      </label>
+      <label class="field">
+        <span>Action</span>
+        <input type="text" name="action" value="{{ filters.action }}" placeholder="QUERY, DELETE, STORE" />
+      </label>
+      <label class="field">
+        <span>Resource</span>
+        <input type="text" name="resource" value="{{ filters.resource }}" placeholder="study, instance, association" />
+      </label>
+      <label class="field">
+        <span>Resource UID</span>
+        <input type="text" name="resource_uid" value="{{ filters.resource_uid }}" placeholder="1.2.840..." />
+      </label>
+      <label class="field">
+        <span>Status</span>
+        <input type="text" name="status" value="{{ filters.status }}" placeholder="ok, rejected" />
+      </label>
+      <label class="field">
+        <span>Page Size</span>
+        <select name="page_size">
+          <option value="10" {% if filters.page_size == 10 %}selected{% endif %}>10</option>
+          <option value="25" {% if filters.page_size == 25 %}selected{% endif %}>25</option>
+          <option value="50" {% if filters.page_size == 50 %}selected{% endif %}>50</option>
+          <option value="100" {% if filters.page_size == 100 %}selected{% endif %}>100</option>
+        </select>
+      </label>
+    </div>
+    <div class="toolbar">
+      <button type="submit" class="button">Apply filters</button>
+      <a href="{{ audit_path }}" class="button button-secondary">Reset</a>
+    </div>
+  </form>
+</section>
+
+{{ results_markup|safe }}
+{% endblock %}

@@ -199,8 +199,121 @@
           }
         }
 
+        function initImportBrowser(root) {
+          const browsers = root.querySelectorAll('[data-import-browser]');
+          for (const browser of browsers) {
+            if (browser.dataset.importBrowserInitialized === 'true') {
+              continue;
+            }
+
+            browser.dataset.importBrowserInitialized = 'true';
+
+            const browseUrl = browser.dataset.browseUrl;
+            const input = browser.closest('form')?.querySelector('[data-import-path-input]');
+            const shell = browser.parentElement?.querySelector('[data-import-browser-shell]');
+            const current = shell?.querySelector('[data-import-browser-current]');
+            const status = shell?.querySelector('[data-import-browser-status]');
+            const list = shell?.querySelector('[data-import-browser-list]');
+            const openButton = browser.querySelector('[data-import-browse-open]');
+            const upButton = browser.querySelector('[data-import-browse-up]');
+
+            if (!browseUrl || !(input instanceof HTMLInputElement) || !(shell instanceof HTMLElement) || !(current instanceof HTMLElement) || !(status instanceof HTMLElement) || !(list instanceof HTMLElement) || !(openButton instanceof HTMLButtonElement) || !(upButton instanceof HTMLButtonElement)) {
+              continue;
+            }
+
+            function stopBrowseClick(event) {
+              event.preventDefault();
+              event.stopPropagation();
+            }
+
+            async function loadDirectory(path) {
+              shell.hidden = false;
+              status.textContent = 'Loading directories...';
+              list.replaceChildren();
+              try {
+                const response = await fetch(`${browseUrl}?path=${encodeURIComponent(path || '/')}`, {
+                  headers: { 'HX-Request': 'true' },
+                });
+                if (!response.ok) {
+                  status.textContent = await response.text();
+                  return;
+                }
+                const data = await response.json();
+                input.value = data.current_path || path;
+                current.textContent = data.current_path || path;
+                status.textContent = data.entries.length > 0 ? 'Choose a subdirectory or scan the current folder.' : 'No subdirectories found here.';
+                upButton.hidden = !data.parent_path;
+                upButton.dataset.parentPath = data.parent_path || '';
+
+                for (const entry of data.entries) {
+                  const button = document.createElement('button');
+                  button.type = 'button';
+                  button.className = 'import-browser-entry';
+                  button.textContent = entry.name;
+                  button.addEventListener('click', (event) => {
+                    stopBrowseClick(event);
+                    loadDirectory(entry.path);
+                  });
+                  list.append(button);
+                }
+              } catch (error) {
+                status.textContent = error instanceof Error ? error.message : 'Directory browse failed.';
+              }
+            }
+
+            openButton.addEventListener('click', (event) => {
+              stopBrowseClick(event);
+              loadDirectory(input.value || '/');
+            });
+            upButton.addEventListener('click', (event) => {
+              stopBrowseClick(event);
+              loadDirectory(upButton.dataset.parentPath || '/');
+            });
+          }
+        }
+
+        function initImportCompletionRefresh(root) {
+          const panels = root.querySelectorAll('#import-panel[data-import-refresh-studies="true"]');
+          for (const panel of panels) {
+            if (!(panel instanceof HTMLElement) || panel.dataset.importStudiesRefreshed === 'true') {
+              continue;
+            }
+
+            panel.dataset.importStudiesRefreshed = 'true';
+
+            const studiesResults = document.querySelector('#studies-results');
+            if (!(studiesResults instanceof HTMLElement)) {
+              continue;
+            }
+
+            const refreshHref = studiesResults.dataset.studiesRefreshHref;
+            if (!refreshHref || typeof htmx === 'undefined') {
+              continue;
+            }
+
+            htmx.ajax('GET', refreshHref, {
+              target: '#studies-results',
+              swap: 'outerHTML',
+            });
+
+            const statsShell = document.querySelector('#stats-shell');
+            if (statsShell instanceof HTMLElement && statsShell.dataset.statsRefreshHref) {
+              htmx.ajax('GET', statsShell.dataset.statsRefreshHref, {
+                target: '#stats-shell',
+                swap: 'outerHTML',
+              });
+            }
+          }
+        }
+
         document.addEventListener('DOMContentLoaded', () => initTransferSyntaxEditor(document));
-        document.addEventListener('htmx:load', (event) => initTransferSyntaxEditor(event.target));
+        document.addEventListener('DOMContentLoaded', () => initImportBrowser(document));
+        document.addEventListener('DOMContentLoaded', () => initImportCompletionRefresh(document));
+        document.addEventListener('htmx:load', (event) => {
+          initTransferSyntaxEditor(event.target);
+          initImportBrowser(event.target);
+          initImportCompletionRefresh(event.target);
+        });
       })();
     </script>
   </body>

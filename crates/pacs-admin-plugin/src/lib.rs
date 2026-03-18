@@ -3,6 +3,7 @@
 //! Provides a server-rendered operations UI backed by Askama templates,
 //! HTMX, and server-sent events.
 
+mod import;
 mod runtime;
 mod web;
 

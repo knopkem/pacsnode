@@ -19,23 +19,29 @@ use axum::{
         IntoResponse, Redirect, Response,
     },
     routing::{delete, get, post},
-    Router,
+    Json, Router,
 };
 use chrono::Utc;
 use pacs_core::{
-    AuditLogEntry, AuditLogQuery, DicomNode, InstanceQuery, NewAuditLogEntry, PacsError,
-    PasswordPolicy, SeriesQuery, ServerSettings, Study, StudyQuery, StudyUid, User, UserId,
-    UserQuery, UserRole,
+    AuditLogEntry, AuditLogQuery, BlobStore, DicomNode, InstanceQuery, MetadataStore,
+    NewAuditLogEntry, PacsError, PasswordPolicy, SeriesQuery, ServerSettings, Study, StudyQuery,
+    StudyUid, User, UserId, UserQuery, UserRole,
 };
-use pacs_dicom::supported_retrieve_transfer_syntaxes;
+use pacs_dicom::{supported_retrieve_transfer_syntaxes, transcode_part10, ParsedDicom};
 use pacs_dimse::DicomClient;
-use pacs_plugin::{AppState, AuthenticatedUser, PacsEvent, PluginHealth, ResourceLevel};
+use pacs_plugin::{
+    AppState, AuthenticatedUser, PacsEvent, PluginHealth, PluginRegistry, ResourceLevel,
+};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use tracing::{error, warn};
 use url::form_urlencoded;
 use uuid::Uuid;
 
+use crate::import::{
+    canonicalize_directory, list_directory_entries, push_error, scan_directory, ImportPhase,
+    ImportProgress, ImportResult, ImportScanSummary, ScannedStudySummary,
+};
 use crate::runtime::{ActivityEntry, AdminRuntime};
 
 const ADMIN_CSS: &str = include_str!("../templates/static/admin.css");
@@ -57,6 +63,11 @@ pub(crate) fn routes(runtime: Arc<AdminRuntime>) -> Router<AppState> {
     let system_path = format!("{route_prefix}/system");
     let studies_path = format!("{route_prefix}/studies");
     let studies_list_path = format!("{route_prefix}/studies/list");
+    let import_status_path = format!("{route_prefix}/import/status");
+    let import_browse_path = format!("{route_prefix}/import/browse");
+    let import_scan_path = format!("{route_prefix}/import/scan");
+    let import_start_path = format!("{route_prefix}/import/start");
+    let import_cancel_path = format!("{route_prefix}/import/cancel");
     let study_delete_path = format!("{route_prefix}/studies/{{study_uid}}");
     let users_path = format!("{route_prefix}/users");
     let user_policy_path = format!("{route_prefix}/users/policy");
@@ -69,6 +80,7 @@ pub(crate) fn routes(runtime: Arc<AdminRuntime>) -> Router<AppState> {
     let node_verify_path = format!("{route_prefix}/nodes/{{ae_title}}/verify");
     let audit_path = format!("{route_prefix}/audit");
     let audit_list_path = format!("{route_prefix}/audit/list");
+    let stats_path = format!("{route_prefix}/stats");
     let events_path = format!("{route_prefix}/events");
     let css_path = format!("{route_prefix}/static/admin.css");
 
@@ -78,6 +90,12 @@ pub(crate) fn routes(runtime: Arc<AdminRuntime>) -> Router<AppState> {
         .route(&system_path, get(system_page).post(save_system_settings))
         .route(&studies_path, get(studies_page))
         .route(&studies_list_path, get(studies_results_fragment))
+        .route(&stats_path, get(stats_fragment))
+        .route(&import_status_path, get(import_status_fragment))
+        .route(&import_browse_path, get(import_directory_browser))
+        .route(&import_scan_path, post(start_import_scan))
+        .route(&import_start_path, post(start_local_import))
+        .route(&import_cancel_path, post(cancel_local_import))
         .route(&study_delete_path, delete(delete_study))
         .route(&users_path, get(users_page).post(save_user))
         .route(&logout_path, post(admin_logout))
@@ -153,8 +171,49 @@ struct StudiesPageTemplate {
     logout_path: Option<String>,
     studies_path: String,
     studies_results_path: String,
+    import_markup: String,
     filters: StudiesFilterView,
     results_markup: String,
+}
+
+#[derive(Template)]
+#[template(path = "fragments/import_panel.html")]
+struct ImportPanelTemplate {
+    browse_path: String,
+    scan_path: String,
+    start_path: String,
+    cancel_path: String,
+    status_path: String,
+    flash: Option<FlashView>,
+    path_input: String,
+    is_scanning: bool,
+    is_scan_complete: bool,
+    is_importing: bool,
+    is_complete: bool,
+    is_failed: bool,
+    poll: bool,
+    has_summary: bool,
+    has_errors: bool,
+    cancellation_requested: bool,
+    studies: Vec<ImportStudyRowView>,
+    total_studies: usize,
+    total_instances: usize,
+    total_bytes: String,
+    skipped_non_dicom: usize,
+    unreadable_dicom: usize,
+    progress_completed: usize,
+    progress_total: usize,
+    progress_imported: usize,
+    progress_skipped: usize,
+    progress_failed: usize,
+    current_path: String,
+    current_study_uid: String,
+    result_imported: usize,
+    result_skipped: usize,
+    result_failed: usize,
+    result_cancelled: bool,
+    failure_message: String,
+    errors: Vec<String>,
 }
 
 #[derive(Template)]
@@ -245,6 +304,7 @@ struct StudiesResultsTemplate {
     result_summary: String,
     page_summary: String,
     empty_summary: String,
+    refresh_href: String,
     page_href: String,
     has_prev: bool,
     prev_page_href: String,
@@ -429,6 +489,7 @@ struct StudiesResultsView {
     result_summary: String,
     page_summary: String,
     empty_summary: String,
+    refresh_href: String,
     page_href: String,
     has_prev: bool,
     prev_page_href: String,
@@ -438,11 +499,34 @@ struct StudiesResultsView {
     next_results_href: String,
 }
 
+struct ImportStudyRowView {
+    study_uid: String,
+    patient_name: String,
+    study_date: String,
+    modalities: String,
+    num_series: usize,
+    num_instances: usize,
+    total_bytes: String,
+}
+
+#[derive(Clone)]
+struct ImportAuditActor {
+    user_id: String,
+    username: String,
+    role: String,
+    source_ip: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 struct FlashView {
     title: String,
     detail: String,
     tone_class: &'static str,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct ImportPathInput {
+    path: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -747,6 +831,10 @@ async fn studies_page(
         Ok(markup) => markup,
         Err(status) => return error_response(status, "admin studies browser failed to render"),
     };
+    let import_markup = match render_import_panel_markup(&runtime, None).await {
+        Ok(markup) => markup,
+        Err(status) => return error_response(status, "admin import panel failed to render"),
+    };
 
     render_html(&StudiesPageTemplate {
         page_title: "Studies",
@@ -755,6 +843,7 @@ async fn studies_page(
         logout_path: shell_logout_path(&state, runtime.route_prefix(), &headers),
         studies_path: studies_page_path(runtime.route_prefix()),
         studies_results_path: studies_results_path(runtime.route_prefix()),
+        import_markup,
         filters: StudiesFilterView::from_filters(&filters),
         results_markup,
     })
@@ -774,6 +863,240 @@ async fn studies_results_fragment(
         Ok(markup) => html_markup_response(markup),
         Err(status) => error_response(status, "admin studies browser failed to load results"),
     }
+}
+
+async fn stats_fragment(
+    State(state): State<AppState>,
+    Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
+) -> Response {
+    if let Err(message) = require_admin(&state, user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
+    match render_stats_markup(&runtime).await {
+        Ok(markup) => html_markup_response(markup),
+        Err(status) => error_response(status, "admin stats cards failed to render"),
+    }
+}
+
+async fn import_status_fragment(
+    State(state): State<AppState>,
+    Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
+) -> Response {
+    if let Err(message) = require_admin(&state, user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
+    match render_import_panel_markup(&runtime, None).await {
+        Ok(markup) => html_markup_response(markup),
+        Err(status) => error_response(status, "admin import panel failed to load"),
+    }
+}
+
+async fn import_directory_browser(
+    State(state): State<AppState>,
+    Query(input): Query<ImportPathInput>,
+    user: Option<Extension<AuthenticatedUser>>,
+) -> Response {
+    if let Err(message) = require_admin(&state, user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
+    match list_directory_entries(&input.path) {
+        Ok(listing) => Json(listing).into_response(),
+        Err(message) => (StatusCode::BAD_REQUEST, message).into_response(),
+    }
+}
+
+async fn start_import_scan(
+    State(state): State<AppState>,
+    Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
+    Form(input): Form<ImportPathInput>,
+) -> Response {
+    if let Err(message) = require_admin(&state, user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
+    let canonical_path = match canonicalize_directory(&input.path) {
+        Ok(path) => path,
+        Err(message) => {
+            return render_import_panel_response(&runtime, Some(validation_flash(&message))).await;
+        }
+    };
+    let path_input = canonical_path.to_string_lossy().to_string();
+    let cancel_token = match runtime
+        .import_runtime()
+        .start_scan(path_input.clone())
+        .await
+    {
+        Ok(cancel_token) => cancel_token,
+        Err(message) => {
+            return render_import_panel_response(&runtime, Some(validation_flash(&message))).await;
+        }
+    };
+
+    let runtime_for_job = Arc::clone(&runtime);
+    let job_path_input = path_input.clone();
+    tokio::spawn(async move {
+        let path_for_job = canonical_path.clone();
+        let scan_result =
+            tokio::task::spawn_blocking(move || scan_directory(&path_for_job, &cancel_token)).await;
+        match scan_result {
+            Ok(Ok(summary)) => runtime_for_job.import_runtime().finish_scan(summary).await,
+            Ok(Err(message)) => {
+                runtime_for_job
+                    .import_runtime()
+                    .fail(job_path_input, message)
+                    .await
+            }
+            Err(error) => {
+                runtime_for_job
+                    .import_runtime()
+                    .fail(job_path_input, format!("scan task failed to join: {error}"))
+                    .await;
+            }
+        }
+    });
+
+    render_import_panel_response(
+        &runtime,
+        Some(FlashView {
+            title: "Scan started".into(),
+            detail: format!(
+                "Scanning '{}' recursively for DICOM Part 10 files.",
+                path_input
+            ),
+            tone_class: "flash-info",
+        }),
+    )
+    .await
+}
+
+async fn start_local_import(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
+) -> Response {
+    let actor = match require_admin(&state, user) {
+        Ok(actor) => actor,
+        Err(message) => return error_response(StatusCode::FORBIDDEN, message),
+    };
+
+    let (summary, cancel_token) = match runtime.import_runtime().begin_import().await {
+        Ok(job) => job,
+        Err(message) => {
+            return render_import_panel_response(&runtime, Some(validation_flash(&message))).await;
+        }
+    };
+
+    let store = Arc::clone(&state.store);
+    let blobs = Arc::clone(&state.blobs);
+    let plugins = Arc::clone(&state.plugins);
+    let runtime_for_job = Arc::clone(&runtime);
+    let audit_actor = ImportAuditActor {
+        user_id: actor.user_id.clone(),
+        username: actor.username.clone(),
+        role: actor.role.clone(),
+        source_ip: request_source_ip(&headers),
+    };
+    let user_id = Some(actor.user_id.clone());
+    let storage_transfer_syntax = match load_saved_server_settings(&state).await {
+        Ok(settings) => settings.storage_transfer_syntax,
+        Err(_) => state.server_settings.storage_transfer_syntax.clone(),
+    };
+
+    store_import_audit_log(
+        &store,
+        &audit_actor,
+        "LOCAL_IMPORT_START",
+        "ok",
+        serde_json::json!({
+            "auth_method": "local",
+            "path": summary.path.clone(),
+            "studies": summary.studies.len(),
+            "instances": summary.total_instances,
+            "bytes": summary.total_bytes,
+            "storage_transfer_syntax": storage_transfer_syntax.clone(),
+        }),
+    )
+    .await;
+
+    tokio::spawn(async move {
+        run_local_import_job(
+            runtime_for_job,
+            store,
+            blobs,
+            plugins,
+            summary,
+            storage_transfer_syntax,
+            user_id,
+            Some(audit_actor),
+            cancel_token,
+        )
+        .await;
+    });
+
+    render_import_panel_response(
+        &runtime,
+        Some(FlashView {
+            title: "Import started".into(),
+            detail: "The selected studies are being imported in the background.".into(),
+            tone_class: "flash-info",
+        }),
+    )
+    .await
+}
+
+async fn cancel_local_import(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
+) -> Response {
+    let actor = match require_admin(&state, user) {
+        Ok(actor) => actor,
+        Err(message) => return error_response(StatusCode::FORBIDDEN, message),
+    };
+
+    let snapshot = runtime.import_runtime().snapshot().await;
+
+    let flash = if runtime.import_runtime().request_cancel().await {
+        store_import_audit_log(
+            &state.store,
+            &ImportAuditActor {
+                user_id: actor.user_id,
+                username: actor.username,
+                role: actor.role,
+                source_ip: request_source_ip(&headers),
+            },
+            "LOCAL_IMPORT_CANCEL",
+            "ok",
+            serde_json::json!({
+                "auth_method": "local",
+                "phase": import_phase_label(snapshot.phase),
+                "path": snapshot.path_input,
+            }),
+        )
+        .await;
+
+        FlashView {
+            title: "Cancellation requested".into(),
+            detail: "The running scan or import will stop after the current file finishes.".into(),
+            tone_class: "flash-warning",
+        }
+    } else {
+        FlashView {
+            title: "Nothing to cancel".into(),
+            detail: "There is no active filesystem scan or import right now.".into(),
+            tone_class: "flash-info",
+        }
+    };
+
+    render_import_panel_response(&runtime, Some(flash)).await
 }
 
 async fn delete_study(
@@ -1999,6 +2322,405 @@ async fn render_studies_results_markup(
     Ok(render_studies_results_view(view))
 }
 
+async fn render_import_panel_markup(
+    runtime: &AdminRuntime,
+    flash: Option<FlashView>,
+) -> Result<String, StatusCode> {
+    let snapshot = runtime.import_runtime().snapshot().await;
+    let summary = snapshot.summary.clone();
+    let progress = snapshot.progress.clone();
+    let result = snapshot.result.clone();
+    let errors = import_errors(&summary, &progress, &result);
+
+    ImportPanelTemplate {
+        browse_path: import_browse_path(runtime.route_prefix()),
+        scan_path: import_scan_path(runtime.route_prefix()),
+        start_path: import_start_path(runtime.route_prefix()),
+        cancel_path: import_cancel_path(runtime.route_prefix()),
+        status_path: import_status_path(runtime.route_prefix()),
+        flash,
+        path_input: snapshot.path_input.clone(),
+        is_scanning: snapshot.phase == ImportPhase::Scanning,
+        is_scan_complete: snapshot.phase == ImportPhase::ScanComplete,
+        is_importing: snapshot.phase == ImportPhase::Importing,
+        is_complete: snapshot.phase == ImportPhase::Complete,
+        is_failed: snapshot.phase == ImportPhase::Failed,
+        poll: matches!(
+            snapshot.phase,
+            ImportPhase::Scanning | ImportPhase::Importing
+        ),
+        has_summary: summary.is_some(),
+        has_errors: !errors.is_empty(),
+        cancellation_requested: snapshot.cancellation_requested,
+        studies: summary
+            .as_ref()
+            .map(|summary| {
+                summary
+                    .studies
+                    .iter()
+                    .cloned()
+                    .map(import_study_row_view)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        total_studies: summary
+            .as_ref()
+            .map(|item| item.studies.len())
+            .unwrap_or_default(),
+        total_instances: summary
+            .as_ref()
+            .map(|item| item.total_instances)
+            .unwrap_or_default(),
+        total_bytes: summary
+            .as_ref()
+            .map(|item| format_bytes(item.total_bytes as i64))
+            .unwrap_or_else(|| format_bytes(0)),
+        skipped_non_dicom: summary
+            .as_ref()
+            .map(|item| item.skipped_non_dicom)
+            .unwrap_or_default(),
+        unreadable_dicom: summary
+            .as_ref()
+            .map(|item| item.unreadable_dicom)
+            .unwrap_or_default(),
+        progress_completed: progress
+            .as_ref()
+            .map(|item| item.completed)
+            .unwrap_or_default(),
+        progress_total: progress.as_ref().map(|item| item.total).unwrap_or_default(),
+        progress_imported: progress
+            .as_ref()
+            .map(|item| item.imported)
+            .unwrap_or_default(),
+        progress_skipped: progress
+            .as_ref()
+            .map(|item| item.skipped)
+            .unwrap_or_default(),
+        progress_failed: progress
+            .as_ref()
+            .map(|item| item.failed)
+            .unwrap_or_default(),
+        current_path: progress
+            .as_ref()
+            .and_then(|item| item.current_path.clone())
+            .unwrap_or_default(),
+        current_study_uid: progress
+            .as_ref()
+            .and_then(|item| item.current_study_uid.clone())
+            .unwrap_or_default(),
+        result_imported: result
+            .as_ref()
+            .map(|item| item.imported)
+            .unwrap_or_default(),
+        result_skipped: result.as_ref().map(|item| item.skipped).unwrap_or_default(),
+        result_failed: result.as_ref().map(|item| item.failed).unwrap_or_default(),
+        result_cancelled: result.as_ref().map(|item| item.cancelled).unwrap_or(false),
+        failure_message: snapshot.failure_message.unwrap_or_default(),
+        errors,
+    }
+    .render()
+    .map_err(internal_render_error)
+}
+
+async fn render_import_panel_response(
+    runtime: &AdminRuntime,
+    flash: Option<FlashView>,
+) -> Response {
+    match render_import_panel_markup(runtime, flash).await {
+        Ok(markup) => html_markup_response(markup),
+        Err(status) => error_response(status, "admin import panel failed to render"),
+    }
+}
+
+async fn run_local_import_job(
+    runtime: Arc<AdminRuntime>,
+    store: Arc<dyn MetadataStore>,
+    blobs: Arc<dyn BlobStore>,
+    plugins: Arc<PluginRegistry>,
+    summary: ImportScanSummary,
+    storage_transfer_syntax: Option<String>,
+    user_id: Option<String>,
+    audit_actor: Option<ImportAuditActor>,
+    cancel_token: tokio_util::sync::CancellationToken,
+) {
+    let mut progress = ImportProgress {
+        completed: 0,
+        total: summary.files.len(),
+        imported: 0,
+        skipped: 0,
+        failed: 0,
+        current_path: None,
+        current_study_uid: None,
+        errors: Vec::new(),
+    };
+    let mut cancelled = false;
+
+    for scanned_file in &summary.files {
+        if cancel_token.is_cancelled() {
+            cancelled = true;
+            break;
+        }
+
+        progress.current_path = Some(scanned_file.path.to_string_lossy().to_string());
+        runtime
+            .import_runtime()
+            .update_progress(progress.clone())
+            .await;
+
+        let parsed = match read_local_dicom_file(scanned_file.path.clone()).await {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                progress.completed += 1;
+                progress.failed += 1;
+                push_error(&mut progress.errors, error.to_string());
+                runtime
+                    .import_runtime()
+                    .update_progress(progress.clone())
+                    .await;
+                continue;
+            }
+        };
+
+        progress.current_study_uid = Some(parsed.study.study_uid.to_string());
+        match store.get_instance(&parsed.instance.instance_uid).await {
+            Ok(_) => {
+                progress.completed += 1;
+                progress.skipped += 1;
+                runtime
+                    .import_runtime()
+                    .update_progress(progress.clone())
+                    .await;
+                continue;
+            }
+            Err(PacsError::NotFound { .. }) => {}
+            Err(error) => {
+                progress.completed += 1;
+                progress.failed += 1;
+                push_error(&mut progress.errors, error.to_string());
+                runtime
+                    .import_runtime()
+                    .update_progress(progress.clone())
+                    .await;
+                continue;
+            }
+        }
+
+        let prepared =
+            match prepare_local_part_for_storage(parsed, storage_transfer_syntax.clone()).await {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    progress.completed += 1;
+                    progress.failed += 1;
+                    push_error(&mut progress.errors, error.to_string());
+                    runtime
+                        .import_runtime()
+                        .update_progress(progress.clone())
+                        .await;
+                    continue;
+                }
+            };
+
+        if let Err(error) =
+            persist_local_import_part(&store, &blobs, &plugins, prepared, user_id.clone()).await
+        {
+            progress.completed += 1;
+            progress.failed += 1;
+            push_error(&mut progress.errors, error.to_string());
+            runtime
+                .import_runtime()
+                .update_progress(progress.clone())
+                .await;
+            continue;
+        }
+
+        progress.completed += 1;
+        progress.imported += 1;
+        runtime
+            .import_runtime()
+            .update_progress(progress.clone())
+            .await;
+    }
+
+    runtime
+        .import_runtime()
+        .finish_import(ImportResult {
+            imported: progress.imported,
+            skipped: progress.skipped,
+            failed: progress.failed,
+            cancelled,
+            errors: progress.errors,
+        })
+        .await;
+
+    if let Some(audit_actor) = audit_actor.as_ref() {
+        store_import_audit_log(
+            &store,
+            audit_actor,
+            "LOCAL_IMPORT_COMPLETE",
+            if cancelled || progress.failed > 0 {
+                "degraded"
+            } else {
+                "ok"
+            },
+            serde_json::json!({
+                "auth_method": "local",
+                "path": summary.path,
+                "studies": summary.studies.len(),
+                "instances": summary.total_instances,
+                "bytes": summary.total_bytes,
+                "imported": progress.imported,
+                "skipped": progress.skipped,
+                "failed": progress.failed,
+                "cancelled": cancelled,
+            }),
+        )
+        .await;
+    }
+}
+
+async fn read_local_dicom_file(path: std::path::PathBuf) -> Result<ParsedDicom, PacsError> {
+    tokio::task::spawn_blocking(move || {
+        let bytes = std::fs::read(&path).map_err(|error| {
+            PacsError::Internal(format!("failed to read '{}': {error}", path.display()))
+        })?;
+        ParsedDicom::from_bytes(bytes.into())
+    })
+    .await
+    .map_err(|error| PacsError::Internal(format!("failed to join import read task: {error}")))?
+}
+
+async fn prepare_local_part_for_storage(
+    parsed: ParsedDicom,
+    storage_transfer_syntax: Option<String>,
+) -> Result<ParsedDicom, PacsError> {
+    let Some(target_ts_uid) = storage_transfer_syntax
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(parsed);
+    };
+
+    if parsed.transfer_syntax_uid == target_ts_uid {
+        return Ok(parsed);
+    }
+
+    tokio::task::spawn_blocking(move || {
+        let transcoded = transcode_part10(parsed.encoded_bytes.clone(), &target_ts_uid)
+            .map_err(|error| PacsError::DicomParse(error.to_string()))?;
+        ParsedDicom::from_bytes(transcoded)
+    })
+    .await
+    .map_err(|error| {
+        PacsError::Internal(format!("failed to join import transcode task: {error}"))
+    })?
+}
+
+async fn persist_local_import_part(
+    store: &Arc<dyn MetadataStore>,
+    blobs: &Arc<dyn BlobStore>,
+    plugins: &Arc<PluginRegistry>,
+    parsed: ParsedDicom,
+    user_id: Option<String>,
+) -> Result<(), PacsError> {
+    blobs
+        .put(&parsed.instance.blob_key, parsed.encoded_bytes.clone())
+        .await?;
+    store.store_study(&parsed.study).await?;
+    store.store_series(&parsed.series).await?;
+    store.store_instance(&parsed.instance).await?;
+    plugins
+        .emit_event(PacsEvent::InstanceStored {
+            study_uid: parsed.instance.study_uid.to_string(),
+            series_uid: parsed.instance.series_uid.to_string(),
+            sop_instance_uid: parsed.instance.instance_uid.to_string(),
+            sop_class_uid: parsed.instance.sop_class_uid.clone().unwrap_or_default(),
+            source: "LOCAL-IMPORT".into(),
+            user_id,
+        })
+        .await;
+    Ok(())
+}
+
+fn import_study_row_view(study: ScannedStudySummary) -> ImportStudyRowView {
+    ImportStudyRowView {
+        study_uid: study.study_uid,
+        patient_name: fallback_string(study.patient_name),
+        study_date: study.study_date.unwrap_or_else(|| "-".into()),
+        modalities: if study.modalities.is_empty() {
+            "-".into()
+        } else {
+            study.modalities.join(", ")
+        },
+        num_series: study.num_series,
+        num_instances: study.num_instances,
+        total_bytes: format_bytes(study.total_bytes as i64),
+    }
+}
+
+fn import_errors(
+    summary: &Option<ImportScanSummary>,
+    progress: &Option<ImportProgress>,
+    result: &Option<ImportResult>,
+) -> Vec<String> {
+    if let Some(progress) = progress {
+        return progress.errors.clone();
+    }
+    if let Some(result) = result {
+        return result.errors.clone();
+    }
+    summary
+        .as_ref()
+        .map(|summary| summary.errors.clone())
+        .unwrap_or_default()
+}
+
+async fn store_import_audit_log(
+    store: &Arc<dyn MetadataStore>,
+    actor: &ImportAuditActor,
+    action: &'static str,
+    status: &'static str,
+    details: Value,
+) {
+    let mut detail_map = serde_json::Map::from_iter([
+        (
+            "actor_username".into(),
+            Value::String(actor.username.clone()),
+        ),
+        ("actor_role".into(), Value::String(actor.role.clone())),
+    ]);
+    match details {
+        Value::Object(extra) => detail_map.extend(extra),
+        other => {
+            detail_map.insert("detail".into(), other);
+        }
+    }
+
+    let entry = NewAuditLogEntry {
+        user_id: Some(actor.user_id.clone()),
+        action: action.into(),
+        resource: "local_import".into(),
+        resource_uid: None,
+        source_ip: actor.source_ip.clone(),
+        status: status.into(),
+        details: Value::Object(detail_map),
+    };
+
+    if let Err(error) = store.store_audit_log(&entry).await {
+        warn!(action, error = %error, "failed to persist local import audit log");
+    }
+}
+
+fn import_phase_label(phase: ImportPhase) -> &'static str {
+    match phase {
+        ImportPhase::Idle => "idle",
+        ImportPhase::Scanning => "scanning",
+        ImportPhase::ScanComplete => "scan_complete",
+        ImportPhase::Importing => "importing",
+        ImportPhase::Complete => "complete",
+        ImportPhase::Failed => "failed",
+    }
+}
+
 async fn render_system_settings_markup(
     state: &AppState,
     runtime: &AdminRuntime,
@@ -2056,6 +2778,10 @@ async fn build_studies_results_view(
     let end_index = offset + studies.len() as u32;
     let has_prev = page > 1;
 
+    let refresh_href = path_with_query(
+        &studies_results_path(route_prefix),
+        &filters.with_page(page).to_query_string(),
+    );
     let page_href = path_with_query(
         &studies_page_path(route_prefix),
         &filters.with_page(page).to_query_string(),
@@ -2096,6 +2822,7 @@ async fn build_studies_results_view(
         } else {
             "No studies are currently indexed in the active metadata store.".into()
         },
+        refresh_href,
         page_href,
         has_prev,
         prev_page_href,
@@ -2114,6 +2841,7 @@ fn render_studies_results_view(view: StudiesResultsView) -> String {
         result_summary: view.result_summary,
         page_summary: view.page_summary,
         empty_summary: view.empty_summary,
+        refresh_href: view.refresh_href,
         page_href: view.page_href,
         has_prev: view.has_prev,
         prev_page_href: view.prev_page_href,
@@ -2991,6 +3719,26 @@ fn studies_page_path(route_prefix: &str) -> String {
 
 fn studies_results_path(route_prefix: &str) -> String {
     format!("{route_prefix}/studies/list")
+}
+
+fn import_status_path(route_prefix: &str) -> String {
+    format!("{route_prefix}/import/status")
+}
+
+fn import_browse_path(route_prefix: &str) -> String {
+    format!("{route_prefix}/import/browse")
+}
+
+fn import_scan_path(route_prefix: &str) -> String {
+    format!("{route_prefix}/import/scan")
+}
+
+fn import_start_path(route_prefix: &str) -> String {
+    format!("{route_prefix}/import/start")
+}
+
+fn import_cancel_path(route_prefix: &str) -> String {
+    format!("{route_prefix}/import/cancel")
 }
 
 fn audit_page_path(route_prefix: &str) -> String {
@@ -4240,6 +4988,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stats_fragment_allows_admin_users() {
+        let resp = test_admin_app(Some(admin_user(UserRole::Admin)), true)
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/stats")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("id=\"stats-shell\""));
+    }
+
+    #[tokio::test]
     async fn events_stream_forbids_non_admin_users() {
         let resp = test_admin_app(Some(admin_user(UserRole::Viewer)), true)
             .oneshot(
@@ -4382,7 +5148,7 @@ mod tests {
     #[test]
     fn server_settings_form_defaults_missing_syntax_lists() {
         let input: ServerSettingsFormInput = serde_json::from_value(serde_json::json!({
-            "dicom_port": "11112",
+            "dicom_port": "4242",
             "ae_title": "PACSNODE",
             "max_associations": "32",
             "dimse_timeout_secs": "45"
@@ -4396,7 +5162,7 @@ mod tests {
     #[test]
     fn server_settings_form_accepts_single_syntax_value() {
         let input: ServerSettingsFormInput = serde_json::from_value(serde_json::json!({
-            "dicom_port": "11112",
+            "dicom_port": "4242",
             "ae_title": "PACSNODE",
             "accepted_transfer_syntaxes": "1.2.840.10008.1.2.1",
             "preferred_transfer_syntaxes": "1.2.840.10008.1.2.4.50",
@@ -4436,7 +5202,7 @@ mod tests {
     #[test]
     fn server_settings_form_forces_required_implicit_transfer_syntax() {
         let settings = ServerSettingsFormInput {
-            dicom_port: "11112".into(),
+            dicom_port: "4242".into(),
             ae_title: "PACSNODE".into(),
             ae_whitelist_enabled: None,
             accepted_transfer_syntaxes: vec!["1.2.840.10008.1.2.1".into()],
@@ -4458,7 +5224,7 @@ mod tests {
     #[test]
     fn server_settings_form_marks_full_selection_as_accept_all() {
         let settings = ServerSettingsFormInput {
-            dicom_port: "11112".into(),
+            dicom_port: "4242".into(),
             ae_title: "PACSNODE".into(),
             ae_whitelist_enabled: None,
             accepted_transfer_syntaxes: all_supported_transfer_syntax_uids(),
@@ -4476,7 +5242,7 @@ mod tests {
     #[test]
     fn server_settings_form_uses_preferred_inputs_only_for_order() {
         let settings = ServerSettingsFormInput {
-            dicom_port: "11112".into(),
+            dicom_port: "4242".into(),
             ae_title: "PACSNODE".into(),
             ae_whitelist_enabled: None,
             accepted_transfer_syntaxes: vec![
@@ -4513,7 +5279,7 @@ mod tests {
     #[test]
     fn server_settings_form_accepts_store_as_received() {
         let settings = ServerSettingsFormInput {
-            dicom_port: "11112".into(),
+            dicom_port: "4242".into(),
             ae_title: "PACSNODE".into(),
             ae_whitelist_enabled: None,
             accepted_transfer_syntaxes: vec!["1.2.840.10008.1.2.1".into()],
@@ -4534,6 +5300,12 @@ mod tests {
     }
 
     #[test]
+    fn import_phase_label_is_stable() {
+        assert_eq!(import_phase_label(ImportPhase::Importing), "importing");
+        assert_eq!(import_phase_label(ImportPhase::ScanComplete), "scan_complete");
+    }
+
+    #[test]
     fn node_form_input_validates_required_fields() {
         let input = NodeFormInput {
             ae_title: " ".into(),
@@ -4551,7 +5323,7 @@ mod tests {
         let input = NodeFormInput {
             ae_title: "REMOTE_AE".into(),
             host: "10.0.0.4".into(),
-            port: "11112".into(),
+            port: "4242".into(),
             description: "Secondary PACS".into(),
             tls_enabled: Some("on".into()),
         };
@@ -4559,7 +5331,7 @@ mod tests {
         let node = input.into_node().unwrap();
         assert_eq!(node.ae_title, "REMOTE_AE");
         assert_eq!(node.host, "10.0.0.4");
-        assert_eq!(node.port, 11112);
+        assert_eq!(node.port, 4242);
         assert_eq!(node.description.as_deref(), Some("Secondary PACS"));
         assert!(node.tls_enabled);
     }

@@ -1554,7 +1554,7 @@ mod tests {
         let node = DicomNode {
             ae_title: "REMOTE".into(),
             host: "pacs.example.test".into(),
-            port: 11112,
+            port: 4242,
             description: Some("Remote PACS".into()),
             tls_enabled: true,
         };
@@ -1578,7 +1578,7 @@ mod tests {
     async fn round_trips_server_settings() {
         let (_tempdir, store) = test_store().await;
         let settings = ServerSettings {
-            dicom_port: 11112,
+            dicom_port: 4242,
             ae_title: "PACSNODE_UI".into(),
             ae_whitelist_enabled: true,
             accept_all_transfer_syntaxes: false,

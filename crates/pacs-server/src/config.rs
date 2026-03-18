@@ -624,7 +624,7 @@ mod tests {
             [[nodes]]
             ae_title = "REMOTEPACS"
             host = "pacs.example.test"
-            port = 11112
+            port = 4242
             tls_enabled = true
         "#;
         let cfg: AppConfig = config::Config::builder()
@@ -643,7 +643,7 @@ mod tests {
 
         assert_eq!(cfg.nodes[1].ae_title, "REMOTEPACS");
         assert_eq!(cfg.nodes[1].host, "pacs.example.test");
-        assert_eq!(cfg.nodes[1].port, 11112);
+        assert_eq!(cfg.nodes[1].port, 4242);
         assert!(cfg.nodes[1].description.is_none());
         assert!(cfg.nodes[1].tls_enabled);
     }

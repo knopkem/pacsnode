@@ -2135,6 +2135,8 @@ dependencies = [
  "axum",
  "bytes",
  "chrono",
+ "dicom-toolkit-data",
+ "dicom-toolkit-dict",
  "futures-core",
  "pacs-core",
  "pacs-dicom",
@@ -2143,10 +2145,12 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-util",
  "tower",
  "tracing",
  "url",
  "uuid",
+ "walkdir",
 ]
 
 [[package]]

@@ -409,7 +409,7 @@ tls_enabled = false
 [[nodes]]
 ae_title = "REMOTEPACS"
 host = "pacs.example.test"
-port = 11112
+port = 4242
 tls_enabled = true
 ```
 

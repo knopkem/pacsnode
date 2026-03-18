@@ -128,7 +128,7 @@ fn make_instance(inst_uid: SopInstanceUid, series: &Series, study: &Study) -> In
 
 fn make_server_settings() -> ServerSettings {
     ServerSettings {
-        dicom_port: 11112,
+        dicom_port: 4242,
         ae_title: "PACSNODE_UI".into(),
         ae_whitelist_enabled: true,
         accept_all_transfer_syntaxes: false,

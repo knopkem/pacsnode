@@ -1,0 +1,191 @@
+<section
+  id="import-panel"
+  class="panel stack-gap"
+  data-import-refresh-studies="{% if is_complete %}true{% else %}false{% endif %}"
+  {% if poll %}hx-get="{{ status_path }}" hx-trigger="every 2s" hx-target="#import-panel" hx-swap="outerHTML"{% endif %}
+>
+  {% match flash %}
+  {% when Some with (item) %}
+  <article class="flash-banner {{ item.tone_class }}">
+    <strong>{{ item.title }}</strong>
+    <p>{{ item.detail }}</p>
+  </article>
+  {% when None %}{% endmatch %}
+
+  <header class="panel-header panel-header-wrap">
+    <div>
+      <p class="eyebrow">Filesystem ingest</p>
+      <h3>Scan server-side folders and import DICOM studies</h3>
+    </div>
+    {% if is_importing %}
+    <span class="status-pill status-degraded">Import running</span>
+    {% else if is_scanning %}
+    <span class="status-pill tone-muted">Scanning</span>
+    {% else if is_scan_complete %}
+    <span class="status-pill status-healthy">Ready to import</span>
+    {% else if is_complete %}
+    <span class="status-pill status-healthy">Finished</span>
+    {% else if is_failed %}
+    <span class="status-pill status-unhealthy">Needs attention</span>
+    {% else %}
+    <span class="status-pill tone-muted">Idle</span>
+    {% endif %}
+  </header>
+
+  <p class="panel-copy">
+    Browse directories on the pacsnode host, run a recursive scan, then confirm the import after reviewing the study summary.
+  </p>
+
+  <form
+    class="filter-form stack-gap"
+    action="{{ scan_path }}"
+    method="post"
+    hx-post="{{ scan_path }}"
+    hx-target="#import-panel"
+    hx-swap="outerHTML"
+  >
+    <div class="filter-grid import-grid">
+      <label class="field field-wide">
+        <span>Folder path</span>
+        <input type="text" name="path" value="{{ path_input }}" placeholder="/data/incoming/dicom" data-import-path-input />
+        <small>Paths are resolved on the server where pacsnode is running, not on the browser workstation.</small>
+      </label>
+    </div>
+    <div class="toolbar import-toolbar" data-import-browser data-browse-url="{{ browse_path }}">
+      <button type="submit" class="button">Scan folder</button>
+      <button type="button" class="button button-secondary" data-import-browse-open>Browse server</button>
+      <button type="button" class="button button-secondary" data-import-browse-up hidden>Up one level</button>
+    </div>
+    <div class="import-browser-shell" data-import-browser-shell hidden>
+      <div class="import-browser-meta">
+        <strong data-import-browser-current>Choose a folder</strong>
+        <span data-import-browser-status>Browse server directories without leaving the page.</span>
+      </div>
+      <div class="import-browser-list" data-import-browser-list></div>
+    </div>
+  </form>
+
+  {% if is_scanning %}
+  <div class="import-progress-card">
+    <div class="loading-indicator">
+      <span class="loading-indicator-dot"></span>
+      <strong>Scanning recursively</strong>
+    </div>
+    <p>Looking for DICOM Part 10 files under <span class="mono">{{ path_input }}</span>.</p>
+    {% if cancellation_requested %}
+    <p class="policy-note">Cancellation requested. The scan will stop after the current file.</p>
+    {% endif %}
+    <form action="{{ cancel_path }}" method="post" hx-post="{{ cancel_path }}" hx-target="#import-panel" hx-swap="outerHTML">
+      <button type="submit" class="button button-secondary">Cancel scan</button>
+    </form>
+  </div>
+  {% endif %}
+
+  {% if has_summary %}
+  <div class="import-summary-card stack-gap">
+    <div class="results-meta import-summary-meta">
+      <span>{{ total_studies }} study/studies</span>
+      <span>{{ total_instances }} instance(s)</span>
+      <span>{{ total_bytes }}</span>
+      <span>{{ skipped_non_dicom }} non-DICOM skipped</span>
+      <span>{{ unreadable_dicom }} unreadable</span>
+    </div>
+
+    <div class="table-shell">
+      <table class="data-table data-table-compact">
+        <thead>
+          <tr>
+            <th class="col-study-uid">Study UID</th>
+            <th>Patient</th>
+            <th>Study Date</th>
+            <th>Modalities</th>
+            <th>Series</th>
+            <th>Instances</th>
+            <th>Size</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in studies %}
+          <tr>
+            <td class="mono col-study-uid"><span class="truncate-text" data-full="{{ row.study_uid }}" title="{{ row.study_uid }}">{{ row.study_uid }}</span></td>
+            <td><span class="truncate-text" data-full="{{ row.patient_name }}" title="{{ row.patient_name }}">{{ row.patient_name }}</span></td>
+            <td>{{ row.study_date }}</td>
+            <td><span class="truncate-text" data-full="{{ row.modalities }}" title="{{ row.modalities }}">{{ row.modalities }}</span></td>
+            <td class="numeric">{{ row.num_series }}</td>
+            <td class="numeric">{{ row.num_instances }}</td>
+            <td>{{ row.total_bytes }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if is_scan_complete %}
+    <div class="toolbar">
+      <form action="{{ start_path }}" method="post" hx-post="{{ start_path }}" hx-target="#import-panel" hx-swap="outerHTML">
+        <button type="submit" class="button">Import all</button>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if is_importing %}
+  <div class="import-progress-card stack-gap">
+    <div class="loading-indicator">
+      <span class="loading-indicator-dot"></span>
+      <strong>Importing in the background</strong>
+    </div>
+    <div class="results-meta import-summary-meta">
+      <span>{{ progress_completed }} / {{ progress_total }} processed</span>
+      <span>{{ progress_imported }} imported</span>
+      <span>{{ progress_skipped }} skipped</span>
+      <span>{{ progress_failed }} failed</span>
+    </div>
+    {% if current_study_uid != "" %}
+    <p>Current study: <span class="mono">{{ current_study_uid }}</span></p>
+    {% endif %}
+    {% if current_path != "" %}
+    <p>Current file: <span class="mono">{{ current_path }}</span></p>
+    {% endif %}
+    {% if cancellation_requested %}
+    <p class="policy-note">Cancellation requested. The import will stop after the current file.</p>
+    {% endif %}
+    <form action="{{ cancel_path }}" method="post" hx-post="{{ cancel_path }}" hx-target="#import-panel" hx-swap="outerHTML">
+      <button type="submit" class="button button-secondary">Cancel import</button>
+    </form>
+  </div>
+  {% endif %}
+
+  {% if is_complete %}
+  <div class="import-progress-card stack-gap">
+    <div class="results-meta import-summary-meta">
+      <span>{{ result_imported }} imported</span>
+      <span>{{ result_skipped }} skipped</span>
+      <span>{{ result_failed }} failed</span>
+      {% if result_cancelled %}
+      <span class="status-pill status-degraded">Cancelled</span>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if is_failed %}
+  <div class="empty-state import-error-state">
+    <p class="eyebrow">Import job failed</p>
+    <h3>The last scan or import did not complete.</h3>
+    <p>{{ failure_message }}</p>
+  </div>
+  {% endif %}
+
+  {% if has_errors %}
+  <div class="import-errors stack-gap">
+    <p class="eyebrow">Recent file errors</p>
+    <ul>
+      {% for error in errors %}
+      <li>{{ error }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</section>

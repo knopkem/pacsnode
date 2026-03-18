@@ -12,6 +12,8 @@ use pacs_plugin::{PluginError, QuerySource, ResourceLevel, ServerInfo};
 use serde::Deserialize;
 use tokio::sync::{broadcast, RwLock};
 
+use crate::import::ImportRuntime;
+
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 const DEFAULT_ACTIVITY_LIMIT: usize = 24;
 
@@ -39,6 +41,7 @@ pub(crate) struct AdminRuntime {
     redirect_root: bool,
     activity_limit: usize,
     event_tx: broadcast::Sender<pacs_plugin::PacsEvent>,
+    import_runtime: ImportRuntime,
     metadata_store: Arc<dyn MetadataStore>,
     active_associations: AtomicU64,
     recent_activity: RwLock<VecDeque<ActivityEntry>>,
@@ -64,6 +67,7 @@ impl AdminRuntime {
             redirect_root: config.redirect_root,
             activity_limit,
             event_tx,
+            import_runtime: ImportRuntime::new(),
             metadata_store,
             active_associations: AtomicU64::new(0),
             recent_activity: RwLock::new(VecDeque::with_capacity(activity_limit)),
@@ -81,6 +85,11 @@ impl AdminRuntime {
     pub(crate) fn metadata_store(&self) -> Arc<dyn MetadataStore> {
         Arc::clone(&self.metadata_store)
     }
+
+    pub(crate) fn import_runtime(&self) -> &ImportRuntime {
+        &self.import_runtime
+    }
+
     pub(crate) fn active_associations(&self) -> u64 {
         self.active_associations.load(Ordering::Relaxed)
     }

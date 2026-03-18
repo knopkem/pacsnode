@@ -11,6 +11,21 @@ use crate::tags::{
     optional_string, parse_dicom_date, required_string, BODY_PART_EXAMINED, MODALITIES_IN_STUDY,
 };
 
+/// Returns `true` when the byte slice contains the standard DICOM `DICM` preamble marker.
+pub fn has_dicom_preamble(data: &[u8]) -> bool {
+    data.len() >= 132 && &data[128..132] == b"DICM"
+}
+
+/// Returns `true` when the byte slice starts with File Meta Information group `0002`.
+pub fn starts_with_dicom_file_meta(data: &[u8]) -> bool {
+    data.len() >= 4 && data[0] == 0x02 && data[1] == 0x00
+}
+
+/// Returns `true` when the slice looks like a DICOM Part 10 file.
+pub fn looks_like_dicom_part10(data: &[u8]) -> bool {
+    has_dicom_preamble(data) || starts_with_dicom_file_meta(data)
+}
+
 /// The result of parsing a single DICOM Part 10 file from raw bytes.
 ///
 /// Each field corresponds to a domain object or ancillary datum extracted
@@ -267,6 +282,15 @@ mod tests {
     fn test_from_bytes_invalid_data_returns_error() {
         let bad = Bytes::from_static(b"this is not a DICOM file at all");
         assert!(ParsedDicom::from_bytes(bad).is_err());
+    }
+
+    #[test]
+    fn test_part10_detection_helpers() {
+        let bytes = make_test_dicom();
+        assert!(has_dicom_preamble(bytes.as_ref()));
+        assert!(looks_like_dicom_part10(bytes.as_ref()));
+        assert!(starts_with_dicom_file_meta(&[0x02, 0x00, 0x10, 0x00]));
+        assert!(!looks_like_dicom_part10(b"not dicom"));
     }
 
     #[test]

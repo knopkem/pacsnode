@@ -30,7 +30,9 @@ pub mod wado;
 pub use dicom_toolkit_image::{RenderedFrameOptions, RenderedRegion};
 pub use error::BulkDataValue;
 pub use error::DicomError;
-pub use parser::ParsedDicom;
+pub use parser::{
+    has_dicom_preamble, looks_like_dicom_part10, starts_with_dicom_file_meta, ParsedDicom,
+};
 pub use stow::parse_stow_multipart;
 pub use wado::{
     extract_bulk_data, extract_bulk_data_path, extract_frames, metadata_with_bulk_data_uris,

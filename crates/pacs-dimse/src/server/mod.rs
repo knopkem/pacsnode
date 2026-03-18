@@ -15,7 +15,7 @@ use dicom_toolkit_net::{
     PresentationContextRq, StaticDestinationLookup, StoreRequest as NetStoreRequest,
 };
 use pacs_core::{BlobStore, MetadataStore, PacsError};
-use pacs_dicom::prepare_dimse_dataset;
+use pacs_dicom::{has_dicom_preamble, prepare_dimse_dataset, starts_with_dicom_file_meta};
 use pacs_plugin::{
     FindScpHandler, GetScpHandler, MoveScpHandler, PacsEvent, PluginError, PluginRegistry,
     StoreRequest, StoreScpHandler,
@@ -576,14 +576,6 @@ fn store_dataset_has_required_uids(dataset: &DataSet) -> bool {
         && !trim_uid(dataset.get_string(tags::SERIES_INSTANCE_UID)).is_empty()
 }
 
-fn payload_starts_with_file_meta(data: &[u8]) -> bool {
-    data.len() >= 4 && data[0] == 0x02 && data[1] == 0x00
-}
-
-fn payload_has_dicm_prefix(data: &[u8]) -> bool {
-    data.len() >= 132 && &data[128..132] == b"DICM"
-}
-
 fn payload_prefix_hex(data: &[u8], max_len: usize) -> String {
     data.iter()
         .take(max_len)
@@ -637,8 +629,8 @@ fn decode_store_dataset(data: &[u8], negotiated_ts: &str, sop_instance_uid: &str
             element_count = dataset.len(),
             first_tags = %dataset_first_tags(&dataset, 8),
             prefix_hex = %payload_prefix_hex(data, 32),
-            has_dicm_prefix = payload_has_dicm_prefix(data),
-            starts_with_file_meta = payload_starts_with_file_meta(data),
+            has_dicm_prefix = has_dicom_preamble(data),
+            starts_with_file_meta = starts_with_dicom_file_meta(data),
             "Decoded C-STORE raw dataset but required UIDs missing; trying fallbacks"
         );
     }
@@ -679,8 +671,8 @@ fn decode_store_dataset(data: &[u8], negotiated_ts: &str, sop_instance_uid: &str
         negotiated_transfer_syntax = %negotiated_ts,
         payload_len = data.len(),
         prefix_hex = %payload_prefix_hex(data, 32),
-        has_dicm_prefix = payload_has_dicm_prefix(data),
-        starts_with_file_meta = payload_starts_with_file_meta(data),
+        has_dicm_prefix = has_dicom_preamble(data),
+        starts_with_file_meta = starts_with_dicom_file_meta(data),
         "All C-STORE decode fallbacks exhausted"
     );
 
@@ -1656,8 +1648,8 @@ mod tests {
 
     #[test]
     fn dicom_node_addr_hostname() {
-        let node = DicomNode::new("DEST", "pacs.example.com", 11112);
-        assert_eq!(node.addr(), "pacs.example.com:11112");
+        let node = DicomNode::new("DEST", "pacs.example.com", 4242);
+        assert_eq!(node.addr(), "pacs.example.com:4242");
     }
 
     fn store_context() -> PresentationContextRqItem {

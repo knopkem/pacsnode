@@ -37,7 +37,7 @@ mod tests {
 
     #[test]
     fn test_dicom_node_tls_defaults_false() {
-        let json = r#"{"ae_title":"SCU","host":"1.2.3.4","port":11112}"#;
+        let json = r#"{"ae_title":"SCU","host":"1.2.3.4","port":4242}"#;
         let node: DicomNode = serde_json::from_str(json).unwrap();
         assert!(!node.tls_enabled);
     }

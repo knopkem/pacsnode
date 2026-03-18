@@ -25,7 +25,7 @@ pub struct DicomNode {
     pub ae_title: String,
     /// Hostname or IP address of the remote AE.
     pub host: String,
-    /// TCP port the remote AE listens on (standard DICOM ports are 104 or 11112).
+    /// TCP port the remote AE listens on (standard DICOM ports are 104 or 4242).
     pub port: u16,
     /// Optional human-readable label for this node.
     pub description: Option<String>,
@@ -54,7 +54,7 @@ mod tests {
 
     #[test]
     fn tls_enabled_defaults_to_false_when_absent() {
-        let json = r#"{"ae_title":"SCU","host":"1.2.3.4","port":11112}"#;
+        let json = r#"{"ae_title":"SCU","host":"1.2.3.4","port":4242}"#;
         let node: DicomNode = serde_json::from_str(json).unwrap();
         assert!(!node.tls_enabled);
         assert!(node.description.is_none());

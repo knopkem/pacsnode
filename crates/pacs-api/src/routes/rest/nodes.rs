@@ -151,7 +151,7 @@ mod tests {
 
         let app = build_router(make_test_state(store, MockBlobStr::new()));
         let node_json =
-            r#"{"ae_title":"REMOTE","host":"192.168.1.2","port":11112,"description":null}"#;
+            r#"{"ae_title":"REMOTE","host":"192.168.1.2","port":4242,"description":null}"#;
 
         // Add node
         app.clone()

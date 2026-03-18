@@ -27,7 +27,7 @@
 </section>
 
 <div hx-ext="sse" sse-connect="{{ route_prefix }}/events">
-  <div id="stats-shell" sse-swap="stats" hx-swap="outerHTML">
+  <div id="stats-shell" data-stats-refresh-href="{{ route_prefix }}/stats" sse-swap="stats" hx-swap="outerHTML">
     {{ stats_markup|safe }}
   </div>
 

@@ -56,9 +56,11 @@ impl From<StudyRow> for Study {
 // ---------------------------------------------------------------------------
 
 const SELECT_COLS: &str = r#"
-    SELECT study_uid, patient_id, patient_name, study_date, study_time,
+    SELECT studies.study_uid, patient_id, patient_name, study_date, study_time,
            accession_number, modalities, referring_physician, description,
-           num_series, num_instances, metadata, created_at, updated_at
+           COALESCE((SELECT COUNT(*)::int FROM series WHERE series.study_uid = studies.study_uid), 0) AS num_series,
+           COALESCE((SELECT COUNT(*)::int FROM instances WHERE instances.study_uid = studies.study_uid), 0) AS num_instances,
+           metadata, created_at, updated_at
     FROM   studies
 "#;
 
@@ -86,8 +88,6 @@ pub(crate) async fn upsert(pool: &PgPool, study: &Study) -> PacsResult<()> {
             modalities          = EXCLUDED.modalities,
             referring_physician = EXCLUDED.referring_physician,
             description         = EXCLUDED.description,
-            num_series          = EXCLUDED.num_series,
-            num_instances       = EXCLUDED.num_instances,
             metadata            = EXCLUDED.metadata,
             updated_at          = NOW()
         "#,

@@ -7,7 +7,7 @@ use axum::{
 };
 use bytes::Bytes;
 use pacs_core::{
-    Instance, InstanceQuery, PacsError, SeriesQuery, SeriesUid, SopInstanceUid, StudyUid,
+    DicomJson, Instance, InstanceQuery, PacsError, SeriesQuery, SeriesUid, SopInstanceUid, StudyUid,
 };
 use pacs_dicom::{
     extract_bulk_data_path, extract_frames, metadata_with_bulk_data_uris,
@@ -300,23 +300,72 @@ pub async fn study_metadata(
     State(state): State<AppState>,
     Path(study_uid): Path<String>,
 ) -> Result<Response, ApiError> {
-    let study = state
+    let study_uid = StudyUid::from(study_uid.as_str());
+    state.store.get_study(&study_uid).await?;
+
+    let series = state
         .store
-        .get_study(&StudyUid::from(study_uid.as_str()))
+        .query_series(&SeriesQuery {
+            study_uid: study_uid.clone(),
+            series_uid: None,
+            modality: None,
+            series_number: None,
+            limit: None,
+            offset: None,
+        })
         .await?;
-    dicom_json_response(&[study.metadata.as_value()])
+
+    let mut metadata = Vec::new();
+    for series in series {
+        let instances = state
+            .store
+            .query_instances(&InstanceQuery {
+                series_uid: series.series_uid,
+                instance_uid: None,
+                sop_class_uid: None,
+                instance_number: None,
+                limit: None,
+                offset: None,
+            })
+            .await?;
+        for instance in instances {
+            metadata.push(instance_metadata_with_bulk_data_uris(&state, &instance).await?);
+        }
+    }
+
+    dicom_json_response_from_owned(&metadata)
 }
 
 /// `GET /wado/studies/:study_uid/series/:series_uid/metadata` — series-level DICOM JSON metadata.
 pub async fn series_metadata(
     State(state): State<AppState>,
-    Path((_study_uid, series_uid)): Path<(String, String)>,
+    Path((study_uid, series_uid)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
-    let series = state
+    let study_uid = StudyUid::from(study_uid.as_str());
+    let series_uid = SeriesUid::from(series_uid.as_str());
+    let series = state.store.get_series(&series_uid).await?;
+    if series.study_uid != study_uid {
+        return Err(not_found("series", series_uid.to_string()));
+    }
+
+    let instances = state
         .store
-        .get_series(&SeriesUid::from(series_uid.as_str()))
+        .query_instances(&InstanceQuery {
+            series_uid,
+            instance_uid: None,
+            sop_class_uid: None,
+            instance_number: None,
+            limit: None,
+            offset: None,
+        })
         .await?;
-    dicom_json_response(&[series.metadata.as_value()])
+
+    let mut metadata = Vec::with_capacity(instances.len());
+    for instance in instances {
+        metadata.push(instance_metadata_with_bulk_data_uris(&state, &instance).await?);
+    }
+
+    dicom_json_response_from_owned(&metadata)
 }
 
 /// `GET /wado/studies/:study_uid/series/:series_uid/instances/:instance_uid/metadata`
@@ -330,12 +379,7 @@ pub async fn instance_metadata(
     if instance.study_uid.as_ref() != study_uid || instance.series_uid.as_ref() != series_uid {
         return Err(not_found("instance", instance_uid));
     }
-    let blob = state.blobs.get(&instance.blob_key).await?;
-    let metadata = metadata_with_bulk_data_uris(&instance.metadata, blob, |path| {
-        format!("/wado/studies/{study_uid}/series/{series_uid}/instances/{instance_uid}/bulkdata/{path}")
-    })
-    .map_err(PacsError::from)
-    .map_err(ApiError)?;
+    let metadata = instance_metadata_with_bulk_data_uris(&state, &instance).await?;
     dicom_json_response(&[metadata.as_value()])
 }
 
@@ -471,6 +515,21 @@ fn parse_frame_list(frame_list: &str) -> Result<Vec<u32>, ApiError> {
             })
         })
         .collect()
+}
+
+async fn instance_metadata_with_bulk_data_uris(
+    state: &AppState,
+    instance: &Instance,
+) -> Result<DicomJson, ApiError> {
+    let study_uid = instance.study_uid.as_ref();
+    let series_uid = instance.series_uid.as_ref();
+    let instance_uid = instance.instance_uid.as_ref();
+    let blob = state.blobs.get(&instance.blob_key).await?;
+    metadata_with_bulk_data_uris(&instance.metadata, blob, |path| {
+        format!("/wado/studies/{study_uid}/series/{series_uid}/instances/{instance_uid}/bulkdata/{path}")
+    })
+    .map_err(PacsError::from)
+    .map_err(ApiError)
 }
 
 fn not_found(resource: &'static str, uid: impl Into<String>) -> ApiError {
@@ -977,6 +1036,11 @@ fn dicom_json_response(values: &[&serde_json::Value]) -> Result<Response, ApiErr
         .map_err(|e| ApiError(PacsError::Internal(e.to_string())))
 }
 
+fn dicom_json_response_from_owned(values: &[DicomJson]) -> Result<Response, ApiError> {
+    let refs: Vec<&serde_json::Value> = values.iter().map(DicomJson::as_value).collect();
+    dicom_json_response(&refs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -990,7 +1054,7 @@ mod tests {
     };
     use dicom_toolkit_dict::{tags, ts::transfer_syntaxes, Tag, Vr};
     use http_body_util::BodyExt;
-    use pacs_core::{DicomJson, Instance, SeriesUid, SopInstanceUid, StudyUid};
+    use pacs_core::{DicomJson, Instance, Series, SeriesUid, SopInstanceUid, Study, StudyUid};
     use pacs_dicom::ParsedDicom;
     use serde_json::json;
     use tower::ServiceExt;
@@ -1048,10 +1112,18 @@ mod tests {
     }
 
     fn make_nested_bulkdata_dicom() -> Bytes {
+        make_nested_bulkdata_dicom_with_uids("1.2.3", "1.2.3.4", "1.2.3.4.5")
+    }
+
+    fn make_nested_bulkdata_dicom_with_uids(
+        study_uid: &str,
+        series_uid: &str,
+        instance_uid: &str,
+    ) -> Bytes {
         let mut ds = DataSet::new();
-        ds.set_string(tags::STUDY_INSTANCE_UID, Vr::UI, "1.2.3");
-        ds.set_string(tags::SERIES_INSTANCE_UID, Vr::UI, "1.2.3.4");
-        ds.set_string(tags::SOP_INSTANCE_UID, Vr::UI, "1.2.3.4.5");
+        ds.set_string(tags::STUDY_INSTANCE_UID, Vr::UI, study_uid);
+        ds.set_string(tags::SERIES_INSTANCE_UID, Vr::UI, series_uid);
+        ds.set_string(tags::SOP_INSTANCE_UID, Vr::UI, instance_uid);
         ds.set_string(tags::SOP_CLASS_UID, Vr::UI, "1.2.840.10008.5.1.4.1.1.2");
         ds.insert(Element::bytes(
             Tag::new(0x0011, 0x1010),
@@ -1133,6 +1205,130 @@ mod tests {
             json!("/wado/studies/1.2.3/series/1.2.3.4/instances/1.2.3.4.5/bulkdata/00082112/0/00111011")
         );
         assert!(json[0]["00111010"].get("InlineBinary").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_study_metadata_returns_all_instance_metadata() {
+        let dicom1 = make_nested_bulkdata_dicom_with_uids("1.2.3", "1.2.3.4", "1.2.3.4.5");
+        let dicom2 = make_nested_bulkdata_dicom_with_uids("1.2.3", "1.2.3.4", "1.2.3.4.6");
+        let instance1 = make_instance_from_dicom(&dicom1);
+        let instance2 = make_instance_from_dicom(&dicom2);
+
+        let mut store = MockMetaStore::new();
+        store.expect_get_study().once().returning(|_| {
+            Ok(Study {
+                study_uid: StudyUid::from("1.2.3"),
+                patient_id: None,
+                patient_name: None,
+                study_date: None,
+                study_time: None,
+                accession_number: None,
+                modalities: vec!["CT".into()],
+                referring_physician: None,
+                description: None,
+                num_series: 1,
+                num_instances: 2,
+                metadata: DicomJson::empty(),
+                created_at: None,
+                updated_at: None,
+            })
+        });
+        store.expect_query_series().once().returning(|_| {
+            Ok(vec![Series {
+                series_uid: SeriesUid::from("1.2.3.4"),
+                study_uid: StudyUid::from("1.2.3"),
+                modality: Some("CT".into()),
+                series_number: Some(1),
+                description: None,
+                body_part: None,
+                num_instances: 2,
+                metadata: DicomJson::empty(),
+                created_at: None,
+            }])
+        });
+        store
+            .expect_query_instances()
+            .once()
+            .returning(move |_| Ok(vec![instance1.clone(), instance2.clone()]));
+
+        let mut blobs = MockBlobStr::new();
+        blobs.expect_get().times(2).returning(move |key| match key {
+            "1.2.3/1.2.3.4/1.2.3.4.5" => Ok(dicom1.clone()),
+            "1.2.3/1.2.3.4/1.2.3.4.6" => Ok(dicom2.clone()),
+            other => panic!("unexpected blob key: {other}"),
+        });
+
+        let app = build_router(make_test_state(store, blobs));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies/1.2.3/metadata")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let entries = json.as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["00080018"]["Value"][0], json!("1.2.3.4.5"));
+        assert_eq!(entries[1]["00080018"]["Value"][0], json!("1.2.3.4.6"));
+    }
+
+    #[tokio::test]
+    async fn test_series_metadata_returns_all_instance_metadata() {
+        let dicom1 = make_nested_bulkdata_dicom_with_uids("1.2.3", "1.2.3.4", "1.2.3.4.5");
+        let dicom2 = make_nested_bulkdata_dicom_with_uids("1.2.3", "1.2.3.4", "1.2.3.4.6");
+        let instance1 = make_instance_from_dicom(&dicom1);
+        let instance2 = make_instance_from_dicom(&dicom2);
+
+        let mut store = MockMetaStore::new();
+        store.expect_get_series().once().returning(|_| {
+            Ok(Series {
+                series_uid: SeriesUid::from("1.2.3.4"),
+                study_uid: StudyUid::from("1.2.3"),
+                modality: Some("CT".into()),
+                series_number: Some(1),
+                description: None,
+                body_part: None,
+                num_instances: 2,
+                metadata: DicomJson::empty(),
+                created_at: None,
+            })
+        });
+        store
+            .expect_query_instances()
+            .once()
+            .returning(move |_| Ok(vec![instance1.clone(), instance2.clone()]));
+
+        let mut blobs = MockBlobStr::new();
+        blobs.expect_get().times(2).returning(move |key| match key {
+            "1.2.3/1.2.3.4/1.2.3.4.5" => Ok(dicom1.clone()),
+            "1.2.3/1.2.3.4/1.2.3.4.6" => Ok(dicom2.clone()),
+            other => panic!("unexpected blob key: {other}"),
+        });
+
+        let app = build_router(make_test_state(store, blobs));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies/1.2.3/series/1.2.3.4/metadata")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let entries = json.as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["00080018"]["Value"][0], json!("1.2.3.4.5"));
+        assert_eq!(entries[1]["00080018"]["Value"][0], json!("1.2.3.4.6"));
     }
 
     #[tokio::test]

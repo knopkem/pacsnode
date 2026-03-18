@@ -45,8 +45,10 @@ impl From<SeriesRow> for Series {
 // ---------------------------------------------------------------------------
 
 const SELECT_COLS: &str = r#"
-    SELECT series_uid, study_uid, modality, series_number, description,
-           body_part, num_instances, metadata, created_at
+    SELECT series.series_uid, study_uid, modality, series_number, description,
+           body_part,
+           COALESCE((SELECT COUNT(*)::int FROM instances WHERE instances.series_uid = series.series_uid), 0) AS num_instances,
+           metadata, created_at
     FROM   series
 "#;
 
@@ -70,7 +72,6 @@ pub(crate) async fn upsert(pool: &PgPool, series: &Series) -> PacsResult<()> {
             series_number = EXCLUDED.series_number,
             description   = EXCLUDED.description,
             body_part     = EXCLUDED.body_part,
-            num_instances = EXCLUDED.num_instances,
             metadata      = EXCLUDED.metadata
         "#,
     )

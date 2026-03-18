@@ -157,8 +157,8 @@ impl StoreServiceProvider for PacsStoreProvider {
             modalities,
             referring_physician,
             description: study_description,
-            num_series: 1,
-            num_instances: 1,
+            num_series: 0,
+            num_instances: 0,
             metadata: metadata.clone(),
             created_at: None,
             updated_at: None,
@@ -176,7 +176,7 @@ impl StoreServiceProvider for PacsStoreProvider {
             series_number,
             description: series_description,
             body_part,
-            num_instances: 1,
+            num_instances: 0,
             metadata: metadata.clone(),
             created_at: None,
         };
@@ -975,6 +975,33 @@ mod tests {
         mock_store
             .expect_store_series()
             .once()
+            .returning(|_| Ok(()));
+        mock_store
+            .expect_store_instance()
+            .once()
+            .returning(|_| Ok(()));
+
+        let mut mock_blobs = MockTestBlobs::new();
+        mock_blobs.expect_put().once().returning(|_, _| Ok(()));
+
+        let provider = PacsStoreProvider::new(Arc::new(mock_store), Arc::new(mock_blobs));
+
+        let result = provider.on_store(minimal_store_event()).await;
+        assert_eq!(result.status, 0x0000, "Expected success status");
+    }
+
+    #[tokio::test]
+    async fn on_store_seeds_zero_counts_for_db_managed_aggregates() {
+        let mut mock_store = MockTestStore::new();
+        mock_store
+            .expect_store_study()
+            .once()
+            .withf(|study| study.num_series == 0 && study.num_instances == 0)
+            .returning(|_| Ok(()));
+        mock_store
+            .expect_store_series()
+            .once()
+            .withf(|series| series.num_instances == 0)
             .returning(|_| Ok(()));
         mock_store
             .expect_store_instance()

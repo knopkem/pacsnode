@@ -203,15 +203,19 @@ struct StatsRow {
 }
 
 const STUDY_SELECT: &str = r#"
-    SELECT study_uid, patient_id, patient_name, study_date, study_time,
+    SELECT studies.study_uid, patient_id, patient_name, study_date, study_time,
            accession_number, modalities, referring_physician, description,
-           num_series, num_instances, metadata, created_at, updated_at
+           COALESCE((SELECT COUNT(*) FROM series WHERE series.study_uid = studies.study_uid), 0) AS num_series,
+           COALESCE((SELECT COUNT(*) FROM instances WHERE instances.study_uid = studies.study_uid), 0) AS num_instances,
+           metadata, created_at, updated_at
     FROM studies
 "#;
 
 const SERIES_SELECT: &str = r#"
-    SELECT series_uid, study_uid, modality, series_number, description,
-           body_part, num_instances, metadata, created_at
+    SELECT series.series_uid, study_uid, modality, series_number, description,
+           body_part,
+           COALESCE((SELECT COUNT(*) FROM instances WHERE instances.series_uid = series.series_uid), 0) AS num_instances,
+           metadata, created_at
     FROM series
 "#;
 
@@ -263,8 +267,6 @@ impl MetadataStore for SqliteMetadataStore {
                 modalities = excluded.modalities,
                 referring_physician = excluded.referring_physician,
                 description = excluded.description,
-                num_series = excluded.num_series,
-                num_instances = excluded.num_instances,
                 metadata = excluded.metadata,
                 updated_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')
             "#,
@@ -304,7 +306,6 @@ impl MetadataStore for SqliteMetadataStore {
                 series_number = excluded.series_number,
                 description = excluded.description,
                 body_part = excluded.body_part,
-                num_instances = excluded.num_instances,
                 metadata = excluded.metadata
             "#,
         )
@@ -950,6 +951,42 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn preserves_trigger_managed_counts_across_study_and_series_updates() {
+        let (_tempdir, store) = test_store().await;
+        let mut study = sample_study();
+        let mut series = sample_series(&study.study_uid);
+        let instance = sample_instance(&study.study_uid, &series.series_uid);
+
+        store.store_study(&study).await.expect("store study");
+        store.store_series(&series).await.expect("store series");
+        store
+            .store_instance(&instance)
+            .await
+            .expect("store instance");
+
+        study.description = Some("Updated study".into());
+        series.description = Some("Updated series".into());
+        store.store_study(&study).await.expect("update study");
+        store.store_series(&series).await.expect("update series");
+
+        let study_counts: (i32, i32) =
+            sqlx::query_as("SELECT num_series, num_instances FROM studies WHERE study_uid = ?")
+                .bind(study.study_uid.as_ref())
+                .fetch_one(store.pool())
+                .await
+                .expect("fetch study counts");
+        assert_eq!(study_counts, (1, 1));
+
+        let series_count: (i32,) =
+            sqlx::query_as("SELECT num_instances FROM series WHERE series_uid = ?")
+                .bind(series.series_uid.as_ref())
+                .fetch_one(store.pool())
+                .await
+                .expect("fetch series count");
+        assert_eq!(series_count.0, 1);
     }
 
     #[tokio::test]

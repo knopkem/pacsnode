@@ -6,9 +6,12 @@ use axum::{
     Json,
 };
 use chrono::NaiveDate;
-use pacs_core::{InstanceQuery, SeriesQuery, SeriesUid, SopInstanceUid, StudyQuery, StudyUid};
+use pacs_core::{
+    InstanceQuery, Series, SeriesQuery, SeriesUid, SopInstanceUid, Study, StudyQuery, StudyUid,
+};
 use pacs_plugin::{AuthenticatedUser, PacsEvent, QuerySource};
 use serde::Deserialize;
+use serde_json::{json, Map, Value};
 
 use crate::{error::ApiError, state::AppState};
 
@@ -100,10 +103,7 @@ pub async fn search_studies(
         include_fields: vec![],
     };
     let studies = state.store.query_studies(&query).await?;
-    let metadata: Vec<serde_json::Value> = studies
-        .iter()
-        .map(|s| s.metadata.as_value().clone())
-        .collect();
+    let metadata: Vec<serde_json::Value> = studies.iter().map(study_qido_metadata).collect();
     state
         .plugins
         .emit_event(PacsEvent::QueryPerformed {
@@ -132,10 +132,7 @@ pub async fn search_series(
         offset: params.offset,
     };
     let series = state.store.query_series(&query).await?;
-    let metadata: Vec<serde_json::Value> = series
-        .iter()
-        .map(|s| s.metadata.as_value().clone())
-        .collect();
+    let metadata: Vec<serde_json::Value> = series.iter().map(series_qido_metadata).collect();
     state
         .plugins
         .emit_event(PacsEvent::QueryPerformed {
@@ -182,6 +179,124 @@ pub async fn search_instances(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+fn study_qido_metadata(study: &Study) -> Value {
+    let mut object = Map::new();
+    object.insert(
+        "0020000D".into(),
+        string_attribute("UI", study.study_uid.to_string()),
+    );
+    insert_optional_string_attribute(&mut object, "00100020", "LO", study.patient_id.as_deref());
+    insert_optional_person_name_attribute(&mut object, "00100010", study.patient_name.as_deref());
+    insert_optional_string_attribute(
+        &mut object,
+        "00080020",
+        "DA",
+        study
+            .study_date
+            .as_ref()
+            .map(|date| date.format("%Y%m%d").to_string())
+            .as_deref(),
+    );
+    insert_optional_string_attribute(&mut object, "00080030", "TM", study.study_time.as_deref());
+    insert_optional_string_attribute(
+        &mut object,
+        "00080050",
+        "SH",
+        study.accession_number.as_deref(),
+    );
+    insert_optional_string_list_attribute(&mut object, "00080061", "CS", &study.modalities);
+    insert_optional_person_name_attribute(
+        &mut object,
+        "00080090",
+        study.referring_physician.as_deref(),
+    );
+    insert_optional_string_attribute(&mut object, "00081030", "LO", study.description.as_deref());
+    object.insert(
+        "00201206".into(),
+        integer_string_attribute(study.num_series),
+    );
+    object.insert(
+        "00201208".into(),
+        integer_string_attribute(study.num_instances),
+    );
+    Value::Object(object)
+}
+
+fn series_qido_metadata(series: &Series) -> Value {
+    let mut object = Map::new();
+    object.insert(
+        "0020000D".into(),
+        string_attribute("UI", series.study_uid.to_string()),
+    );
+    object.insert(
+        "0020000E".into(),
+        string_attribute("UI", series.series_uid.to_string()),
+    );
+    insert_optional_string_attribute(&mut object, "00080060", "CS", series.modality.as_deref());
+    insert_optional_integer_string_attribute(&mut object, "00200011", series.series_number);
+    insert_optional_string_attribute(&mut object, "0008103E", "LO", series.description.as_deref());
+    insert_optional_string_attribute(&mut object, "00180015", "CS", series.body_part.as_deref());
+    object.insert(
+        "00201209".into(),
+        integer_string_attribute(series.num_instances),
+    );
+    Value::Object(object)
+}
+
+fn string_attribute(vr: &'static str, value: impl Into<String>) -> Value {
+    json!({ "vr": vr, "Value": [value.into()] })
+}
+
+fn integer_string_attribute(value: i32) -> Value {
+    json!({ "vr": "IS", "Value": [value.to_string()] })
+}
+
+fn person_name_attribute(value: &str) -> Value {
+    json!({ "vr": "PN", "Value": [{ "Alphabetic": value }] })
+}
+
+fn insert_optional_string_attribute(
+    object: &mut Map<String, Value>,
+    tag: &'static str,
+    vr: &'static str,
+    value: Option<&str>,
+) {
+    if let Some(value) = value {
+        object.insert(tag.into(), string_attribute(vr, value));
+    }
+}
+
+fn insert_optional_string_list_attribute(
+    object: &mut Map<String, Value>,
+    tag: &'static str,
+    vr: &'static str,
+    values: &[String],
+) {
+    if !values.is_empty() {
+        object.insert(tag.into(), json!({ "vr": vr, "Value": values }));
+    }
+}
+
+fn insert_optional_person_name_attribute(
+    object: &mut Map<String, Value>,
+    tag: &'static str,
+    value: Option<&str>,
+) {
+    if let Some(value) = value {
+        object.insert(tag.into(), person_name_attribute(value));
+    }
+}
+
+fn insert_optional_integer_string_attribute(
+    object: &mut Map<String, Value>,
+    tag: &'static str,
+    value: Option<i32>,
+) {
+    if let Some(value) = value {
+        object.insert(tag.into(), integer_string_attribute(value));
+    }
+}
+
 /// Parse `YYYYMMDD-YYYYMMDD` or a single `YYYYMMDD` into an optional date range.
 fn parse_date_range(s: Option<&str>) -> (Option<NaiveDate>, Option<NaiveDate>) {
     match s {
@@ -207,6 +322,8 @@ mod tests {
         http::{Request, StatusCode},
     };
     use http_body_util::BodyExt;
+    use pacs_core::{DicomJson, Series, SeriesUid, Study, StudyUid};
+    use serde_json::json;
     use tower::ServiceExt;
 
     use crate::{
@@ -255,5 +372,86 @@ mod tests {
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_search_studies_returns_aggregate_dicom_json() {
+        let mut store = MockMetaStore::new();
+        store.expect_query_studies().once().returning(|_| {
+            Ok(vec![Study {
+                study_uid: StudyUid::from("1.2.3"),
+                patient_id: Some("PID001".into()),
+                patient_name: Some("Doe^Jane".into()),
+                study_date: NaiveDate::from_ymd_opt(2024, 1, 2),
+                study_time: Some("101112".into()),
+                accession_number: Some("ACC001".into()),
+                modalities: vec!["CT".into()],
+                referring_physician: Some("Doctor^Ref".into()),
+                description: Some("Chest CT".into()),
+                num_series: 1,
+                num_instances: 5,
+                metadata: DicomJson::from(json!({
+                    "00080018": {"vr": "UI", "Value": ["should-not-leak"]}
+                })),
+                created_at: None,
+                updated_at: None,
+            }])
+        });
+
+        let app = build_router(make_test_state(store, MockBlobStr::new()));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json[0]["0020000D"]["Value"][0], json!("1.2.3"));
+        assert_eq!(json[0]["00201206"]["Value"][0], json!("1"));
+        assert_eq!(json[0]["00201208"]["Value"][0], json!("5"));
+        assert!(json[0].get("00080018").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_search_series_returns_aggregate_dicom_json() {
+        let mut store = MockMetaStore::new();
+        store.expect_query_series().once().returning(|_| {
+            Ok(vec![Series {
+                series_uid: SeriesUid::from("1.2.3.4"),
+                study_uid: StudyUid::from("1.2.3"),
+                modality: Some("CT".into()),
+                series_number: Some(7),
+                description: Some("Axial".into()),
+                body_part: Some("CHEST".into()),
+                num_instances: 5,
+                metadata: DicomJson::from(json!({
+                    "00080018": {"vr": "UI", "Value": ["should-not-leak"]}
+                })),
+                created_at: None,
+            }])
+        });
+
+        let app = build_router(make_test_state(store, MockBlobStr::new()));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies/1.2.3/series")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json[0]["0020000D"]["Value"][0], json!("1.2.3"));
+        assert_eq!(json[0]["0020000E"]["Value"][0], json!("1.2.3.4"));
+        assert_eq!(json[0]["00201209"]["Value"][0], json!("5"));
+        assert!(json[0].get("00080018").is_none());
     }
 }

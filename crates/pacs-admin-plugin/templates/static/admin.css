@@ -361,8 +361,19 @@ a {
   gap: 0.45rem;
 }
 
+.checkbox-group-inline {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
 .field {
   gap: 0.35rem;
+}
+
+.policy-note {
+  margin: -0.2rem 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
 }
 
 .field-wide {
@@ -546,6 +557,26 @@ a {
   gap: 0.65rem;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.checkbox-row {
+  display: flex;
+  gap: 0.65rem;
+  align-items: center;
+  min-height: 2.5rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #121723;
+}
+
+.checkbox-row input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.checkbox-row span {
+  color: var(--ink);
+  font-size: 0.82rem;
 }
 
 .toolbar {

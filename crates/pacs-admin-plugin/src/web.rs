@@ -23,8 +23,9 @@ use axum::{
 };
 use chrono::Utc;
 use pacs_core::{
-    AuditLogEntry, AuditLogQuery, DicomNode, InstanceQuery, PacsError, PasswordPolicy, SeriesQuery,
-    ServerSettings, Study, StudyQuery, StudyUid, User, UserId, UserQuery, UserRole,
+    AuditLogEntry, AuditLogQuery, DicomNode, InstanceQuery, NewAuditLogEntry, PacsError,
+    PasswordPolicy, SeriesQuery, ServerSettings, Study, StudyQuery, StudyUid, User, UserId,
+    UserQuery, UserRole,
 };
 use pacs_dicom::supported_retrieve_transfer_syntaxes;
 use pacs_dimse::DicomClient;
@@ -55,6 +56,7 @@ pub(crate) fn routes(runtime: Arc<AdminRuntime>) -> Router<AppState> {
     let studies_list_path = format!("{route_prefix}/studies/list");
     let study_delete_path = format!("{route_prefix}/studies/{{study_uid}}");
     let users_path = format!("{route_prefix}/users");
+    let user_policy_path = format!("{route_prefix}/users/policy");
     let user_edit_path = format!("{route_prefix}/users/{{user_id}}/edit");
     let user_delete_path = format!("{route_prefix}/users/{{user_id}}");
     let nodes_path = format!("{route_prefix}/nodes");
@@ -74,6 +76,7 @@ pub(crate) fn routes(runtime: Arc<AdminRuntime>) -> Router<AppState> {
         .route(&studies_list_path, get(studies_results_fragment))
         .route(&study_delete_path, delete(delete_study))
         .route(&users_path, get(users_page).post(save_user))
+        .route(&user_policy_path, post(save_password_policy))
         .route(&user_edit_path, get(edit_user))
         .route(&user_delete_path, delete(delete_user))
         .route(&nodes_path, get(nodes_page).post(save_node))
@@ -189,8 +192,10 @@ struct NodesPanelTemplate {
 #[template(path = "fragments/users_panel.html")]
 struct UsersPanelTemplate {
     users_path: String,
+    user_policy_path: String,
     filters: UserFilterView,
     form: UserFormView,
+    policy_form: PasswordPolicyFormView,
     flash: Option<FlashView>,
     rows: Vec<UserRowView>,
     has_users: bool,
@@ -518,6 +523,36 @@ struct UserRowView {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+struct PasswordPolicyFormInput {
+    min_length: String,
+    require_uppercase: Option<String>,
+    require_digit: Option<String>,
+    require_special: Option<String>,
+    max_failed_attempts: String,
+    lockout_duration_secs: String,
+    max_age_days: String,
+    filter_search: Option<String>,
+    filter_role: Option<String>,
+    filter_status: Option<String>,
+    filter_page_size: Option<String>,
+}
+
+#[derive(Clone)]
+struct PasswordPolicyFormView {
+    min_length: String,
+    require_uppercase: bool,
+    require_digit: bool,
+    require_special: bool,
+    max_failed_attempts: String,
+    lockout_duration_secs: String,
+    max_age_days: String,
+    filter_search: String,
+    filter_role: String,
+    filter_status: String,
+    filter_page_size: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
 struct AuditFilters {
     user_id: Option<String>,
     action: Option<String>,
@@ -767,6 +802,7 @@ async fn users_page(
         UserFormView::default_with_filters(&filters),
         None,
         None,
+        None,
     )
     .await
     {
@@ -809,6 +845,7 @@ async fn edit_user(
                     tone_class: "flash-warning",
                 }),
                 None,
+                None,
             )
             .await;
         }
@@ -824,6 +861,7 @@ async fn edit_user(
                 &filters,
                 UserFormView::default_with_filters(&filters),
                 Some(store_error_flash("User load failed", &error)),
+                None,
                 None,
             )
             .await;
@@ -844,6 +882,7 @@ async fn edit_user(
             ),
             tone_class: "flash-info",
         }),
+        None,
         None,
     )
     .await
@@ -874,6 +913,7 @@ async fn save_user(
                 form,
                 Some(store_error_flash("Password policy load failed", &error)),
                 None,
+                None,
             )
             .await;
         }
@@ -891,6 +931,7 @@ async fn save_user(
                     form,
                     Some(store_error_flash("User load failed", &error)),
                     None,
+                    None,
                 )
                 .await;
             }
@@ -905,6 +946,7 @@ async fn save_user(
                 form,
                 Some(flash),
                 Some(policy),
+                None,
             )
             .await;
         }
@@ -921,6 +963,7 @@ async fn save_user(
                 form,
                 Some(flash),
                 Some(policy),
+                None,
             )
             .await;
         }
@@ -936,6 +979,7 @@ async fn save_user(
                 form,
                 Some(flash),
                 Some(policy),
+                None,
             )
             .await;
         }
@@ -951,6 +995,7 @@ async fn save_user(
                 form,
                 Some(flash),
                 Some(policy),
+                None,
             )
             .await;
         }
@@ -967,6 +1012,7 @@ async fn save_user(
                     form,
                     Some(validation_flash("Username is already in use.")),
                     Some(policy),
+                    None,
                 )
                 .await;
             }
@@ -981,6 +1027,7 @@ async fn save_user(
                 form,
                 Some(store_error_flash("Username check failed", &error)),
                 Some(policy),
+                None,
             )
             .await;
         }
@@ -1002,6 +1049,7 @@ async fn save_user(
             form,
             Some(validation_flash("You cannot deactivate your own account.")),
             Some(policy),
+            None,
         )
         .await;
     }
@@ -1020,6 +1068,7 @@ async fn save_user(
                 "You cannot remove the admin role from your own account.",
             )),
             Some(policy),
+            None,
         )
         .await;
     }
@@ -1067,6 +1116,7 @@ async fn save_user(
                         form,
                         Some(store_error_flash("Admin safety check failed", &error)),
                         Some(policy),
+                        None,
                     )
                     .await;
                 }
@@ -1082,6 +1132,7 @@ async fn save_user(
                         "At least one active admin account must remain enabled.",
                     )),
                     Some(policy),
+                    None,
                 )
                 .await;
             }
@@ -1104,6 +1155,7 @@ async fn save_user(
                     "Password is required for new local users.",
                 )),
                 Some(policy),
+                None,
             )
             .await;
         }
@@ -1117,6 +1169,7 @@ async fn save_user(
                 form,
                 Some(flash),
                 Some(policy),
+                None,
             )
             .await;
         }
@@ -1135,6 +1188,7 @@ async fn save_user(
                         tone_class: "flash-danger",
                     }),
                     Some(policy),
+                    None,
                 )
                 .await;
             }
@@ -1161,6 +1215,7 @@ async fn save_user(
             form,
             Some(store_error_flash("User save failed", &error)),
             Some(policy),
+            None,
         )
         .await;
     }
@@ -1175,10 +1230,35 @@ async fn save_user(
                 UserFormView::default_with_filters(&filters),
                 Some(store_error_flash("Session revocation failed", &error)),
                 Some(policy),
+                None,
             )
             .await;
         }
     }
+
+    maybe_store_admin_audit_log(
+        &state,
+        &headers,
+        &actor,
+        if existing_user.is_some() {
+            "USER_UPDATE"
+        } else {
+            "USER_CREATE"
+        },
+        "user",
+        Some(next_user.id.to_string()),
+        serde_json::json!({
+            "actor_username": actor.username,
+            "actor_role": actor.role,
+            "auth_method": "local",
+            "target_username": next_user.username,
+            "target_role": next_user.role.as_str(),
+            "target_is_active": next_user.is_active,
+            "password_rotated": !password.is_empty(),
+            "refresh_tokens_revoked": revoke_refresh_tokens,
+        }),
+    )
+    .await;
 
     let flash = FlashView {
         title: if existing_user.is_some() {
@@ -1205,6 +1285,90 @@ async fn save_user(
         UserFormView::default_with_filters(&filters),
         Some(flash),
         Some(policy),
+        None,
+    )
+    .await
+}
+
+async fn save_password_policy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
+    Form(input): Form<PasswordPolicyFormInput>,
+) -> Response {
+    let actor = match require_admin(user) {
+        Ok(actor) => actor,
+        Err(message) => return error_response(StatusCode::FORBIDDEN, message),
+    };
+    let filters = input.to_filters();
+    let policy_form = PasswordPolicyFormView::from_input(&input);
+    let policy = match input.into_policy() {
+        Ok(policy) => policy,
+        Err(flash) => {
+            return render_users_response(
+                &state,
+                &runtime,
+                &headers,
+                &filters,
+                UserFormView::default_with_filters(&filters),
+                Some(flash),
+                None,
+                Some(policy_form),
+            )
+            .await;
+        }
+    };
+
+    if let Err(error) = state.store.upsert_password_policy(&policy).await {
+        return render_users_response(
+            &state,
+            &runtime,
+            &headers,
+            &filters,
+            UserFormView::default_with_filters(&filters),
+            Some(store_error_flash("Password policy save failed", &error)),
+            Some(policy.clone()),
+            Some(policy_form),
+        )
+        .await;
+    }
+
+    maybe_store_admin_audit_log(
+        &state,
+        &headers,
+        &actor,
+        "PASSWORD_POLICY_UPDATE",
+        "password_policy",
+        None,
+        serde_json::json!({
+            "actor_username": actor.username,
+            "actor_role": actor.role,
+            "auth_method": "local",
+            "min_length": policy.min_length,
+            "require_uppercase": policy.require_uppercase,
+            "require_digit": policy.require_digit,
+            "require_special": policy.require_special,
+            "max_failed_attempts": policy.max_failed_attempts,
+            "lockout_duration_secs": policy.lockout_duration_secs,
+            "max_age_days": policy.max_age_days,
+        }),
+    )
+    .await;
+
+    render_users_response(
+        &state,
+        &runtime,
+        &headers,
+        &filters,
+        UserFormView::default_with_filters(&filters),
+        Some(FlashView {
+            title: "Password policy updated".into(),
+            detail: "New local password rules were saved and apply to future password changes immediately. Existing password hashes remain unchanged.".into(),
+            tone_class: "flash-success",
+        }),
+        Some(policy.clone()),
+        Some(PasswordPolicyFormView::from_policy(&policy, &filters)),
     )
     .await
 }
@@ -1236,6 +1400,7 @@ async fn delete_user(
                     tone_class: "flash-warning",
                 }),
                 None,
+                None,
             )
             .await;
         }
@@ -1252,6 +1417,7 @@ async fn delete_user(
                 UserFormView::default_with_filters(&filters),
                 Some(store_error_flash("User removal failed", &error)),
                 None,
+                None,
             )
             .await;
         }
@@ -1265,6 +1431,7 @@ async fn delete_user(
             &filters,
             UserFormView::default_with_filters(&filters),
             Some(validation_flash("You cannot delete your own account.")),
+            None,
             None,
         )
         .await;
@@ -1282,6 +1449,7 @@ async fn delete_user(
                     UserFormView::default_with_filters(&filters),
                     Some(store_error_flash("Admin safety check failed", &error)),
                     None,
+                    None,
                 )
                 .await;
             }
@@ -1297,6 +1465,7 @@ async fn delete_user(
                     "At least one active admin account must remain enabled.",
                 )),
                 None,
+                None,
             )
             .await;
         }
@@ -1311,6 +1480,7 @@ async fn delete_user(
             UserFormView::default_with_filters(&filters),
             Some(store_error_flash("Session revocation failed", &error)),
             None,
+            None,
         )
         .await;
     }
@@ -1324,9 +1494,28 @@ async fn delete_user(
             UserFormView::default_with_filters(&filters),
             Some(store_error_flash("User removal failed", &error)),
             None,
+            None,
         )
         .await;
     }
+
+    maybe_store_admin_audit_log(
+        &state,
+        &headers,
+        &actor,
+        "USER_DELETE",
+        "user",
+        Some(target_user.id.to_string()),
+        serde_json::json!({
+            "actor_username": actor.username,
+            "actor_role": actor.role,
+            "auth_method": "local",
+            "target_username": target_user.username,
+            "target_role": target_user.role.as_str(),
+            "refresh_tokens_revoked": true,
+        }),
+    )
+    .await;
 
     render_users_response(
         &state,
@@ -1342,6 +1531,7 @@ async fn delete_user(
             ),
             tone_class: "flash-warning",
         }),
+        None,
         None,
     )
     .await
@@ -1857,6 +2047,7 @@ async fn render_users_panel_markup(
     form: UserFormView,
     flash: Option<FlashView>,
     policy_override: Option<PasswordPolicy>,
+    policy_form_override: Option<PasswordPolicyFormView>,
 ) -> Result<String, StatusCode> {
     let policy = match policy_override {
         Some(policy) => policy,
@@ -1876,11 +2067,15 @@ async fn render_users_panel_markup(
         .map(|user| user_row_view(runtime.route_prefix(), filters, user, &form.user_id))
         .collect::<Vec<_>>();
     let row_count = rows.len();
+    let policy_form = policy_form_override
+        .unwrap_or_else(|| PasswordPolicyFormView::from_policy(&policy, filters));
 
     UsersPanelTemplate {
         users_path: users_page_path(runtime.route_prefix()),
+        user_policy_path: users_policy_path(runtime.route_prefix()),
         filters: UserFilterView::from_filters(filters),
         form,
+        policy_form,
         flash,
         has_users: !rows.is_empty(),
         rows,
@@ -2071,6 +2266,7 @@ async fn render_users_response(
     form: UserFormView,
     flash: Option<FlashView>,
     policy_override: Option<PasswordPolicy>,
+    policy_form_override: Option<PasswordPolicyFormView>,
 ) -> Response {
     let markup = match render_users_panel_markup(
         state,
@@ -2079,6 +2275,7 @@ async fn render_users_response(
         form,
         flash,
         policy_override,
+        policy_form_override,
     )
     .await
     {
@@ -2339,12 +2536,52 @@ fn password_policy_summary(policy: &PasswordPolicy) -> String {
         requirements.push("one special character".into());
     }
 
+    let max_age_summary = policy
+        .max_age_days
+        .map(|days| format!(" Passwords expire after {days} day(s)."))
+        .unwrap_or_default();
+
     format!(
         "Passwords must include {}. Accounts lock after {} failed attempts for {} seconds.",
         requirements.join(", "),
         policy.max_failed_attempts,
         policy.lockout_duration_secs
-    )
+    ) + &max_age_summary
+}
+
+async fn maybe_store_admin_audit_log(
+    state: &AppState,
+    headers: &HeaderMap,
+    actor: &AuthenticatedUser,
+    action: &'static str,
+    resource: &'static str,
+    resource_uid: Option<String>,
+    details: Value,
+) {
+    let entry = NewAuditLogEntry {
+        user_id: Some(actor.user_id.clone()),
+        action: action.into(),
+        resource: resource.into(),
+        resource_uid,
+        source_ip: request_source_ip(headers),
+        status: "ok".into(),
+        details,
+    };
+
+    if let Err(error) = state.store.store_audit_log(&entry).await {
+        warn!(action, resource, error = %error, "failed to persist admin audit log");
+    }
+}
+
+fn request_source_ip(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("x-forwarded-for")
+        .or_else(|| headers.get("x-real-ip"))
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn validate_password_against_policy(
@@ -2537,6 +2774,10 @@ fn audit_page_path(route_prefix: &str) -> String {
 
 fn users_page_path(route_prefix: &str) -> String {
     format!("{route_prefix}/users")
+}
+
+fn users_policy_path(route_prefix: &str) -> String {
+    format!("{route_prefix}/users/policy")
 }
 
 fn audit_results_path(route_prefix: &str) -> String {
@@ -2878,6 +3119,119 @@ impl UserFormInput {
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .and_then(|value| value.parse::<u32>().ok()),
+        }
+    }
+}
+
+impl PasswordPolicyFormInput {
+    fn to_filters(&self) -> UserFilters {
+        UserFilters {
+            search: self.filter_search.clone(),
+            role: self.filter_role.clone(),
+            status: self.filter_status.clone(),
+            page_size: self
+                .filter_page_size
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .and_then(|value| value.parse::<u32>().ok()),
+        }
+    }
+
+    fn into_policy(self) -> Result<PasswordPolicy, FlashView> {
+        let min_length =
+            self.min_length.trim().parse::<u32>().map_err(|_| {
+                validation_flash("Minimum password length must be a positive integer.")
+            })?;
+        if min_length < 8 {
+            return Err(validation_flash(
+                "Minimum password length must be at least 8 characters.",
+            ));
+        }
+
+        let max_failed_attempts = self
+            .max_failed_attempts
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| validation_flash("Max failed attempts must be a positive integer."))?;
+        if max_failed_attempts == 0 {
+            return Err(validation_flash(
+                "Max failed attempts must be greater than zero.",
+            ));
+        }
+
+        let lockout_duration_secs = self
+            .lockout_duration_secs
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| validation_flash("Lockout duration must be a positive integer."))?;
+        if lockout_duration_secs == 0 {
+            return Err(validation_flash(
+                "Lockout duration must be greater than zero.",
+            ));
+        }
+
+        let max_age_days = if self.max_age_days.trim().is_empty() {
+            None
+        } else {
+            Some(self.max_age_days.trim().parse::<u32>().map_err(|_| {
+                validation_flash(
+                    "Password max age must be empty or a positive integer number of days.",
+                )
+            })?)
+        };
+        if max_age_days == Some(0) {
+            return Err(validation_flash(
+                "Password max age must be empty or greater than zero days.",
+            ));
+        }
+
+        Ok(PasswordPolicy {
+            min_length,
+            require_uppercase: self.require_uppercase.is_some(),
+            require_digit: self.require_digit.is_some(),
+            require_special: self.require_special.is_some(),
+            max_failed_attempts,
+            lockout_duration_secs,
+            max_age_days,
+        })
+    }
+}
+
+impl PasswordPolicyFormView {
+    fn from_input(input: &PasswordPolicyFormInput) -> Self {
+        let filters = input.to_filters();
+        Self {
+            min_length: input.min_length.trim().to_string(),
+            require_uppercase: input.require_uppercase.is_some(),
+            require_digit: input.require_digit.is_some(),
+            require_special: input.require_special.is_some(),
+            max_failed_attempts: input.max_failed_attempts.trim().to_string(),
+            lockout_duration_secs: input.lockout_duration_secs.trim().to_string(),
+            max_age_days: input.max_age_days.trim().to_string(),
+            filter_search: filters.search.as_deref().unwrap_or_default().to_string(),
+            filter_role: filters.role.as_deref().unwrap_or_default().to_string(),
+            filter_status: filters.status.as_deref().unwrap_or_default().to_string(),
+            filter_page_size: filters.page_size().to_string(),
+        }
+    }
+
+    fn from_policy(policy: &PasswordPolicy, filters: &UserFilters) -> Self {
+        Self {
+            min_length: policy.min_length.to_string(),
+            require_uppercase: policy.require_uppercase,
+            require_digit: policy.require_digit,
+            require_special: policy.require_special,
+            max_failed_attempts: policy.max_failed_attempts.to_string(),
+            lockout_duration_secs: policy.lockout_duration_secs.to_string(),
+            max_age_days: policy
+                .max_age_days
+                .map(|days| days.to_string())
+                .unwrap_or_default(),
+            filter_search: filters.search.as_deref().unwrap_or_default().to_string(),
+            filter_role: filters.role.as_deref().unwrap_or_default().to_string(),
+            filter_status: filters.status.as_deref().unwrap_or_default().to_string(),
+            filter_page_size: filters.page_size().to_string(),
         }
     }
 }
@@ -3634,6 +3988,69 @@ mod tests {
         assert!(validate_password_against_policy("short", &policy).is_err());
         assert!(validate_password_against_policy("lowercaseonly1!", &policy).is_err());
         assert!(validate_password_against_policy("ValidPassword1!", &policy).is_ok());
+    }
+
+    #[test]
+    fn password_policy_form_parses_valid_values() {
+        let policy = PasswordPolicyFormInput {
+            min_length: "14".into(),
+            require_uppercase: Some("on".into()),
+            require_digit: Some("on".into()),
+            require_special: None,
+            max_failed_attempts: "6".into(),
+            lockout_duration_secs: "1200".into(),
+            max_age_days: "90".into(),
+            filter_search: None,
+            filter_role: None,
+            filter_status: None,
+            filter_page_size: None,
+        }
+        .into_policy()
+        .unwrap();
+
+        assert_eq!(policy.min_length, 14);
+        assert!(policy.require_uppercase);
+        assert!(policy.require_digit);
+        assert!(!policy.require_special);
+        assert_eq!(policy.max_failed_attempts, 6);
+        assert_eq!(policy.lockout_duration_secs, 1200);
+        assert_eq!(policy.max_age_days, Some(90));
+    }
+
+    #[test]
+    fn password_policy_form_rejects_short_minimum_length() {
+        let error = PasswordPolicyFormInput {
+            min_length: "6".into(),
+            require_uppercase: Some("on".into()),
+            require_digit: Some("on".into()),
+            require_special: None,
+            max_failed_attempts: "5".into(),
+            lockout_duration_secs: "900".into(),
+            max_age_days: String::new(),
+            filter_search: None,
+            filter_role: None,
+            filter_status: None,
+            filter_page_size: None,
+        }
+        .into_policy()
+        .unwrap_err();
+
+        assert_eq!(error.title, "Validation failed");
+    }
+
+    #[test]
+    fn password_policy_summary_mentions_max_age_when_enabled() {
+        let summary = password_policy_summary(&PasswordPolicy {
+            min_length: 12,
+            require_uppercase: true,
+            require_digit: true,
+            require_special: false,
+            max_failed_attempts: 5,
+            lockout_duration_secs: 900,
+            max_age_days: Some(60),
+        });
+
+        assert!(summary.contains("expire after 60 day(s)"));
     }
 
     #[test]

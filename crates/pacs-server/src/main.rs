@@ -155,6 +155,7 @@ async fn main() -> Result<()> {
         version: env!("CARGO_PKG_VERSION"),
     };
     bootstrap_configured_nodes(meta_store.as_ref(), &cfg.nodes).await?;
+    bootstrap_local_auth_admin_if_needed(&cfg, meta_store.as_ref()).await?;
 
     // ── HTTP server ───────────────────────────────────────────────────────────
     let app_state = pacs_api::AppState {
@@ -506,6 +507,81 @@ async fn create_bootstrap_admin(
     operation?;
     shutdown_result?;
     Ok(())
+}
+
+async fn bootstrap_local_auth_admin_if_needed(
+    cfg: &AppConfig,
+    store: &dyn MetadataStore,
+) -> Result<()> {
+    if !local_auth_enabled(cfg) {
+        return Ok(());
+    }
+
+    let existing_users = store
+        .query_users(&UserQuery {
+            limit: Some(1),
+            ..UserQuery::default()
+        })
+        .await
+        .context("failed to query existing users during startup bootstrap")?;
+    if !existing_users.is_empty() {
+        return Ok(());
+    }
+
+    let policy = store
+        .get_password_policy()
+        .await
+        .context("failed to load password policy for startup bootstrap")?;
+    let password = generate_bootstrap_password(&policy);
+    let password_hash = hash_password(&password)?;
+    let user = User {
+        id: UserId::new(),
+        username: "admin".into(),
+        display_name: Some("Bootstrap Admin".into()),
+        email: None,
+        password_hash,
+        role: UserRole::Admin,
+        attributes: serde_json::json!({"bootstrap_admin": true}),
+        is_active: true,
+        failed_login_attempts: 0,
+        locked_until: None,
+        password_changed_at: Some(Utc::now()),
+        created_at: None,
+        updated_at: None,
+    };
+
+    store
+        .store_user(&user)
+        .await
+        .context("failed to store startup bootstrap admin")?;
+
+    warn!(
+        username = %user.username,
+        password = %password,
+        user_id = %user.id,
+        "No local users found; created bootstrap admin for browser sign-in"
+    );
+
+    Ok(())
+}
+
+fn local_auth_enabled(cfg: &AppConfig) -> bool {
+    if !cfg
+        .plugins
+        .enabled
+        .iter()
+        .any(|plugin| plugin == BASIC_AUTH_PLUGIN_ID)
+    {
+        return false;
+    }
+
+    cfg.plugins
+        .configs
+        .get(BASIC_AUTH_PLUGIN_ID)
+        .and_then(|config| config.get("mode"))
+        .and_then(serde_json::Value::as_str)
+        .map(|mode| mode.eq_ignore_ascii_case("local"))
+        .unwrap_or(true)
 }
 
 fn validate_bootstrap_username(username: &str) -> Result<String> {
@@ -996,6 +1072,27 @@ mod tests {
 
         assert!(!audit_auto_enabled);
         assert!(!enabled.contains(&AUDIT_LOGGER_PLUGIN_ID.to_string()));
+    }
+
+    #[test]
+    fn local_auth_defaults_to_enabled_when_basic_auth_plugin_is_active() {
+        let cfg = make_config(&[BASIC_AUTH_PLUGIN_ID], HashMap::new());
+
+        assert!(local_auth_enabled(&cfg));
+    }
+
+    #[test]
+    fn local_auth_is_disabled_when_basic_auth_runs_in_oidc_mode() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            BASIC_AUTH_PLUGIN_ID.into(),
+            serde_json::json!({
+                "mode": "oidc",
+            }),
+        );
+        let cfg = make_config(&[BASIC_AUTH_PLUGIN_ID], configs);
+
+        assert!(!local_auth_enabled(&cfg));
     }
 
     #[cfg(all(feature = "sqlite", feature = "filesystem"))]

@@ -143,6 +143,31 @@ a {
   color: var(--accent);
 }
 
+.sidebar-logout {
+  margin-top: auto;
+  padding-top: 0.75rem;
+}
+
+.sidebar-logout-button {
+  width: 100%;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--ink);
+  border-radius: var(--radius-sm);
+  padding: 0.65rem 0.75rem;
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 80ms ease, border-color 80ms ease, color 80ms ease;
+}
+
+.sidebar-logout-button:hover {
+  background: var(--accent-dim);
+  border-color: rgba(59, 130, 246, 0.28);
+  color: var(--ink-strong);
+}
+
 .content {
   display: grid;
   gap: 1rem;

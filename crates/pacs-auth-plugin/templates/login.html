@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sign In · pacsnode</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f3efe7;
+        --panel: rgba(255, 252, 247, 0.96);
+        --panel-border: rgba(78, 58, 33, 0.12);
+        --ink: #23180d;
+        --muted: #6a5845;
+        --accent: #0f6c5c;
+        --accent-strong: #0a5447;
+        --danger-bg: #fde9e4;
+        --danger-border: #e6b7ac;
+        --shadow: 0 24px 60px rgba(56, 39, 19, 0.12);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(15, 108, 92, 0.16), transparent 32%),
+          radial-gradient(circle at bottom right, rgba(175, 124, 57, 0.14), transparent 30%),
+          linear-gradient(160deg, #efe5d6 0%, var(--bg) 44%, #efeae2 100%);
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+
+      .panel {
+        width: min(440px, 100%);
+        background: var(--panel);
+        border: 1px solid var(--panel-border);
+        border-radius: 24px;
+        box-shadow: var(--shadow);
+        padding: 32px;
+        backdrop-filter: blur(10px);
+      }
+
+      .eyebrow {
+        margin: 0 0 8px;
+        font-size: 0.8rem;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--accent-strong);
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(2rem, 5vw, 2.6rem);
+        line-height: 1;
+      }
+
+      .copy {
+        margin: 14px 0 0;
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      form {
+        display: grid;
+        gap: 16px;
+        margin-top: 24px;
+      }
+
+      label {
+        display: grid;
+        gap: 8px;
+        font-size: 0.95rem;
+      }
+
+      .label-copy {
+        font-weight: 600;
+      }
+
+      input {
+        width: 100%;
+        border: 1px solid rgba(65, 47, 24, 0.18);
+        border-radius: 14px;
+        padding: 14px 16px;
+        font: inherit;
+        color: var(--ink);
+        background: rgba(255, 255, 255, 0.82);
+      }
+
+      input:focus {
+        outline: 2px solid rgba(15, 108, 92, 0.18);
+        border-color: rgba(15, 108, 92, 0.5);
+      }
+
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 14px 18px;
+        font: inherit;
+        font-weight: 700;
+        color: #fff;
+        background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+        cursor: pointer;
+      }
+
+      .hint {
+        margin: 18px 0 0;
+        color: var(--muted);
+        font-size: 0.92rem;
+        line-height: 1.5;
+      }
+
+      .error {
+        margin: 18px 0 0;
+        padding: 12px 14px;
+        border-radius: 14px;
+        border: 1px solid var(--danger-border);
+        background: var(--danger-bg);
+        color: #7a2d1c;
+        line-height: 1.45;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="panel">
+      <p class="eyebrow">pacsnode</p>
+      <h1>Sign in</h1>
+      <p class="copy">Use the bootstrap credentials printed during first startup, or a local account created by an administrator.</p>
+
+      {% match error_message %}
+      {% when Some with (error) %}
+      <div class="error">{{ error }}</div>
+      {% when None %}
+      {% endmatch %}
+
+      <form method="post" action="{{ login_path }}">
+        {% match redirect_target %}
+        {% when Some with (redirect) %}
+        <input type="hidden" name="redirect" value="{{ redirect }}" />
+        {% when None %}
+        {% endmatch %}
+
+        <label>
+          <span class="label-copy">Username</span>
+          <input type="text" name="username" autocomplete="username" value="{{ username }}" required />
+        </label>
+
+        <label>
+          <span class="label-copy">Password</span>
+          <input type="password" name="password" autocomplete="current-password" required />
+        </label>
+
+        <button type="submit">Continue</button>
+      </form>
+
+      <p class="hint">This sign-in page is only active when local HTTP authentication is enabled.</p>
+    </main>
+  </body>
+</html>

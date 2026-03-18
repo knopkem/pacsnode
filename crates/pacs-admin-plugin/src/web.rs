@@ -46,6 +46,9 @@ const MAX_AUDIT_PAGE_SIZE: u32 = 100;
 const DEFAULT_USER_PAGE_SIZE: u32 = 25;
 const MAX_USER_PAGE_SIZE: u32 = 100;
 const NODE_VERIFY_TIMEOUT_SECS: u64 = 5;
+const AUTH_PLUGIN_ID: &str = "basic-auth";
+const ACCESS_COOKIE_NAME: &str = "pacsnode_access_token";
+const REFRESH_COOKIE_NAME: &str = "pacsnode_refresh_token";
 
 pub(crate) fn routes(runtime: Arc<AdminRuntime>) -> Router<AppState> {
     let route_prefix = runtime.route_prefix().to_string();
@@ -60,6 +63,7 @@ pub(crate) fn routes(runtime: Arc<AdminRuntime>) -> Router<AppState> {
     let user_edit_path = format!("{route_prefix}/users/{{user_id}}/edit");
     let user_delete_path = format!("{route_prefix}/users/{{user_id}}");
     let nodes_path = format!("{route_prefix}/nodes");
+    let logout_path = format!("{route_prefix}/logout");
     let node_edit_path = format!("{route_prefix}/nodes/{{ae_title}}/edit");
     let node_delete_path = format!("{route_prefix}/nodes/{{ae_title}}");
     let node_verify_path = format!("{route_prefix}/nodes/{{ae_title}}/verify");
@@ -76,6 +80,7 @@ pub(crate) fn routes(runtime: Arc<AdminRuntime>) -> Router<AppState> {
         .route(&studies_list_path, get(studies_results_fragment))
         .route(&study_delete_path, delete(delete_study))
         .route(&users_path, get(users_page).post(save_user))
+        .route(&logout_path, post(admin_logout))
         .route(&user_policy_path, post(save_password_policy))
         .route(&user_edit_path, get(edit_user))
         .route(&user_delete_path, delete(delete_user))
@@ -108,6 +113,7 @@ struct DashboardPageTemplate {
     page_title: &'static str,
     route_prefix: String,
     active_nav: &'static str,
+    logout_path: Option<String>,
     server_info: ServerInfoView,
     stats_markup: String,
     recent_activity_markup: String,
@@ -119,6 +125,7 @@ struct SystemPageTemplate {
     page_title: &'static str,
     route_prefix: String,
     active_nav: &'static str,
+    logout_path: Option<String>,
     server_info: ServerInfoView,
     settings_markup: String,
     plugin_rows: Vec<PluginHealthView>,
@@ -142,6 +149,7 @@ struct StudiesPageTemplate {
     page_title: &'static str,
     route_prefix: String,
     active_nav: &'static str,
+    logout_path: Option<String>,
     studies_path: String,
     studies_results_path: String,
     filters: StudiesFilterView,
@@ -154,6 +162,7 @@ struct NodesPageTemplate {
     page_title: &'static str,
     route_prefix: String,
     active_nav: &'static str,
+    logout_path: Option<String>,
     nodes_markup: String,
 }
 
@@ -163,6 +172,7 @@ struct UsersPageTemplate {
     page_title: &'static str,
     route_prefix: String,
     active_nav: &'static str,
+    logout_path: Option<String>,
     users_markup: String,
 }
 
@@ -172,6 +182,7 @@ struct AuditPageTemplate {
     page_title: &'static str,
     route_prefix: String,
     active_nav: &'static str,
+    logout_path: Option<String>,
     audit_path: String,
     audit_results_path: String,
     filters: AuditFilterView,
@@ -609,10 +620,11 @@ struct AuditResultsView {
 
 async fn dashboard_page(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Extension(runtime): Extension<Arc<AdminRuntime>>,
     user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
-    if let Err(message) = require_admin(user) {
+    if let Err(message) = require_admin(&state, user) {
         return error_response(StatusCode::FORBIDDEN, message);
     }
 
@@ -630,6 +642,7 @@ async fn dashboard_page(
         page_title: "Admin Dashboard",
         route_prefix: runtime.route_prefix().to_string(),
         active_nav: "dashboard",
+        logout_path: shell_logout_path(&state, runtime.route_prefix(), &headers),
         server_info: server_info_view(&state.server_info),
         stats_markup,
         recent_activity_markup,
@@ -638,10 +651,11 @@ async fn dashboard_page(
 
 async fn system_page(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Extension(runtime): Extension<Arc<AdminRuntime>>,
     user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
-    if let Err(message) = require_admin(user) {
+    if let Err(message) = require_admin(&state, user) {
         return error_response(StatusCode::FORBIDDEN, message);
     }
 
@@ -661,6 +675,7 @@ async fn system_page(
         page_title: "System Overview",
         route_prefix: runtime.route_prefix().to_string(),
         active_nav: "system",
+        logout_path: shell_logout_path(&state, runtime.route_prefix(), &headers),
         server_info: server_info_view(&state.server_info),
         settings_markup,
         plugin_rows,
@@ -674,7 +689,7 @@ async fn save_system_settings(
     user: Option<Extension<AuthenticatedUser>>,
     body: String,
 ) -> Response {
-    if let Err(message) = require_admin(user) {
+    if let Err(message) = require_admin(&state, user) {
         return error_response(StatusCode::FORBIDDEN, message);
     }
 
@@ -709,11 +724,12 @@ async fn save_system_settings(
 
 async fn studies_page(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(filters): Query<StudiesFilters>,
     Extension(runtime): Extension<Arc<AdminRuntime>>,
     user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
-    if let Err(message) = require_admin(user) {
+    if let Err(message) = require_admin(&state, user) {
         return error_response(StatusCode::FORBIDDEN, message);
     }
 
@@ -726,6 +742,7 @@ async fn studies_page(
         page_title: "Studies",
         route_prefix: runtime.route_prefix().to_string(),
         active_nav: "studies",
+        logout_path: shell_logout_path(&state, runtime.route_prefix(), &headers),
         studies_path: studies_page_path(runtime.route_prefix()),
         studies_results_path: studies_results_path(runtime.route_prefix()),
         filters: StudiesFilterView::from_filters(&filters),
@@ -739,7 +756,7 @@ async fn studies_results_fragment(
     Extension(runtime): Extension<Arc<AdminRuntime>>,
     user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
-    if let Err(message) = require_admin(user) {
+    if let Err(message) = require_admin(&state, user) {
         return error_response(StatusCode::FORBIDDEN, message);
     }
 
@@ -756,7 +773,7 @@ async fn delete_study(
     Extension(runtime): Extension<Arc<AdminRuntime>>,
     user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
-    let actor = match require_admin(user) {
+    let actor = match require_admin(&state, user) {
         Ok(actor) => actor,
         Err(message) => return error_response(StatusCode::FORBIDDEN, message),
     };
@@ -824,11 +841,12 @@ async fn delete_study(
 
 async fn users_page(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(filters): Query<UserFilters>,
     Extension(runtime): Extension<Arc<AdminRuntime>>,
     user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
-    if let Err(message) = require_admin(user) {
+    if let Err(message) = require_admin(&state, user) {
         return error_response(StatusCode::FORBIDDEN, message);
     }
 
@@ -850,6 +868,7 @@ async fn users_page(
         page_title: "Users",
         route_prefix: runtime.route_prefix().to_string(),
         active_nav: "users",
+        logout_path: shell_logout_path(&state, runtime.route_prefix(), &headers),
         users_markup,
     })
 }
@@ -862,7 +881,7 @@ async fn edit_user(
     Extension(runtime): Extension<Arc<AdminRuntime>>,
     user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
-    if let Err(message) = require_admin(user) {
+    if let Err(message) = require_admin(&state, user) {
         return error_response(StatusCode::FORBIDDEN, message);
     }
 
@@ -928,7 +947,7 @@ async fn save_user(
     user: Option<Extension<AuthenticatedUser>>,
     Form(input): Form<UserFormInput>,
 ) -> Response {
-    let actor = match require_admin(user) {
+    let actor = match require_admin(&state, user) {
         Ok(actor) => actor,
         Err(message) => return error_response(StatusCode::FORBIDDEN, message),
     };
@@ -1312,7 +1331,7 @@ async fn save_password_policy(
     user: Option<Extension<AuthenticatedUser>>,
     Form(input): Form<PasswordPolicyFormInput>,
 ) -> Response {
-    let actor = match require_admin(user) {
+    let actor = match require_admin(&state, user) {
         Ok(actor) => actor,
         Err(message) => return error_response(StatusCode::FORBIDDEN, message),
     };
@@ -1396,7 +1415,7 @@ async fn delete_user(
     Extension(runtime): Extension<Arc<AdminRuntime>>,
     user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
-    let actor = match require_admin(user) {
+    let actor = match require_admin(&state, user) {
         Ok(actor) => actor,
         Err(message) => return error_response(StatusCode::FORBIDDEN, message),
     };
@@ -1546,10 +1565,11 @@ async fn delete_user(
 
 async fn nodes_page(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Extension(runtime): Extension<Arc<AdminRuntime>>,
     user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
-    if let Err(message) = require_admin(user) {
+    if let Err(message) = require_admin(&state, user) {
         return error_response(StatusCode::FORBIDDEN, message);
     }
 
@@ -1563,6 +1583,7 @@ async fn nodes_page(
         page_title: "Nodes",
         route_prefix: runtime.route_prefix().to_string(),
         active_nav: "nodes",
+        logout_path: shell_logout_path(&state, runtime.route_prefix(), &headers),
         nodes_markup,
     })
 }
@@ -1574,7 +1595,7 @@ async fn edit_node(
     Extension(runtime): Extension<Arc<AdminRuntime>>,
     user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
-    if let Err(message) = require_admin(user) {
+    if let Err(message) = require_admin(&state, user) {
         return error_response(StatusCode::FORBIDDEN, message);
     }
 
@@ -1616,7 +1637,7 @@ async fn save_node(
     user: Option<Extension<AuthenticatedUser>>,
     Form(input): Form<NodeFormInput>,
 ) -> Response {
-    if let Err(message) = require_admin(user) {
+    if let Err(message) = require_admin(&state, user) {
         return error_response(StatusCode::FORBIDDEN, message);
     }
 
@@ -1664,7 +1685,7 @@ async fn delete_node(
     Extension(runtime): Extension<Arc<AdminRuntime>>,
     user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
-    if let Err(message) = require_admin(user) {
+    if let Err(message) = require_admin(&state, user) {
         return error_response(StatusCode::FORBIDDEN, message);
     }
 
@@ -1701,7 +1722,7 @@ async fn verify_node(
     Extension(runtime): Extension<Arc<AdminRuntime>>,
     user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
-    if let Err(message) = require_admin(user) {
+    if let Err(message) = require_admin(&state, user) {
         return error_response(StatusCode::FORBIDDEN, message);
     }
 
@@ -1761,11 +1782,12 @@ async fn verify_node(
 
 async fn audit_page(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(filters): Query<AuditFilters>,
     Extension(runtime): Extension<Arc<AdminRuntime>>,
     user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
-    if let Err(message) = require_admin(user) {
+    if let Err(message) = require_admin(&state, user) {
         return error_response(StatusCode::FORBIDDEN, message);
     }
 
@@ -1778,11 +1800,42 @@ async fn audit_page(
         page_title: "Audit Log",
         route_prefix: runtime.route_prefix().to_string(),
         active_nav: "audit",
+        logout_path: shell_logout_path(&state, runtime.route_prefix(), &headers),
         audit_path: audit_page_path(runtime.route_prefix()),
         audit_results_path: audit_results_path(runtime.route_prefix()),
         filters: AuditFilterView::from_filters(&filters),
         results_markup,
     })
+}
+
+async fn admin_logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
+) -> Response {
+    let actor = match require_admin(&state, user) {
+        Ok(actor) => actor,
+        Err(message) => return error_response(StatusCode::FORBIDDEN, message),
+    };
+
+    if state.plugins.has_plugin(AUTH_PLUGIN_ID) {
+        if let Ok(user_id) = actor.user_id.parse::<UserId>() {
+            if let Err(error) = state.store.revoke_refresh_tokens(&user_id).await {
+                return error_response(
+                    pacs_error_to_status(&error),
+                    "admin logout failed to revoke active sessions",
+                );
+            }
+        }
+    }
+
+    let mut response = Redirect::to(runtime.route_prefix()).into_response();
+    clear_auth_cookies(
+        response.headers_mut(),
+        request_uses_secure_transport(&headers),
+    );
+    response
 }
 
 async fn audit_results_fragment(
@@ -1791,7 +1844,7 @@ async fn audit_results_fragment(
     Extension(runtime): Extension<Arc<AdminRuntime>>,
     user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
-    if let Err(message) = require_admin(user) {
+    if let Err(message) = require_admin(&state, user) {
         return error_response(StatusCode::FORBIDDEN, message);
     }
 
@@ -1811,10 +1864,11 @@ async fn admin_css() -> Response {
 }
 
 async fn events_stream(
+    State(state): State<AppState>,
     Extension(runtime): Extension<Arc<AdminRuntime>>,
     user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
-    if let Err(message) = require_admin(user) {
+    if let Err(message) = require_admin(&state, user) {
         return error_response(StatusCode::FORBIDDEN, message);
     }
 
@@ -2174,6 +2228,7 @@ async fn render_system_response(
             page_title: "System Overview",
             route_prefix: runtime.route_prefix().to_string(),
             active_nav: "system",
+            logout_path: shell_logout_path(state, runtime.route_prefix(), headers),
             server_info: server_info_view(&state.server_info),
             settings_markup,
             plugin_rows,
@@ -2306,6 +2361,7 @@ async fn render_nodes_response(
             page_title: "Nodes",
             route_prefix: runtime.route_prefix().to_string(),
             active_nav: "nodes",
+            logout_path: shell_logout_path(state, runtime.route_prefix(), headers),
             nodes_markup: markup,
         })
     }
@@ -2333,9 +2389,85 @@ async fn render_users_response(
             page_title: "Users",
             route_prefix: runtime.route_prefix().to_string(),
             active_nav: "users",
+            logout_path: shell_logout_path(state, runtime.route_prefix(), headers),
             users_markup: markup,
         })
     }
+}
+
+fn shell_logout_path(state: &AppState, route_prefix: &str, headers: &HeaderMap) -> Option<String> {
+    (state.plugins.has_plugin(AUTH_PLUGIN_ID) && has_local_auth_cookie(headers))
+        .then(|| format!("{route_prefix}/logout"))
+}
+
+fn has_local_auth_cookie(headers: &HeaderMap) -> bool {
+    cookie_value(headers, ACCESS_COOKIE_NAME).is_some()
+        || cookie_value(headers, REFRESH_COOKIE_NAME).is_some()
+}
+
+fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|raw| {
+            raw.split(';').find_map(|entry| {
+                let (cookie_name, cookie_value) = entry.trim().split_once('=')?;
+                (cookie_name == name).then(|| cookie_value.to_string())
+            })
+        })
+}
+
+fn clear_auth_cookies(headers: &mut HeaderMap, secure: bool) {
+    append_set_cookie(headers, clear_cookie(ACCESS_COOKIE_NAME, secure));
+    append_set_cookie(headers, clear_cookie(REFRESH_COOKIE_NAME, secure));
+}
+
+fn append_set_cookie(headers: &mut HeaderMap, value: String) {
+    match axum::http::HeaderValue::from_str(&value) {
+        Ok(value) => {
+            headers.append(header::SET_COOKIE, value);
+        }
+        Err(error) => {
+            error!(error = %error, "failed to encode admin logout cookie header");
+        }
+    }
+}
+
+fn clear_cookie(name: &str, secure: bool) -> String {
+    let secure_suffix = if secure { "; Secure" } else { "" };
+    format!("{name}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax{secure_suffix}")
+}
+
+fn request_uses_secure_transport(headers: &HeaderMap) -> bool {
+    forwarded_proto(headers).is_some_and(|proto| proto.eq_ignore_ascii_case("https"))
+        || headers
+            .get("X-Forwarded-Ssl")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.eq_ignore_ascii_case("on"))
+}
+
+fn forwarded_proto(headers: &HeaderMap) -> Option<&str> {
+    if let Some(proto) = headers
+        .get("X-Forwarded-Proto")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(proto);
+    }
+
+    headers
+        .get("Forwarded")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            value.split(';').find_map(|segment| {
+                let (key, forwarded_value) = segment.trim().split_once('=')?;
+                key.eq_ignore_ascii_case("proto")
+                    .then(|| forwarded_value.trim_matches('"').trim())
+            })
+        })
+        .filter(|value| !value.is_empty())
 }
 
 fn activity_view_from_entry(entry: ActivityEntry) -> ActivityView {
@@ -2540,13 +2672,27 @@ fn store_error_flash(title: &str, error: &PacsError) -> FlashView {
 }
 
 fn require_admin(
+    state: &AppState,
     user: Option<Extension<AuthenticatedUser>>,
 ) -> Result<AuthenticatedUser, &'static str> {
+    if !state.plugins.has_plugin(AUTH_PLUGIN_ID) {
+        return Ok(auth_disabled_admin_user());
+    }
+
     match user {
         Some(Extension(user)) if user.role == UserRole::Admin.as_str() => Ok(user),
         Some(_) => Err("admin access requires an account with the admin role"),
         None => Err("admin access requires authentication"),
     }
+}
+
+fn auth_disabled_admin_user() -> AuthenticatedUser {
+    AuthenticatedUser::new(
+        "auth-disabled-admin",
+        "local-admin",
+        UserRole::Admin.as_str(),
+        serde_json::json!({"auth_disabled": true}),
+    )
 }
 
 fn is_htmx_request(headers: &HeaderMap) -> bool {
@@ -3760,6 +3906,7 @@ mod tests {
 
     use async_trait::async_trait;
     use axum::{
+        body::to_bytes,
         body::Body,
         http::{Request, StatusCode},
         Extension, Router,
@@ -3771,7 +3918,7 @@ mod tests {
         RefreshToken, Series, SeriesQuery, SeriesUid, ServerSettings, SopInstanceUid, Study,
         StudyQuery, StudyUid, User, UserId, UserQuery,
     };
-    use pacs_plugin::{AuthenticatedUser, PluginRegistry, ServerInfo};
+    use pacs_plugin::{AuthenticatedUser, Plugin, PluginManifest, PluginRegistry, ServerInfo};
     use tower::ServiceExt;
 
     #[derive(Default)]
@@ -3902,6 +4049,22 @@ mod tests {
     #[derive(Default)]
     struct NoopBlobStore;
 
+    struct TestAuthPlugin;
+
+    #[async_trait]
+    impl Plugin for TestAuthPlugin {
+        fn manifest(&self) -> PluginManifest {
+            PluginManifest::new(AUTH_PLUGIN_ID, "Test Auth", "0.1.0")
+        }
+
+        async fn init(
+            &mut self,
+            _ctx: &pacs_plugin::PluginContext,
+        ) -> Result<(), pacs_plugin::PluginError> {
+            Ok(())
+        }
+    }
+
     #[async_trait]
     impl BlobStore for NoopBlobStore {
         async fn put(&self, _key: &str, _data: Bytes) -> PacsResult<()> {
@@ -3925,8 +4088,12 @@ mod tests {
         AuthenticatedUser::new("1", "alice", role.as_str(), serde_json::json!({}))
     }
 
-    fn test_admin_app(user: Option<AuthenticatedUser>) -> Router {
+    fn test_admin_app(user: Option<AuthenticatedUser>, auth_enabled: bool) -> Router {
         let store: Arc<dyn MetadataStore> = Arc::new(NoopMetadataStore);
+        let mut registry = PluginRegistry::new();
+        if auth_enabled {
+            registry.register(Box::new(TestAuthPlugin)).unwrap();
+        }
         let state = AppState {
             server_info: ServerInfo {
                 ae_title: "TESTPACS".into(),
@@ -3937,7 +4104,7 @@ mod tests {
             server_settings: ServerSettings::default(),
             store: Arc::clone(&store),
             blobs: Arc::new(NoopBlobStore),
-            plugins: Arc::new(PluginRegistry::new()),
+            plugins: Arc::new(registry),
         };
         let runtime = Arc::new(
             AdminRuntime::new(
@@ -3964,8 +4131,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dashboard_requires_admin_authentication() {
-        let resp = test_admin_app(None)
+    async fn dashboard_allows_access_when_auth_is_disabled() {
+        let resp = test_admin_app(None, false)
+            .oneshot(
+                Request::builder()
+                    .uri("/admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn dashboard_requires_admin_authentication_when_auth_is_enabled() {
+        let resp = test_admin_app(None, true)
             .oneshot(
                 Request::builder()
                     .uri("/admin")
@@ -3980,7 +4162,7 @@ mod tests {
 
     #[tokio::test]
     async fn system_page_forbids_non_admin_users() {
-        let resp = test_admin_app(Some(admin_user(UserRole::Viewer)))
+        let resp = test_admin_app(Some(admin_user(UserRole::Viewer)), true)
             .oneshot(
                 Request::builder()
                     .uri("/admin/system")
@@ -3995,7 +4177,7 @@ mod tests {
 
     #[tokio::test]
     async fn system_page_allows_admin_users() {
-        let resp = test_admin_app(Some(admin_user(UserRole::Admin)))
+        let resp = test_admin_app(Some(admin_user(UserRole::Admin)), true)
             .oneshot(
                 Request::builder()
                     .uri("/admin/system")
@@ -4010,7 +4192,7 @@ mod tests {
 
     #[tokio::test]
     async fn events_stream_forbids_non_admin_users() {
-        let resp = test_admin_app(Some(admin_user(UserRole::Viewer)))
+        let resp = test_admin_app(Some(admin_user(UserRole::Viewer)), true)
             .oneshot(
                 Request::builder()
                     .uri("/admin/events")
@@ -4021,6 +4203,64 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn admin_shell_shows_logout_button_for_local_cookie_sessions() {
+        let resp = test_admin_app(Some(admin_user(UserRole::Admin)), true)
+            .oneshot(
+                Request::builder()
+                    .uri("/admin")
+                    .header(header::COOKIE, "pacsnode_access_token=test-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("action=\"/admin/logout\""));
+        assert!(html.contains("Sign out"));
+    }
+
+    #[tokio::test]
+    async fn admin_logout_clears_local_auth_cookies() {
+        let resp = test_admin_app(Some(admin_user(UserRole::Admin)), true)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/logout")
+                    .header(
+                        header::COOKIE,
+                        "pacsnode_access_token=test-token; pacsnode_refresh_token=refresh-token",
+                    )
+                    .header("X-Forwarded-Proto", "https")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(resp.headers()[header::LOCATION], "/admin");
+        let cookies = resp
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .collect::<Vec<_>>();
+        assert!(cookies.iter().any(|cookie| {
+            cookie.starts_with("pacsnode_access_token=")
+                && cookie.contains("Max-Age=0")
+                && cookie.contains("; Secure")
+        }));
+        assert!(cookies.iter().any(|cookie| {
+            cookie.starts_with("pacsnode_refresh_token=")
+                && cookie.contains("Max-Age=0")
+                && cookie.contains("; Secure")
+        }));
     }
 
     #[test]

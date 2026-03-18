@@ -14,10 +14,12 @@ use argon2::{
     password_hash::{Error as PasswordHashError, PasswordHash, PasswordVerifier},
     Argon2,
 };
+use askama::Template;
 use async_trait::async_trait;
 use axum::{
-    extract::{Extension, Json, State},
-    http::{header, HeaderMap, Method, Request, StatusCode},
+    body::{to_bytes, Body},
+    extract::{Extension, Json, Query, State},
+    http::{header, HeaderMap, HeaderValue, Method, Request, StatusCode},
     middleware::{from_fn_with_state, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -38,10 +40,14 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, RwLock};
 use tracing::{error, warn};
+use url::form_urlencoded;
 use uuid::Uuid;
 
 /// Compile-time plugin ID for the built-in HTTP auth plugin.
 pub const BASIC_AUTH_PLUGIN_ID: &str = "basic-auth";
+
+const ACCESS_COOKIE_NAME: &str = "pacsnode_access_token";
+const REFRESH_COOKIE_NAME: &str = "pacsnode_refresh_token";
 
 #[derive(Default)]
 pub struct BasicAuthPlugin {
@@ -200,7 +206,38 @@ struct LoginRequest {
     password: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
+struct LoginPageQuery {
+    redirect: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LoginFormRequest {
+    username: String,
+    password: String,
+    redirect: Option<String>,
+}
+
+#[derive(Debug)]
+enum LoginSubmission {
+    Json(LoginRequest),
+    Form(LoginFormRequest),
+}
+
+#[derive(Debug)]
+enum RequestAuthentication {
+    Authenticated(AuthenticatedUser),
+    Refreshed(AuthenticatedUser, TokenResponse),
+}
+
+#[derive(Debug)]
+enum AuthFailure {
+    Missing(&'static str),
+    Invalid(&'static str),
+    Runtime(AuthRuntimeError),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TokenResponse {
     access_token: String,
     refresh_token: String,
@@ -222,6 +259,15 @@ struct MeResponse {
     role: String,
     attributes: serde_json::Value,
     is_active: bool,
+}
+
+#[derive(Template)]
+#[template(path = "login.html")]
+struct LoginPageTemplate {
+    login_path: String,
+    redirect_target: Option<String>,
+    username: String,
+    error_message: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -676,23 +722,27 @@ impl RoutePlugin for BasicAuthPlugin {
             TokenMode::Local(_) => Router::new()
                 .route(
                     &login_path,
-                    post({
+                    get({
                         let runtime = Arc::clone(&runtime);
-                        move |payload| login_handler(Arc::clone(&runtime), payload)
+                        move |query| login_page_handler(Arc::clone(&runtime), query)
+                    })
+                    .post({
+                        let runtime = Arc::clone(&runtime);
+                        move |request| login_handler(Arc::clone(&runtime), request)
                     }),
                 )
                 .route(
                     &refresh_path,
                     post({
                         let runtime = Arc::clone(&runtime);
-                        move |payload| refresh_handler(Arc::clone(&runtime), payload)
+                        move |request| refresh_handler(Arc::clone(&runtime), request)
                     }),
                 )
                 .route(
                     &logout_path,
                     post({
                         let runtime = Arc::clone(&runtime);
-                        move |Extension(user)| logout_handler(Arc::clone(&runtime), user)
+                        move |request| logout_handler(Arc::clone(&runtime), request)
                     }),
                 )
                 .route(&me_path, get(me_handler)),
@@ -884,19 +934,70 @@ impl AuthRuntime {
     }
 }
 
-async fn login_handler(runtime: Arc<AuthRuntime>, Json(payload): Json<LoginRequest>) -> Response {
-    match runtime
-        .authenticate_user(&payload.username, &payload.password)
-        .await
-    {
+async fn login_page_handler(
+    runtime: Arc<AuthRuntime>,
+    Query(query): Query<LoginPageQuery>,
+) -> Response {
+    render_login_page(
+        runtime.as_ref(),
+        sanitize_redirect_target(query.redirect.as_deref()),
+        String::new(),
+        None,
+        StatusCode::OK,
+    )
+}
+
+async fn login_handler(runtime: Arc<AuthRuntime>, request: Request<Body>) -> Response {
+    let secure_cookies = request_uses_secure_transport(request.headers());
+    let submission = match parse_login_submission(request).await {
+        Ok(submission) => submission,
+        Err(response) => return response,
+    };
+
+    let (username, password, redirect_target, browser_response) = match submission {
+        LoginSubmission::Json(payload) => (payload.username, payload.password, None, false),
+        LoginSubmission::Form(payload) => (
+            payload.username,
+            payload.password,
+            sanitize_redirect_target(payload.redirect.as_deref()),
+            true,
+        ),
+    };
+
+    match runtime.authenticate_user(&username, &password).await {
         Ok(Some(user)) => match runtime.issue_token_pair(&user).await {
-            Ok(tokens) => Json(tokens).into_response(),
+            Ok(tokens) => {
+                let mut response = if browser_response {
+                    redirect_response(redirect_target.as_deref().unwrap_or("/"))
+                } else {
+                    Json(tokens.clone()).into_response()
+                };
+                append_auth_cookies(
+                    response.headers_mut(),
+                    runtime.as_ref(),
+                    &tokens,
+                    secure_cookies,
+                );
+                response
+            }
             Err(error) => {
                 error!(plugin_id = BASIC_AUTH_PLUGIN_ID, error = %error, "Failed to issue token pair");
                 internal_error_response()
             }
         },
-        Ok(None) => unauthorized_response("invalid credentials"),
+        Ok(None) => {
+            if browser_response {
+                render_login_page(
+                    runtime.as_ref(),
+                    redirect_target,
+                    username,
+                    Some("Invalid username or password.".into()),
+                    StatusCode::UNAUTHORIZED,
+                )
+            } else {
+                unauthorized_response("invalid credentials")
+            }
+        }
         Err(error) => {
             error!(plugin_id = BASIC_AUTH_PLUGIN_ID, error = %error, "Credential verification failed");
             internal_error_response()
@@ -904,12 +1005,43 @@ async fn login_handler(runtime: Arc<AuthRuntime>, Json(payload): Json<LoginReque
     }
 }
 
-async fn refresh_handler(
-    runtime: Arc<AuthRuntime>,
-    Json(payload): Json<RefreshRequest>,
-) -> Response {
-    match runtime.refresh_tokens(&payload.refresh_token).await {
-        Ok(Some(tokens)) => Json(tokens).into_response(),
+async fn refresh_handler(runtime: Arc<AuthRuntime>, request: Request<Body>) -> Response {
+    let headers = request.headers().clone();
+    let secure_cookies = request_uses_secure_transport(&headers);
+    let body = match to_bytes(request.into_body(), usize::MAX).await {
+        Ok(body) => body,
+        Err(error) => {
+            error!(plugin_id = BASIC_AUTH_PLUGIN_ID, error = %error, "Failed to read refresh request body");
+            return internal_error_response();
+        }
+    };
+
+    let refresh_token = if !body.is_empty() {
+        match serde_json::from_slice::<RefreshRequest>(&body) {
+            Ok(payload) => payload.refresh_token,
+            Err(_) => match cookie_value(&headers, REFRESH_COOKIE_NAME) {
+                Some(token) => token,
+                None => return unauthorized_response("invalid refresh token"),
+            },
+        }
+    } else {
+        match cookie_value(&headers, REFRESH_COOKIE_NAME) {
+            Some(token) => token,
+            None => return unauthorized_response("invalid refresh token"),
+        }
+    };
+
+    match runtime.refresh_tokens(&refresh_token).await {
+        Ok(Some(tokens)) => {
+            let mut response = Json(tokens.clone()).into_response();
+            append_auth_cookies(
+                response.headers_mut(),
+                runtime.as_ref(),
+                &tokens,
+                secure_cookies,
+            );
+            response
+        }
         Ok(None) => unauthorized_response("invalid refresh token"),
         Err(error) => {
             error!(plugin_id = BASIC_AUTH_PLUGIN_ID, error = %error, "Failed to refresh token pair");
@@ -918,7 +1050,22 @@ async fn refresh_handler(
     }
 }
 
-async fn logout_handler(runtime: Arc<AuthRuntime>, user: AuthenticatedUser) -> Response {
+async fn logout_handler(runtime: Arc<AuthRuntime>, request: Request<Body>) -> Response {
+    let prefers_html = prefers_html_response(request.headers());
+    let secure_cookies = request_uses_secure_transport(request.headers());
+    let user = match request.extensions().get::<AuthenticatedUser>().cloned() {
+        Some(user) => user,
+        None => {
+            let mut response = if prefers_html {
+                redirect_response(&runtime.login_path)
+            } else {
+                unauthorized_response("missing bearer token")
+            };
+            append_clear_auth_cookies(response.headers_mut(), secure_cookies);
+            return response;
+        }
+    };
+
     let user_id = match user.user_id.parse::<UserId>() {
         Ok(user_id) => user_id,
         Err(error) => {
@@ -928,7 +1075,15 @@ async fn logout_handler(runtime: Arc<AuthRuntime>, user: AuthenticatedUser) -> R
     };
 
     match runtime.store.revoke_refresh_tokens(&user_id).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(()) => {
+            let mut response = if prefers_html {
+                redirect_response(&runtime.login_path)
+            } else {
+                StatusCode::NO_CONTENT.into_response()
+            };
+            append_clear_auth_cookies(response.headers_mut(), secure_cookies);
+            response
+        }
         Err(error) => {
             error!(plugin_id = BASIC_AUTH_PLUGIN_ID, error = %error, "Failed to revoke refresh tokens");
             internal_error_response()
@@ -987,31 +1142,104 @@ async fn auth_middleware(
     mut request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
+    let secure_cookies = request_uses_secure_transport(request.headers());
     if request.method() == Method::OPTIONS || runtime.is_public_path(request.uri().path()) {
         return next.run(request).await;
     }
 
-    let token = match bearer_token(request.headers()) {
-        Ok(token) => token,
-        Err(message) => return unauthorized_response(message),
-    };
-
-    match runtime.current_user_from_token(token).await {
-        Ok(user) => {
+    match authenticate_request(runtime.as_ref(), request.headers()).await {
+        Ok(RequestAuthentication::Authenticated(user)) => {
             request.extensions_mut().insert(user);
             next.run(request).await
         }
-        Err(AuthRuntimeError::Jwt(_)) => unauthorized_response("invalid or expired bearer token"),
-        Err(AuthRuntimeError::Store(PacsError::NotFound { .. })) => {
-            unauthorized_response("unknown user")
+        Ok(RequestAuthentication::Refreshed(user, tokens)) => {
+            request.extensions_mut().insert(user);
+            let mut response = next.run(request).await;
+            append_auth_cookies(
+                response.headers_mut(),
+                runtime.as_ref(),
+                &tokens,
+                secure_cookies,
+            );
+            response
         }
-        Err(AuthRuntimeError::Store(PacsError::InvalidRequest(_))) => {
-            unauthorized_response("inactive or locked user")
+        Err(AuthFailure::Missing(message)) | Err(AuthFailure::Invalid(message)) => {
+            login_required_response(runtime.as_ref(), &request, message)
         }
-        Err(error) => {
+        Err(AuthFailure::Runtime(AuthRuntimeError::Jwt(_))) => login_required_response(
+            runtime.as_ref(),
+            &request,
+            "invalid or expired bearer token",
+        ),
+        Err(AuthFailure::Runtime(AuthRuntimeError::Store(PacsError::NotFound { .. }))) => {
+            login_required_response(runtime.as_ref(), &request, "unknown user")
+        }
+        Err(AuthFailure::Runtime(AuthRuntimeError::Store(PacsError::InvalidRequest(_)))) => {
+            login_required_response(runtime.as_ref(), &request, "inactive or locked user")
+        }
+        Err(AuthFailure::Runtime(error)) => {
             error!(plugin_id = BASIC_AUTH_PLUGIN_ID, error = %error, "Token validation failed");
             internal_error_response()
         }
+    }
+}
+
+async fn authenticate_request(
+    runtime: &AuthRuntime,
+    headers: &HeaderMap,
+) -> Result<RequestAuthentication, AuthFailure> {
+    match &runtime.token_mode {
+        TokenMode::Local(_) => {
+            let access_cookie = cookie_value(headers, ACCESS_COOKIE_NAME);
+            if let Some(access_token) = access_cookie.as_deref() {
+                match runtime.current_user_from_token(access_token).await {
+                    Ok(user) => return Ok(RequestAuthentication::Authenticated(user)),
+                    Err(AuthRuntimeError::Jwt(_))
+                    | Err(AuthRuntimeError::Store(PacsError::NotFound { .. }))
+                    | Err(AuthRuntimeError::Store(PacsError::InvalidRequest(_))) => {}
+                    Err(error) => return Err(AuthFailure::Runtime(error)),
+                }
+            }
+
+            if let Some(refresh_token) = cookie_value(headers, REFRESH_COOKIE_NAME) {
+                match runtime.refresh_tokens(&refresh_token).await {
+                    Ok(Some(tokens)) => {
+                        let user = runtime
+                            .current_user_from_token(&tokens.access_token)
+                            .await
+                            .map_err(AuthFailure::Runtime)?;
+                        return Ok(RequestAuthentication::Refreshed(user, tokens));
+                    }
+                    Ok(None) => {}
+                    Err(error) => return Err(AuthFailure::Runtime(error)),
+                }
+            }
+
+            match bearer_token(headers) {
+                Ok(token) => runtime
+                    .current_user_from_token(token)
+                    .await
+                    .map(RequestAuthentication::Authenticated)
+                    .map_err(AuthFailure::Runtime),
+                Err(message) => {
+                    if access_cookie.is_some()
+                        || cookie_value(headers, REFRESH_COOKIE_NAME).is_some()
+                    {
+                        Err(AuthFailure::Invalid("invalid or expired session"))
+                    } else {
+                        Err(AuthFailure::Missing(message))
+                    }
+                }
+            }
+        }
+        TokenMode::Oidc(_) => match bearer_token(headers) {
+            Ok(token) => runtime
+                .current_user_from_token(token)
+                .await
+                .map(RequestAuthentication::Authenticated)
+                .map_err(AuthFailure::Runtime),
+            Err(message) => Err(AuthFailure::Missing(message)),
+        },
     }
 }
 
@@ -1219,6 +1447,238 @@ fn bearer_token(headers: &HeaderMap) -> Result<&str, &'static str> {
         (Some(scheme), Some(token), None) if scheme.eq_ignore_ascii_case("bearer") => Ok(token),
         _ => Err("invalid authorization header"),
     }
+}
+
+fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|raw| {
+            raw.split(';').find_map(|entry| {
+                let (cookie_name, cookie_value) = entry.trim().split_once('=')?;
+                (cookie_name == name).then(|| cookie_value.to_string())
+            })
+        })
+}
+
+fn append_auth_cookies(
+    headers: &mut HeaderMap,
+    runtime: &AuthRuntime,
+    tokens: &TokenResponse,
+    secure: bool,
+) {
+    append_set_cookie(
+        headers,
+        build_cookie(
+            ACCESS_COOKIE_NAME,
+            &tokens.access_token,
+            runtime.access_token_ttl_secs,
+            secure,
+        ),
+    );
+    append_set_cookie(
+        headers,
+        build_cookie(
+            REFRESH_COOKIE_NAME,
+            &tokens.refresh_token,
+            runtime.refresh_token_ttl_secs,
+            secure,
+        ),
+    );
+}
+
+fn append_clear_auth_cookies(headers: &mut HeaderMap, secure: bool) {
+    append_set_cookie(headers, clear_cookie(ACCESS_COOKIE_NAME, secure));
+    append_set_cookie(headers, clear_cookie(REFRESH_COOKIE_NAME, secure));
+}
+
+fn append_set_cookie(headers: &mut HeaderMap, value: String) {
+    match HeaderValue::from_str(&value) {
+        Ok(value) => {
+            headers.append(header::SET_COOKIE, value);
+        }
+        Err(error) => {
+            error!(plugin_id = BASIC_AUTH_PLUGIN_ID, error = %error, "Failed to encode Set-Cookie header");
+        }
+    }
+}
+
+fn build_cookie(name: &str, value: &str, max_age_secs: u64, secure: bool) -> String {
+    let secure_suffix = if secure { "; Secure" } else { "" };
+    format!("{name}={value}; Path=/; Max-Age={max_age_secs}; HttpOnly; SameSite=Lax{secure_suffix}")
+}
+
+fn clear_cookie(name: &str, secure: bool) -> String {
+    let secure_suffix = if secure { "; Secure" } else { "" };
+    format!("{name}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax{secure_suffix}")
+}
+
+fn request_uses_secure_transport(headers: &HeaderMap) -> bool {
+    forwarded_proto(headers).is_some_and(|proto| proto.eq_ignore_ascii_case("https"))
+        || headers
+            .get("X-Forwarded-Ssl")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.eq_ignore_ascii_case("on"))
+}
+
+fn forwarded_proto(headers: &HeaderMap) -> Option<&str> {
+    if let Some(proto) = headers
+        .get("X-Forwarded-Proto")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(proto);
+    }
+
+    headers
+        .get("Forwarded")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            value.split(';').find_map(|segment| {
+                let (key, forwarded_value) = segment.trim().split_once('=')?;
+                key.eq_ignore_ascii_case("proto")
+                    .then(|| forwarded_value.trim_matches('"').trim())
+            })
+        })
+        .filter(|value| !value.is_empty())
+}
+
+fn render_login_page(
+    runtime: &AuthRuntime,
+    redirect_target: Option<String>,
+    username: String,
+    error_message: Option<String>,
+    status: StatusCode,
+) -> Response {
+    let template = LoginPageTemplate {
+        login_path: runtime.login_path.clone(),
+        redirect_target,
+        username,
+        error_message,
+    };
+    match template.render() {
+        Ok(html) => (
+            status,
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            html,
+        )
+            .into_response(),
+        Err(error) => {
+            error!(plugin_id = BASIC_AUTH_PLUGIN_ID, error = %error, "Failed to render login page");
+            internal_error_response()
+        }
+    }
+}
+
+fn login_required_response(
+    runtime: &AuthRuntime,
+    request: &Request<Body>,
+    message: &'static str,
+) -> Response {
+    let redirect_target = sanitize_redirect_target(
+        request
+            .uri()
+            .path_and_query()
+            .map(|value| value.as_str())
+            .or_else(|| Some(request.uri().path())),
+    )
+    .unwrap_or_else(|| "/".into());
+    let login_url = login_url_with_redirect(&runtime.login_path, &redirect_target);
+
+    if is_htmx_request(request.headers()) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            [("HX-Redirect", login_url)],
+            "authentication required",
+        )
+            .into_response();
+    }
+
+    if request.method() == Method::GET && prefers_html_response(request.headers()) {
+        return redirect_response(&login_url);
+    }
+
+    unauthorized_response(message)
+}
+
+fn redirect_response(location: &str) -> Response {
+    (
+        StatusCode::SEE_OTHER,
+        [(header::LOCATION, location.to_string())],
+    )
+        .into_response()
+}
+
+fn prefers_html_response(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/html") || value.contains("application/xhtml+xml"))
+}
+
+fn is_htmx_request(headers: &HeaderMap) -> bool {
+    headers
+        .get("HX-Request")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case("true"))
+}
+
+fn login_url_with_redirect(login_path: &str, redirect_target: &str) -> String {
+    let mut serializer = form_urlencoded::Serializer::new(String::new());
+    serializer.append_pair("redirect", redirect_target);
+    format!("{login_path}?{}", serializer.finish())
+}
+
+fn sanitize_redirect_target(redirect_target: Option<&str>) -> Option<String> {
+    let target = redirect_target?.trim();
+    if target.is_empty() || !target.starts_with('/') || target.starts_with("//") {
+        return None;
+    }
+    Some(target.to_string())
+}
+
+async fn parse_login_submission(request: Request<Body>) -> Result<LoginSubmission, Response> {
+    let headers = request.headers().clone();
+    let body = match to_bytes(request.into_body(), usize::MAX).await {
+        Ok(body) => body,
+        Err(error) => {
+            error!(plugin_id = BASIC_AUTH_PLUGIN_ID, error = %error, "Failed to read login request body");
+            return Err(internal_error_response());
+        }
+    };
+
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+
+    if content_type.starts_with("application/json") {
+        return serde_json::from_slice::<LoginRequest>(&body)
+            .map(LoginSubmission::Json)
+            .map_err(|_| unauthorized_response("invalid login payload"));
+    }
+
+    if content_type.starts_with("application/x-www-form-urlencoded") {
+        let fields: HashMap<String, String> =
+            form_urlencoded::parse(body.as_ref()).into_owned().collect();
+        let username = fields.get("username").cloned().unwrap_or_default();
+        let password = fields.get("password").cloned().unwrap_or_default();
+        return Ok(LoginSubmission::Form(LoginFormRequest {
+            username,
+            password,
+            redirect: fields.get("redirect").cloned(),
+        }));
+    }
+
+    Err((
+        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        Json(serde_json::json!({
+            "error": "login requires application/json or application/x-www-form-urlencoded"
+        })),
+    )
+        .into_response())
 }
 
 fn path_matches(path: &str, configured: &str) -> bool {
@@ -1655,6 +2115,29 @@ mod tests {
             .with_state(app_state())
     }
 
+    fn response_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+        headers
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .find_map(|value| {
+                let raw = value.to_str().ok()?;
+                let first_segment = raw.split(';').next()?;
+                let (cookie_name, cookie_value) = first_segment.split_once('=')?;
+                (cookie_name == name).then(|| cookie_value.to_string())
+            })
+    }
+
+    fn response_set_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+        headers
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .find_map(|value| {
+                let raw = value.to_str().ok()?;
+                raw.starts_with(&format!("{name}="))
+                    .then(|| raw.to_string())
+            })
+    }
+
     fn sign_oidc_token_with_key(private_key_pem: &str, kid: Option<&str>, claims: Value) -> String {
         let mut header = Header::new(Algorithm::RS256);
         header.kid = kid.map(str::to_string);
@@ -1788,6 +2271,215 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(protected_response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn login_page_renders_html_form() {
+        let app = build_test_router().await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/auth/login?redirect=%2Fviewer%2F")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/html; charset=utf-8"
+        );
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("<form method=\"post\" action=\"/auth/login\">"));
+        assert!(html.contains("name=\"redirect\" value=\"/viewer/\""));
+    }
+
+    #[tokio::test]
+    async fn form_login_sets_cookies_and_redirects() {
+        let app = build_test_router().await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/login")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(
+                        "username=admin&password=secret&redirect=%2Fviewer%2F",
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(response.headers()[header::LOCATION], "/viewer/");
+        assert!(response_cookie(response.headers(), ACCESS_COOKIE_NAME).is_some());
+        assert!(response_cookie(response.headers(), REFRESH_COOKIE_NAME).is_some());
+    }
+
+    #[tokio::test]
+    async fn html_navigation_redirects_to_login() {
+        let app = build_test_router().await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/protected")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            response.headers()[header::LOCATION],
+            "/auth/login?redirect=%2Fapi%2Fprotected"
+        );
+    }
+
+    #[tokio::test]
+    async fn cookie_session_grants_access() {
+        let app = build_test_router().await;
+        let login_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/login")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from("username=admin&password=secret"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let access_cookie = response_cookie(login_response.headers(), ACCESS_COOKIE_NAME).unwrap();
+        let refresh_cookie =
+            response_cookie(login_response.headers(), REFRESH_COOKIE_NAME).unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/protected")
+                    .header(
+                        header::COOKIE,
+                        format!(
+                            "{ACCESS_COOKIE_NAME}={access_cookie}; {REFRESH_COOKIE_NAME}={refresh_cookie}"
+                        ),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn refresh_cookie_renews_browser_session() {
+        let app = build_test_router().await;
+        let login_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/login")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "username": "admin",
+                            "password": "secret"
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let refresh_cookie =
+            response_cookie(login_response.headers(), REFRESH_COOKIE_NAME).unwrap();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/protected")
+                    .header(
+                        header::COOKIE,
+                        format!("{REFRESH_COOKIE_NAME}={refresh_cookie}"),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response_cookie(response.headers(), ACCESS_COOKIE_NAME).is_some());
+    }
+
+    #[tokio::test]
+    async fn forwarded_https_marks_and_clears_secure_cookies() {
+        let app = build_test_router().await;
+        let login_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/login")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .header("X-Forwarded-Proto", "https")
+                    .body(Body::from(
+                        "username=admin&password=secret&redirect=%2Fadmin",
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let access_cookie_header =
+            response_set_cookie(login_response.headers(), ACCESS_COOKIE_NAME).unwrap();
+        let refresh_cookie_header =
+            response_set_cookie(login_response.headers(), REFRESH_COOKIE_NAME).unwrap();
+        assert!(access_cookie_header.contains("; Secure"));
+        assert!(refresh_cookie_header.contains("; Secure"));
+
+        let access_cookie = response_cookie(login_response.headers(), ACCESS_COOKIE_NAME).unwrap();
+        let refresh_cookie =
+            response_cookie(login_response.headers(), REFRESH_COOKIE_NAME).unwrap();
+
+        let logout_response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/logout")
+                    .header(header::ACCEPT, "text/html")
+                    .header("X-Forwarded-Proto", "https")
+                    .header(
+                        header::COOKIE,
+                        format!(
+                            "{ACCESS_COOKIE_NAME}={access_cookie}; {REFRESH_COOKIE_NAME}={refresh_cookie}"
+                        ),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let cleared_access =
+            response_set_cookie(logout_response.headers(), ACCESS_COOKIE_NAME).unwrap();
+        let cleared_refresh =
+            response_set_cookie(logout_response.headers(), REFRESH_COOKIE_NAME).unwrap();
+        assert!(cleared_access.contains("Max-Age=0"));
+        assert!(cleared_access.contains("; Secure"));
+        assert!(cleared_refresh.contains("Max-Age=0"));
+        assert!(cleared_refresh.contains("; Secure"));
     }
 
     #[tokio::test]

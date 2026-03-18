@@ -2196,6 +2196,8 @@ name = "pacs-auth-plugin"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "askama",
+ "askama_axum",
  "async-trait",
  "axum",
  "bytes",
@@ -2212,6 +2214,7 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "url",
  "uuid",
 ]
 

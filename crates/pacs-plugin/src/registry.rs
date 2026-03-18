@@ -187,6 +187,11 @@ impl PluginRegistry {
         self.blob_store.as_ref().map(|(_, store)| Arc::clone(store))
     }
 
+    /// Returns whether a plugin with the given ID is active in the registry.
+    pub fn has_plugin(&self, plugin_id: &str) -> bool {
+        self.plugin_ids.contains_key(plugin_id)
+    }
+
     /// Returns the active C-STORE SCP handler, if any.
     pub fn store_scp_handler(
         self: &Arc<Self>,

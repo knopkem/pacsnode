@@ -27,6 +27,13 @@
           <a href="{{ route_prefix }}/nodes" class="{% if active_nav == "nodes" %}active{% endif %}">Nodes</a>
           <a href="{{ route_prefix }}/audit" class="{% if active_nav == "audit" %}active{% endif %}">Audit</a>
         </nav>
+        {% match logout_path %}
+        {% when Some with (path) %}
+        <form class="sidebar-logout" method="post" action="{{ path }}">
+          <button type="submit" class="sidebar-logout-button">Sign out</button>
+        </form>
+        {% when None %}
+        {% endmatch %}
       </aside>
       <main class="content">
         {% block content %}{% endblock %}

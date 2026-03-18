@@ -7,7 +7,7 @@ This guide covers the two supported authentication modes in pacsnode:
 
 ## 1. Choose a mode
 
-Use local auth when you want pacsnode to manage users, password policy, refresh tokens, and the first bootstrap admin account.
+Use local auth when you want pacsnode to manage users, password policy, browser sign-in, refresh tokens, and the first bootstrap admin account.
 
 Use OIDC mode when login happens elsewhere and pacsnode only needs to validate incoming bearer tokens from a provider such as Keycloak or Auth0.
 
@@ -40,17 +40,37 @@ Notes:
 ./target/release/pacsnode
 ```
 
-### 2.3 Bootstrap the first admin user
+### 2.3 First startup bootstrap
 
-Run this once after enabling `basic-auth`:
+On the first startup with local auth enabled and no existing users, pacsnode creates a bootstrap `admin` account automatically and logs the generated password once.
+
+Use those credentials immediately at either of these browser entry points:
+
+- `http://localhost:8042/admin`
+- `http://localhost:8042/viewer/`
+
+Unauthenticated browser requests are redirected to the built-in login page at `/auth/login`. After a successful login, pacsnode sets httpOnly cookies and redirects back to the original admin or viewer URL.
+
+If you need to seed an account ahead of time instead of relying on first-run bootstrap, the CLI is still available:
 
 ```bash
 ./target/release/pacsnode create-admin --username admin --email admin@example.test
 ```
 
-The command prints a one-time generated password that already satisfies the stored password policy.
+### 2.4 Browser flow
 
-### 2.4 Log in and obtain tokens
+The default local-auth experience is browser-based:
+
+- open `/admin` to manage users, password policy, server settings, DICOM nodes, and audit data
+- open `/viewer/` to sign in and launch the bundled OHIF viewer
+- pacsnode refreshes browser sessions with the refresh-token cookie automatically when possible
+- the admin shell includes a built-in `Sign out` action that revokes the current user's refresh sessions and clears the browser cookies
+
+No manual token copying is required for the admin console or the bundled viewer.
+
+### 2.5 Optional API usage
+
+Programmatic clients can still use the JSON login endpoint if they need bearer tokens:
 
 ```bash
 curl -s http://localhost:8042/auth/login \
@@ -72,7 +92,7 @@ Example response:
 }
 ```
 
-### 2.5 Call protected endpoints
+### 2.6 Call protected endpoints
 
 ```bash
 export PACS_TOKEN="<jwt>"
@@ -87,7 +107,7 @@ curl -s http://localhost:8042/wado/studies?limit=10 \
   -H "Authorization: Bearer $PACS_TOKEN"
 ```
 
-### 2.6 Refresh or revoke tokens
+### 2.7 Refresh or revoke tokens
 
 Refresh an access token:
 
@@ -104,7 +124,7 @@ curl -i -X POST http://localhost:8042/auth/logout \
   -H "Authorization: Bearer $PACS_TOKEN"
 ```
 
-### 2.7 Manage users and password policy
+### 2.8 Manage users and password policy
 
 After the first admin login, use the admin dashboard for day-to-day administration:
 
@@ -130,7 +150,7 @@ The built-in role set is:
 
 ## 3. OIDC Bearer Validation Tutorial
 
-In OIDC mode, pacsnode does not perform the browser login flow. It validates bearer tokens that were issued elsewhere.
+In OIDC mode, pacsnode does not perform the local username/password browser login flow. It validates bearer tokens that were issued elsewhere.
 
 ### 3.1 Issuer-discovery mode
 
@@ -229,7 +249,8 @@ attributes_claims = ["department", "claims.site", "email"]
 
 ## 5. Operational Notes
 
-- Local mode uses pacsnode-managed refresh tokens; OIDC mode validates access tokens only.
+- Local mode provides a built-in login page plus pacsnode-managed access and refresh-token cookies; OIDC mode validates access tokens only.
+- When pacsnode sits behind an HTTPS reverse proxy, local auth marks browser cookies as `Secure` automatically by honoring `X-Forwarded-Proto` and standard `Forwarded: proto=...` headers.
 - JWKS mode caches signing keys and refreshes on expiry or unknown `kid`.
 - Discovery mode caches the discovered JWKS location and then uses the same cached JWKS validation path.
 - Account lockout is enforced only for local users because OIDC logins happen outside pacsnode.

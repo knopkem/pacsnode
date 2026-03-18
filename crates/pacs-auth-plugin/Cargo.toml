@@ -10,18 +10,21 @@ license.workspace      = true
 argon2      = { workspace = true }
 async-trait = { workspace = true }
 axum        = { workspace = true }
+chrono      = { workspace = true }
 http        = { workspace = true }
 jsonwebtoken = { workspace = true }
+pacs-core   = { workspace = true }
 pacs-plugin = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
+sha2        = "0.10"
 thiserror   = { workspace = true }
 tracing     = { workspace = true }
+uuid        = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
 axum        = { workspace = true }
 bytes       = { workspace = true }
-pacs-core   = { workspace = true }
 tokio       = { workspace = true }
 tower       = { workspace = true }

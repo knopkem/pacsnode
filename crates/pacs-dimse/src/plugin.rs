@@ -193,8 +193,8 @@ mod tests {
     use pacs_core::{
         AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson, DicomNode, Instance,
         InstanceQuery, MetadataStore, NewAuditLogEntry, PacsError, PacsResult, PacsStatistics,
-        Series, SeriesQuery, SeriesUid, ServerSettings, SopInstanceUid, Study, StudyQuery,
-        StudyUid,
+        PasswordPolicy, RefreshToken, Series, SeriesQuery, SeriesUid, ServerSettings,
+        SopInstanceUid, Study, StudyQuery, StudyUid, User, UserId, UserQuery,
     };
     use pacs_plugin::{EventBus, ServerInfo};
 
@@ -276,6 +276,58 @@ mod tests {
                 num_instances: 0,
                 disk_usage_bytes: 0,
             })
+        }
+
+        async fn store_user(&self, _user: &User) -> PacsResult<()> {
+            Ok(())
+        }
+
+        async fn get_user(&self, id: &UserId) -> PacsResult<User> {
+            Err(PacsError::NotFound {
+                resource: "user",
+                uid: id.to_string(),
+            })
+        }
+
+        async fn get_user_by_username(&self, username: &str) -> PacsResult<User> {
+            Err(PacsError::NotFound {
+                resource: "user",
+                uid: username.to_string(),
+            })
+        }
+
+        async fn query_users(&self, _q: &UserQuery) -> PacsResult<Vec<User>> {
+            Ok(vec![])
+        }
+
+        async fn delete_user(&self, id: &UserId) -> PacsResult<()> {
+            Err(PacsError::NotFound {
+                resource: "user",
+                uid: id.to_string(),
+            })
+        }
+
+        async fn store_refresh_token(&self, _token: &RefreshToken) -> PacsResult<()> {
+            Ok(())
+        }
+
+        async fn get_refresh_token(&self, token_hash: &str) -> PacsResult<RefreshToken> {
+            Err(PacsError::NotFound {
+                resource: "refresh_token",
+                uid: token_hash.to_string(),
+            })
+        }
+
+        async fn revoke_refresh_tokens(&self, _user_id: &UserId) -> PacsResult<()> {
+            Ok(())
+        }
+
+        async fn get_password_policy(&self) -> PacsResult<PasswordPolicy> {
+            Ok(PasswordPolicy::default())
+        }
+
+        async fn upsert_password_policy(&self, _policy: &PasswordPolicy) -> PacsResult<()> {
+            Ok(())
         }
 
         async fn list_nodes(&self) -> PacsResult<Vec<DicomNode>> {

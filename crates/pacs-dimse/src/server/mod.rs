@@ -1264,8 +1264,8 @@ mod ae_whitelist_tests {
     use pacs_core::{
         AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson,
         DicomNode as RegisteredDicomNode, Instance, InstanceQuery, MetadataStore, NewAuditLogEntry,
-        PacsResult, PacsStatistics, Series, SeriesQuery, SeriesUid, ServerSettings, SopInstanceUid,
-        Study, StudyQuery, StudyUid,
+        PacsResult, PacsStatistics, PasswordPolicy, RefreshToken, Series, SeriesQuery, SeriesUid,
+        ServerSettings, SopInstanceUid, Study, StudyQuery, StudyUid, User, UserId, UserQuery,
     };
 
     use super::*;
@@ -1355,6 +1355,46 @@ mod ae_whitelist_tests {
         }
 
         async fn get_statistics(&self) -> PacsResult<PacsStatistics> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn store_user(&self, _user: &User) -> PacsResult<()> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn get_user(&self, _id: &UserId) -> PacsResult<User> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn get_user_by_username(&self, _username: &str) -> PacsResult<User> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn query_users(&self, _q: &UserQuery) -> PacsResult<Vec<User>> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn delete_user(&self, _id: &UserId) -> PacsResult<()> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn store_refresh_token(&self, _token: &RefreshToken) -> PacsResult<()> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn get_refresh_token(&self, _token_hash: &str) -> PacsResult<RefreshToken> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn revoke_refresh_tokens(&self, _user_id: &UserId) -> PacsResult<()> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn get_password_policy(&self) -> PacsResult<PasswordPolicy> {
+            Err(PacsError::Internal("unused".into()))
+        }
+
+        async fn upsert_password_policy(&self, _policy: &PasswordPolicy) -> PacsResult<()> {
             Err(PacsError::Internal("unused".into()))
         }
 
@@ -1470,8 +1510,8 @@ mod tests {
     use pacs_core::{
         AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson,
         DicomNode as RegisteredDicomNode, Instance, InstanceQuery, MetadataStore, NewAuditLogEntry,
-        PacsResult, PacsStatistics, Series, SeriesQuery, SeriesUid, ServerSettings, SopInstanceUid,
-        Study, StudyQuery, StudyUid,
+        PacsResult, PacsStatistics, PasswordPolicy, RefreshToken, Series, SeriesQuery, SeriesUid,
+        ServerSettings, SopInstanceUid, Study, StudyQuery, StudyUid, User, UserId, UserQuery,
     };
     use tokio::{
         io::AsyncWriteExt,
@@ -1497,6 +1537,16 @@ mod tests {
             async fn delete_series(&self, uid: &SeriesUid) -> PacsResult<()>;
             async fn delete_instance(&self, uid: &SopInstanceUid) -> PacsResult<()>;
             async fn get_statistics(&self) -> PacsResult<PacsStatistics>;
+            async fn store_user(&self, user: &User) -> PacsResult<()>;
+            async fn get_user(&self, id: &UserId) -> PacsResult<User>;
+            async fn get_user_by_username(&self, username: &str) -> PacsResult<User>;
+            async fn query_users(&self, q: &UserQuery) -> PacsResult<Vec<User>>;
+            async fn delete_user(&self, id: &UserId) -> PacsResult<()>;
+            async fn store_refresh_token(&self, token: &RefreshToken) -> PacsResult<()>;
+            async fn get_refresh_token(&self, token_hash: &str) -> PacsResult<RefreshToken>;
+            async fn revoke_refresh_tokens(&self, user_id: &UserId) -> PacsResult<()>;
+            async fn get_password_policy(&self) -> PacsResult<PasswordPolicy>;
+            async fn upsert_password_policy(&self, policy: &PasswordPolicy) -> PacsResult<()>;
             async fn list_nodes(&self) -> PacsResult<Vec<RegisteredDicomNode>>;
             async fn upsert_node(&self, node: &RegisteredDicomNode) -> PacsResult<()>;
             async fn delete_node(&self, ae_title: &str) -> PacsResult<()>;

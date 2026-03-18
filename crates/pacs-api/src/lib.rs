@@ -26,8 +26,9 @@ pub(crate) mod test_support {
     use mockall::mock;
     use pacs_core::{
         AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson, DicomNode, Instance,
-        InstanceQuery, MetadataStore, NewAuditLogEntry, PacsResult, PacsStatistics, Series,
-        SeriesQuery, SeriesUid, ServerSettings, SopInstanceUid, Study, StudyQuery, StudyUid,
+        InstanceQuery, MetadataStore, NewAuditLogEntry, PacsResult, PacsStatistics, PasswordPolicy,
+        RefreshToken, Series, SeriesQuery, SeriesUid, ServerSettings, SopInstanceUid, Study,
+        StudyQuery, StudyUid, User, UserId, UserQuery,
     };
 
     use pacs_plugin::PluginRegistry;
@@ -53,6 +54,16 @@ pub(crate) mod test_support {
             async fn delete_series(&self, uid: &SeriesUid) -> PacsResult<()>;
             async fn delete_instance(&self, uid: &SopInstanceUid) -> PacsResult<()>;
             async fn get_statistics(&self) -> PacsResult<PacsStatistics>;
+            async fn store_user(&self, user: &User) -> PacsResult<()>;
+            async fn get_user(&self, id: &UserId) -> PacsResult<User>;
+            async fn get_user_by_username(&self, username: &str) -> PacsResult<User>;
+            async fn query_users(&self, q: &UserQuery) -> PacsResult<Vec<User>>;
+            async fn delete_user(&self, id: &UserId) -> PacsResult<()>;
+            async fn store_refresh_token(&self, token: &RefreshToken) -> PacsResult<()>;
+            async fn get_refresh_token(&self, token_hash: &str) -> PacsResult<RefreshToken>;
+            async fn revoke_refresh_tokens(&self, user_id: &UserId) -> PacsResult<()>;
+            async fn get_password_policy(&self) -> PacsResult<PasswordPolicy>;
+            async fn upsert_password_policy(&self, policy: &PasswordPolicy) -> PacsResult<()>;
             async fn list_nodes(&self) -> PacsResult<Vec<DicomNode>>;
             async fn upsert_node(&self, node: &DicomNode) -> PacsResult<()>;
             async fn delete_node(&self, ae_title: &str) -> PacsResult<()>;

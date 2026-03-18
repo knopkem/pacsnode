@@ -103,13 +103,18 @@ format = "json"
 [plugins]
 enabled = []
 
-# Example basic-auth config:
+# Example local auth config:
 # [plugins.basic-auth]
-# username = "admin"
-# password_hash = "$argon2id$v=19$m=19456,t=2,p=1$REPLACE_WITH_BASE64_SALT$REPLACE_WITH_HASH"
 # jwt_secret = "replace-with-a-long-random-secret"
-# token_ttl_secs = 3600
+# access_token_ttl_secs = 900
+# refresh_token_ttl_secs = 604800
 # public_paths = ["/health", "/metrics"]
+#
+# Bootstrap the first admin user after enabling this plugin:
+#   pacsnode create-admin --username admin --email admin@example.test
+#
+# The command prints a one-time generated password that satisfies the persisted
+# password policy. Subsequent users will be managed through the admin API/UI.
 #
 # When basic-auth is enabled, pacsnode auto-enables audit-logger by default for
 # secured deployments unless you explicitly opt out below.
@@ -144,4 +149,4 @@ enabled = []
 #
 # If basic-auth and ohif-viewer are both enabled, add "/" and "/viewer" to
 # [plugins.basic-auth].public_paths so the viewer shell can load before it makes
-# authenticated API requests.
+# authenticated API requests. The viewer's API calls still require login.

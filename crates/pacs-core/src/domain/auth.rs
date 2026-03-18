@@ -16,6 +16,12 @@ impl RefreshTokenId {
     }
 }
 
+impl Default for RefreshTokenId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Supported authentication modes for pacsnode deployments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]

@@ -2195,16 +2195,19 @@ dependencies = [
  "async-trait",
  "axum",
  "bytes",
+ "chrono",
  "http",
  "jsonwebtoken",
  "pacs-core",
  "pacs-plugin",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "tokio",
  "tower",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2323,7 +2326,9 @@ name = "pacs-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "argon2",
  "axum",
+ "chrono",
  "config",
  "pacs-admin-plugin",
  "pacs-api",

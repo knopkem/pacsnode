@@ -5,17 +5,22 @@
 #   2. config.toml  — in the current working directory (optional, overrides #1)
 #   3. Environment   — PACS_ prefix, __ separator (e.g. PACS_SERVER__HTTP_PORT=9000)
 #
-# Copy this file to config.toml and adjust values for your deployment.
+# Copy this file to config.toml and adjust values for your deployment, or use:
+#   pacsnode generate-config standalone --output config.toml
+#   pacsnode generate-config production --output config.toml
 # All values shown below are the defaults.
 #
 # ┌─────────────────────────────────────────────────────────────────────────────┐
-# │  BUILD MODE LEGEND                                                          │
+# │  RUNTIME PROFILE LEGEND                                                     │
 # │                                                                             │
-# │  [both]        — applies to both default (PostgreSQL + S3) and standalone   │
-# │  [pg+s3]       — default build only  (cargo build --release)               │
-# │  [standalone]  — standalone build only                                     │
-# │                   (cargo build --release --no-default-features \           │
-# │                    --features standalone)                                   │
+# │  [both]         — applies to both runtime profiles                          │
+# │  [production]   — PostgreSQL metadata + S3-compatible blob storage          │
+# │  [standalone]   — SQLite metadata + local filesystem blob storage           │
+# │                                                                             │
+# │  The default build includes both backend pairs and selects the active       │
+# │  runtime profile from the config below. Optional slim builds still exist:   │
+# │    cargo build --release --no-default-features --features production        │
+# │    cargo build --release --no-default-features --features standalone        │
 # └─────────────────────────────────────────────────────────────────────────────┘
 
 # ── Server [both] ─────────────────────────────────────────────────────────────
@@ -72,8 +77,8 @@ dimse_timeout_secs = 30
 
 [database]
 # Metadata backend connection URL (REQUIRED — no default)
-# PostgreSQL (default build):  postgres://user:password@host:port/database
-# SQLite    (standalone build): sqlite://./data/pacsnode.db
+# postgres://...   selects the production PostgreSQL metadata backend
+# sqlite://...     selects the standalone SQLite metadata backend
 url = "postgres://pacsnode:secret@localhost:5432/pacsnode"
 
 # Maximum connections in the connection pool
@@ -82,10 +87,10 @@ max_connections = 20
 # Automatically run pending sqlx migrations on startup
 run_migrations = true
 
-# ── S3 Storage [pg+s3] ────────────────────────────────────────────────────────
+# ── S3 Storage [production] ───────────────────────────────────────────────────
 #
-# Required for the default build (PostgreSQL + S3).
-# Omit this entire section in a standalone build — use [filesystem_storage] below.
+# Required for the production runtime profile.
+# Omit this entire section in standalone mode — use [filesystem_storage] below.
 
 [storage]
 # S3-compatible object storage endpoint (REQUIRED — no default)
@@ -107,8 +112,8 @@ region = "us-east-1"
 
 # ── Filesystem Storage [standalone] ──────────────────────────────────────────
 #
-# Required for the standalone build (SQLite + filesystem).
-# Remove or ignore in a default (PostgreSQL + S3) build.
+# Required for the standalone runtime profile.
+# Remove or omit this section in production mode.
 #
 # [filesystem_storage]
 # root = "./data/blobs"
@@ -126,7 +131,7 @@ format = "json"
 # ── Optional Plugins [both] ─────────────────────────────────────────────────────
 #
 # Built-in storage and DIMSE plugins are enabled automatically for the selected
-# cargo feature set.
+# runtime profile.
 # Add optional plugin IDs below to enable them:
 #   - "basic-auth"
 #   - "audit-logger"

@@ -7,12 +7,14 @@ rust-version.workspace = true
 license.workspace     = true
 
 [features]
-default = ["postgres", "s3"]
+default = ["all-backends"]
+all-backends = ["postgres", "sqlite", "s3", "filesystem"]
 postgres = ["dep:pacs-store"]
 sqlite = ["dep:pacs-sqlite-store"]
 s3 = ["dep:pacs-storage"]
 filesystem = ["dep:pacs-fs-storage"]
 standalone = ["sqlite", "filesystem"]
+production = ["postgres", "s3"]
 
 [[bin]]
 name = "pacsnode"

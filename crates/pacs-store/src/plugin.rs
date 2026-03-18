@@ -44,6 +44,7 @@ impl Plugin for PgMetadataStorePlugin {
             "PostgreSQL Metadata Store",
             env!("CARGO_PKG_VERSION"),
         )
+        .disabled_by_default()
     }
 
     async fn init(&mut self, ctx: &PluginContext) -> Result<(), PluginError> {

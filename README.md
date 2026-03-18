@@ -141,11 +141,26 @@ docker compose down -v       # stop and delete all data
 ### Building the standalone binary
 
 ```bash
-# Standalone build — SQLite + filesystem, no PostgreSQL or S3 required
+# Slim standalone-only build — SQLite + filesystem, no PostgreSQL or S3 required
 cargo build --release --no-default-features --features standalone
 ```
 
-> The default build (`cargo build --release`) produces the PostgreSQL + S3 binary. These two build profiles are mutually exclusive; you cannot combine `standalone` with the default feature flags.
+> The default build (`cargo build --release`) now includes **both** backend pairs in one binary. At runtime, pacsnode selects SQLite vs PostgreSQL from `database.url`, and filesystem vs S3 from whether you configure `[filesystem_storage]` or `[storage]`.
+
+### Generate a ready-to-use config
+
+```bash
+# One-binary build with both runtime profiles available
+cargo build --release
+
+# Standalone profile (SQLite + filesystem, viewer enabled)
+./target/release/pacsnode generate-config standalone --output config.toml
+
+# Production profile (PostgreSQL + S3 placeholders, viewer enabled)
+./target/release/pacsnode generate-config production --output config.toml
+```
+
+If you omit `--output`, pacsnode prints the generated `config.toml` to stdout.
 
 ### Running in standalone mode
 
@@ -182,8 +197,8 @@ Standalone mode runs embedded SQLite migrations on first start — no `sqlx-cli`
 ### Prerequisites
 
 - **Rust 1.88+** (see `rust-toolchain.toml`)
-- **Default backend:** PostgreSQL 14+ plus S3-compatible storage (MinIO, RustFS, or AWS S3)
-- **Standalone backend:** no external database or object store required
+- **Production profile:** PostgreSQL 14+ plus S3-compatible storage (MinIO, RustFS, or AWS S3)
+- **Standalone profile:** no external database or object store required
 - **sqlx-cli** (optional, for managing migrations manually):
   ```bash
   cargo install sqlx-cli --no-default-features --features postgres
@@ -196,11 +211,14 @@ Standalone mode runs embedded SQLite migrations on first start — no `sqlx-cli`
 git clone https://github.com/your-org/pacsnode.git
 cd pacsnode
 
-# Default build (PostgreSQL + S3)
+# Default build (single binary with both backend pairs)
 cargo build --release
 
-# Standalone build (SQLite + filesystem)
+# Optional slim standalone-only build
 cargo build --release --no-default-features --features standalone
+
+# Optional slim production-only build
+cargo build --release --no-default-features --features production
 
 # The binary is at target/release/pacsnode
 ```
@@ -208,12 +226,13 @@ cargo build --release --no-default-features --features standalone
 ### Run
 
 ```bash
-# Option 1: Use a config file
-cp config.toml.example config.toml
-# Edit config.toml with your backend settings
+# Option 1: Generate a config file with the desired runtime profile
+./target/release/pacsnode generate-config standalone --output config.toml
+# or: ./target/release/pacsnode generate-config production --output config.toml
+# Edit config.toml if needed, then run:
 ./target/release/pacsnode
 
-# Option 2: Use environment variables only (default PostgreSQL + S3 backend)
+# Option 2: Use environment variables only (production profile)
 export PACS_DATABASE__URL="postgres://pacsnode:secret@localhost:5432/pacsnode"
 export PACS_STORAGE__ENDPOINT="http://localhost:9000"
 export PACS_STORAGE__BUCKET="dicom"
@@ -221,8 +240,7 @@ export PACS_STORAGE__ACCESS_KEY="minioadmin"
 export PACS_STORAGE__SECRET_KEY="minioadmin"
 ./target/release/pacsnode
 
-# Option 3: Standalone mode (SQLite + filesystem — see Standalone Mode section)
-# Requires a binary built with --no-default-features --features standalone
+# Option 3: Standalone mode via environment variables
 export PACS_DATABASE__URL="sqlite://./data/pacsnode.db"
 export PACS_FILESYSTEM_STORAGE__ROOT="./data/blobs"
 ./target/release/pacsnode
@@ -240,7 +258,7 @@ pacsnode uses a three-layer configuration system:
 
 See [`config.toml.example`](config.toml.example) for a fully-commented reference.
 
-> **Mode column:** `both` = applies to all builds · `pg+s3` = default build only · `standalone` = standalone build only
+> **Profile column:** `both` = applies to both runtime profiles · `production` = PostgreSQL + S3-compatible storage · `standalone` = SQLite + filesystem
 
 ### Configuration Reference
 
@@ -262,11 +280,11 @@ See [`config.toml.example`](config.toml.example) for a fully-commented reference
 
 | Setting | Env Var | Default | Description |
 |---------|---------|---------|-------------|
-| `database.url` | `PACS_DATABASE__URL` | *(required)* | `postgres://...` for pg+s3 builds; `sqlite://...` for standalone |
+| `database.url` | `PACS_DATABASE__URL` | *(required)* | `postgres://...` selects PostgreSQL metadata; `sqlite://...` selects SQLite metadata |
 | `database.max_connections` | `PACS_DATABASE__MAX_CONNECTIONS` | `20` | Connection pool size |
 | `database.run_migrations` | `PACS_DATABASE__RUN_MIGRATIONS` | `true` | Auto-run migrations on startup |
 
-#### Storage — `pg+s3` only
+#### Storage — `production` only
 
 | Setting | Env Var | Default | Description |
 |---------|---------|---------|-------------|

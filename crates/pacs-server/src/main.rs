@@ -3,16 +3,6 @@
 //! ⚠️ **NOT FOR CLINICAL USE** — This software has not been validated for
 //! diagnostic or therapeutic purposes.
 
-#[cfg(all(feature = "postgres", feature = "sqlite"))]
-compile_error!(
-    "Enable exactly one metadata backend. Use `--no-default-features --features standalone` for SQLite builds."
-);
-
-#[cfg(all(feature = "s3", feature = "filesystem"))]
-compile_error!(
-    "Enable exactly one blob backend. Use `--no-default-features --features standalone` for filesystem builds."
-);
-
 #[cfg(not(any(feature = "postgres", feature = "sqlite")))]
 compile_error!("Enable at least one metadata backend feature (`postgres` or `sqlite`).");
 
@@ -21,6 +11,8 @@ compile_error!("Enable at least one blob backend feature (`s3` or `filesystem`).
 
 use std::{
     collections::{BTreeSet, HashMap},
+    fs,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -43,16 +35,50 @@ use tracing::{info, warn};
 
 mod config;
 
-use config::{AppConfig, LogFormat};
+use config::{AppConfig, GeneratedConfigProfile, LogFormat};
 use pacs_audit_plugin as _;
 use pacs_auth_plugin as _;
 use pacs_metrics_plugin as _;
 use pacs_viewer_plugin as _;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BackendSelection {
+    metadata_plugin_id: &'static str,
+    blob_plugin_id: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Command {
+    RunServer,
+    GenerateConfig {
+        profile: GeneratedConfigProfile,
+        output: Option<PathBuf>,
+        force: bool,
+    },
+    PrintHelp,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    match parse_command(std::env::args().skip(1).collect())? {
+        Command::RunServer => {}
+        Command::GenerateConfig {
+            profile,
+            output,
+            force,
+        } => {
+            write_generated_config(profile, output.as_deref(), force)?;
+            return Ok(());
+        }
+        Command::PrintHelp => {
+            print!("{}", usage_text());
+            return Ok(());
+        }
+    }
+
     // ── Config ────────────────────────────────────────────────────────────────
     let cfg = AppConfig::load().context("failed to load configuration")?;
+    let backend_selection = select_backend_plugins(&cfg)?;
 
     // ── Tracing ───────────────────────────────────────────────────────────────
     init_tracing(&cfg.logging.level, &cfg.logging.format);
@@ -63,7 +89,7 @@ async fn main() -> Result<()> {
         ae_title   = %cfg.server.ae_title,
         "pacsnode starting"
     );
-    let (enabled_plugins, audit_auto_enabled) = effective_enabled_plugins(&cfg);
+    let (enabled_plugins, audit_auto_enabled) = effective_enabled_plugins(&cfg, backend_selection);
     if audit_auto_enabled {
         info!(
             plugin_id = AUDIT_LOGGER_PLUGIN_ID,
@@ -72,9 +98,7 @@ async fn main() -> Result<()> {
         );
     }
     let mut registry = PluginRegistry::new();
-    if !enabled_plugins.is_empty() {
-        registry.set_enabled(enabled_plugins);
-    }
+    registry.set_enabled(enabled_plugins);
     registry
         .register_all_discovered()
         .context("failed to register compiled-in plugins")?;
@@ -85,7 +109,7 @@ async fn main() -> Result<()> {
         dicom_port: cfg.server.dicom_port,
         version: env!("CARGO_PKG_VERSION"),
     };
-    let plugin_configs = build_plugin_configs(&cfg)?;
+    let plugin_configs = build_plugin_configs(&cfg, backend_selection)?;
     registry
         .init_all(server_info.clone(), &plugin_configs)
         .await
@@ -166,87 +190,264 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn build_plugin_configs(cfg: &AppConfig) -> Result<HashMap<String, serde_json::Value>> {
+fn usage_text() -> &'static str {
+    "Usage:\n  pacsnode\n  pacsnode generate-config <standalone|production> [--output <path>] [--force]\n  pacsnode -h|--help\n"
+}
+
+fn parse_command(args: Vec<String>) -> Result<Command> {
+    if args.is_empty() {
+        return Ok(Command::RunServer);
+    }
+
+    match args[0].as_str() {
+        "-h" | "--help" => Ok(Command::PrintHelp),
+        "generate-config" => {
+            let mut profile = None;
+            let mut output = None;
+            let mut force = false;
+            let mut idx = 1;
+
+            while idx < args.len() {
+                match args[idx].as_str() {
+                    "--output" => {
+                        idx += 1;
+                        if idx >= args.len() {
+                            return Err(anyhow!("--output requires a file path"));
+                        }
+                        output = Some(PathBuf::from(&args[idx]));
+                    }
+                    "--force" => force = true,
+                    value if value.starts_with('-') => {
+                        return Err(anyhow!("unknown option: {value}\n\n{}", usage_text()));
+                    }
+                    value => {
+                        if profile.is_some() {
+                            return Err(anyhow!(
+                                "unexpected extra argument: {value}\n\n{}",
+                                usage_text()
+                            ));
+                        }
+                        profile = GeneratedConfigProfile::parse(value);
+                        if profile.is_none() {
+                            return Err(anyhow!(
+                                "unknown config profile: {value}\nexpected `standalone` or `production`"
+                            ));
+                        }
+                    }
+                }
+                idx += 1;
+            }
+
+            let profile =
+                profile.ok_or_else(|| anyhow!("missing config profile\n\n{}", usage_text()))?;
+            Ok(Command::GenerateConfig {
+                profile,
+                output,
+                force,
+            })
+        }
+        other => Err(anyhow!("unknown command: {other}\n\n{}", usage_text())),
+    }
+}
+
+fn write_generated_config(
+    profile: GeneratedConfigProfile,
+    output: Option<&Path>,
+    force: bool,
+) -> Result<()> {
+    let rendered = profile.render();
+
+    if let Some(path) = output {
+        if path.exists() && !force {
+            return Err(anyhow!(
+                "refusing to overwrite existing file {} (use --force)",
+                path.display()
+            ));
+        }
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("failed to create parent directory {}", parent.display())
+                })?;
+            }
+        }
+        fs::write(path, rendered).with_context(|| format!("failed to write {}", path.display()))?;
+        println!("Wrote {} config to {}", profile.as_str(), path.display());
+    } else {
+        print!("{rendered}");
+    }
+
+    Ok(())
+}
+
+fn select_backend_plugins(cfg: &AppConfig) -> Result<BackendSelection> {
+    Ok(BackendSelection {
+        metadata_plugin_id: select_metadata_plugin_id(cfg)?,
+        blob_plugin_id: select_blob_plugin_id(cfg)?,
+    })
+}
+
+fn select_metadata_plugin_id(cfg: &AppConfig) -> Result<&'static str> {
+    let database = cfg
+        .database
+        .as_ref()
+        .ok_or_else(|| anyhow!("database config is required"))?;
+    let url = database.url.trim();
+
+    if url.starts_with("sqlite://") {
+        #[cfg(feature = "sqlite")]
+        {
+            return Ok(SQLITE_METADATA_STORE_PLUGIN_ID);
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            return Err(anyhow!(
+                "database.url uses sqlite:// but this binary was built without the sqlite backend"
+            ));
+        }
+    }
+
+    if url.starts_with("postgres://") || url.starts_with("postgresql://") {
+        #[cfg(feature = "postgres")]
+        {
+            return Ok(PG_METADATA_STORE_PLUGIN_ID);
+        }
+        #[cfg(not(feature = "postgres"))]
+        {
+            return Err(anyhow!(
+                "database.url uses postgres:// but this binary was built without the postgres backend"
+            ));
+        }
+    }
+
+    Err(anyhow!(
+        "database.url must start with either `sqlite://`, `postgres://`, or `postgresql://`"
+    ))
+}
+
+fn select_blob_plugin_id(cfg: &AppConfig) -> Result<&'static str> {
+    match (cfg.storage.as_ref(), cfg.filesystem_storage.as_ref()) {
+        (Some(_), None) => {
+            #[cfg(feature = "s3")]
+            {
+                Ok(S3_BLOB_STORE_PLUGIN_ID)
+            }
+            #[cfg(not(feature = "s3"))]
+            {
+                Err(anyhow!(
+                    "`storage` is configured but this binary was built without the s3 backend"
+                ))
+            }
+        }
+        (None, Some(_)) => {
+            #[cfg(feature = "filesystem")]
+            {
+                Ok(FS_BLOB_STORE_PLUGIN_ID)
+            }
+            #[cfg(not(feature = "filesystem"))]
+            {
+                Err(anyhow!(
+                    "`filesystem_storage` is configured but this binary was built without the filesystem backend"
+                ))
+            }
+        }
+        (Some(_), Some(_)) => Err(anyhow!(
+            "configure only one blob backend: either `[storage]` or `[filesystem_storage]`"
+        )),
+        (None, None) => Err(anyhow!(
+            "blob storage config is required: set either `[storage]` or `[filesystem_storage]`"
+        )),
+    }
+}
+
+fn build_plugin_configs(
+    cfg: &AppConfig,
+    backend_selection: BackendSelection,
+) -> Result<HashMap<String, serde_json::Value>> {
     let mut configs = cfg.plugins.configs.clone();
 
-    #[cfg(feature = "postgres")]
-    {
-        let mut db_config = cfg
-            .database
-            .as_ref()
-            .map(serde_json::to_value)
-            .transpose()
-            .context("serialize database config")?
-            .unwrap_or_else(empty_object);
-        if let Some(override_value) = configs.remove(PG_METADATA_STORE_PLUGIN_ID) {
-            merge_json(&mut db_config, override_value);
+    match backend_selection.metadata_plugin_id {
+        #[cfg(feature = "postgres")]
+        PG_METADATA_STORE_PLUGIN_ID => {
+            let mut db_config = cfg
+                .database
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()
+                .context("serialize postgres database config")?
+                .unwrap_or_else(empty_object);
+            if let Some(override_value) = configs.remove(PG_METADATA_STORE_PLUGIN_ID) {
+                merge_json(&mut db_config, override_value);
+            }
+            ensure_non_empty_config(
+                &db_config,
+                "database",
+                "database config is required for the postgres metadata backend",
+            )?;
+            configs.insert(PG_METADATA_STORE_PLUGIN_ID.into(), db_config);
         }
-        ensure_non_empty_config(
-            &db_config,
-            "database",
-            "database config is required for the postgres metadata backend",
-        )?;
-        configs.insert(PG_METADATA_STORE_PLUGIN_ID.into(), db_config);
+        #[cfg(feature = "sqlite")]
+        SQLITE_METADATA_STORE_PLUGIN_ID => {
+            let mut db_config = cfg
+                .database
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()
+                .context("serialize sqlite database config")?
+                .unwrap_or_else(empty_object);
+            if let Some(override_value) = configs.remove(SQLITE_METADATA_STORE_PLUGIN_ID) {
+                merge_json(&mut db_config, override_value);
+            }
+            ensure_non_empty_config(
+                &db_config,
+                "database",
+                "database config is required for the sqlite metadata backend",
+            )?;
+            configs.insert(SQLITE_METADATA_STORE_PLUGIN_ID.into(), db_config);
+        }
+        _ => unreachable!("unsupported metadata backend selection"),
     }
 
-    #[cfg(feature = "sqlite")]
-    {
-        let mut db_config = cfg
-            .database
-            .as_ref()
-            .map(serde_json::to_value)
-            .transpose()
-            .context("serialize sqlite database config")?
-            .unwrap_or_else(empty_object);
-        if let Some(override_value) = configs.remove(SQLITE_METADATA_STORE_PLUGIN_ID) {
-            merge_json(&mut db_config, override_value);
+    match backend_selection.blob_plugin_id {
+        #[cfg(feature = "s3")]
+        S3_BLOB_STORE_PLUGIN_ID => {
+            let mut storage_config = cfg
+                .storage
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()
+                .context("serialize storage config")?
+                .unwrap_or_else(empty_object);
+            if let Some(override_value) = configs.remove(S3_BLOB_STORE_PLUGIN_ID) {
+                merge_json(&mut storage_config, override_value);
+            }
+            ensure_non_empty_config(
+                &storage_config,
+                "storage",
+                "storage config is required for the s3 blob backend",
+            )?;
+            configs.insert(S3_BLOB_STORE_PLUGIN_ID.into(), storage_config);
         }
-        ensure_non_empty_config(
-            &db_config,
-            "database",
-            "database config is required for the sqlite metadata backend",
-        )?;
-        configs.insert(SQLITE_METADATA_STORE_PLUGIN_ID.into(), db_config);
-    }
-
-    #[cfg(feature = "s3")]
-    {
-        let mut storage_config = cfg
-            .storage
-            .as_ref()
-            .map(serde_json::to_value)
-            .transpose()
-            .context("serialize storage config")?
-            .unwrap_or_else(empty_object);
-        if let Some(override_value) = configs.remove(S3_BLOB_STORE_PLUGIN_ID) {
-            merge_json(&mut storage_config, override_value);
+        #[cfg(feature = "filesystem")]
+        FS_BLOB_STORE_PLUGIN_ID => {
+            let mut storage_config = cfg
+                .filesystem_storage
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()
+                .context("serialize filesystem storage config")?
+                .unwrap_or_else(empty_object);
+            if let Some(override_value) = configs.remove(FS_BLOB_STORE_PLUGIN_ID) {
+                merge_json(&mut storage_config, override_value);
+            }
+            ensure_non_empty_config(
+                &storage_config,
+                "filesystem_storage",
+                "filesystem_storage config is required for the filesystem blob backend",
+            )?;
+            configs.insert(FS_BLOB_STORE_PLUGIN_ID.into(), storage_config);
         }
-        ensure_non_empty_config(
-            &storage_config,
-            "storage",
-            "storage config is required for the s3 blob backend",
-        )?;
-        configs.insert(S3_BLOB_STORE_PLUGIN_ID.into(), storage_config);
-    }
-
-    #[cfg(feature = "filesystem")]
-    {
-        let mut storage_config = cfg
-            .filesystem_storage
-            .as_ref()
-            .map(serde_json::to_value)
-            .transpose()
-            .context("serialize filesystem storage config")?
-            .unwrap_or_else(empty_object);
-        if let Some(override_value) = configs.remove(FS_BLOB_STORE_PLUGIN_ID) {
-            merge_json(&mut storage_config, override_value);
-        }
-        ensure_non_empty_config(
-            &storage_config,
-            "filesystem_storage",
-            "filesystem_storage config is required for the filesystem blob backend",
-        )?;
-        configs.insert(FS_BLOB_STORE_PLUGIN_ID.into(), storage_config);
+        _ => unreachable!("unsupported blob backend selection"),
     }
 
     let audit_config = configs
@@ -357,8 +558,13 @@ async fn ctrl_c_signal() {
         .expect("failed to install Ctrl+C handler");
 }
 
-fn effective_enabled_plugins(cfg: &AppConfig) -> (Vec<String>, bool) {
+fn effective_enabled_plugins(
+    cfg: &AppConfig,
+    backend_selection: BackendSelection,
+) -> (Vec<String>, bool) {
     let mut enabled: BTreeSet<String> = cfg.plugins.enabled.iter().cloned().collect();
+    enabled.insert(backend_selection.metadata_plugin_id.into());
+    enabled.insert(backend_selection.blob_plugin_id.into());
     let audit_auto_enabled = enabled.contains(BASIC_AUTH_PLUGIN_ID)
         && !enabled.contains(AUDIT_LOGGER_PLUGIN_ID)
         && audit_auto_enable_in_secure_deployments(cfg);
@@ -387,25 +593,55 @@ mod tests {
         StorageConfig,
     };
 
+    #[cfg(feature = "postgres")]
+    fn default_test_database_url() -> &'static str {
+        "postgres://u:p@localhost/pacs"
+    }
+
+    #[cfg(all(not(feature = "postgres"), feature = "sqlite"))]
+    fn default_test_database_url() -> &'static str {
+        "sqlite://./data/pacsnode.db"
+    }
+
+    #[cfg(feature = "s3")]
+    fn default_test_storage_config() -> Option<StorageConfig> {
+        Some(StorageConfig {
+            endpoint: "http://localhost:9000".into(),
+            bucket: "dicom".into(),
+            access_key: "key".into(),
+            secret_key: "secret".into(),
+            region: "us-east-1".into(),
+        })
+    }
+
+    #[cfg(not(feature = "s3"))]
+    fn default_test_storage_config() -> Option<StorageConfig> {
+        None
+    }
+
+    #[cfg(all(feature = "filesystem", not(feature = "s3")))]
+    fn default_test_filesystem_config() -> Option<FilesystemStorageConfig> {
+        Some(FilesystemStorageConfig {
+            root: "./data/blobs".into(),
+        })
+    }
+
+    #[cfg(any(not(feature = "filesystem"), feature = "s3"))]
+    fn default_test_filesystem_config() -> Option<FilesystemStorageConfig> {
+        None
+    }
+
     fn make_config(enabled: &[&str], configs: HashMap<String, serde_json::Value>) -> AppConfig {
         AppConfig {
             server: ServerConfig::default(),
             nodes: Vec::new(),
             database: Some(DatabaseConfig {
-                url: "postgres://u:p@localhost/pacs".into(),
+                url: default_test_database_url().into(),
                 max_connections: 20,
                 run_migrations: true,
             }),
-            storage: Some(StorageConfig {
-                endpoint: "http://localhost:9000".into(),
-                bucket: "dicom".into(),
-                access_key: "key".into(),
-                secret_key: "secret".into(),
-                region: "us-east-1".into(),
-            }),
-            filesystem_storage: Some(FilesystemStorageConfig {
-                root: "./data/blobs".into(),
-            }),
+            storage: default_test_storage_config(),
+            filesystem_storage: default_test_filesystem_config(),
             logging: LoggingConfig {
                 level: "info".into(),
                 format: LogFormat::Json,
@@ -419,8 +655,9 @@ mod tests {
 
     #[test]
     fn auto_enables_audit_for_basic_auth() {
-        let (enabled, audit_auto_enabled) =
-            effective_enabled_plugins(&make_config(&[BASIC_AUTH_PLUGIN_ID], HashMap::new()));
+        let cfg = make_config(&[BASIC_AUTH_PLUGIN_ID], HashMap::new());
+        let backend_selection = select_backend_plugins(&cfg).expect("backend selection");
+        let (enabled, audit_auto_enabled) = effective_enabled_plugins(&cfg, backend_selection);
 
         assert!(audit_auto_enabled);
         assert!(enabled.contains(&AUDIT_LOGGER_PLUGIN_ID.to_string()));
@@ -436,11 +673,87 @@ mod tests {
             }),
         );
 
-        let (enabled, audit_auto_enabled) =
-            effective_enabled_plugins(&make_config(&[BASIC_AUTH_PLUGIN_ID], configs));
+        let cfg = make_config(&[BASIC_AUTH_PLUGIN_ID], configs);
+        let backend_selection = select_backend_plugins(&cfg).expect("backend selection");
+        let (enabled, audit_auto_enabled) = effective_enabled_plugins(&cfg, backend_selection);
 
         assert!(!audit_auto_enabled);
         assert!(!enabled.contains(&AUDIT_LOGGER_PLUGIN_ID.to_string()));
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "filesystem"))]
+    #[test]
+    fn selects_sqlite_and_filesystem_backends_from_config() {
+        let mut cfg = make_config(&[], HashMap::new());
+        cfg.database = Some(DatabaseConfig {
+            url: "sqlite://./data/pacsnode.db".into(),
+            max_connections: 20,
+            run_migrations: true,
+        });
+        cfg.storage = None;
+        cfg.filesystem_storage = Some(FilesystemStorageConfig {
+            root: "./data/blobs".into(),
+        });
+
+        let selection = select_backend_plugins(&cfg).expect("backend selection");
+
+        assert_eq!(
+            selection.metadata_plugin_id,
+            SQLITE_METADATA_STORE_PLUGIN_ID
+        );
+        assert_eq!(selection.blob_plugin_id, FS_BLOB_STORE_PLUGIN_ID);
+    }
+
+    #[cfg(all(feature = "postgres", feature = "s3"))]
+    #[test]
+    fn selects_postgres_and_s3_backends_from_config() {
+        let cfg = make_config(&[], HashMap::new());
+
+        let selection = select_backend_plugins(&cfg).expect("backend selection");
+
+        assert_eq!(selection.metadata_plugin_id, PG_METADATA_STORE_PLUGIN_ID);
+        assert_eq!(selection.blob_plugin_id, S3_BLOB_STORE_PLUGIN_ID);
+    }
+
+    #[test]
+    fn rejects_ambiguous_blob_backend_config() {
+        let mut cfg = make_config(&[], HashMap::new());
+        cfg.storage = Some(StorageConfig {
+            endpoint: "http://localhost:9000".into(),
+            bucket: "dicom".into(),
+            access_key: "key".into(),
+            secret_key: "secret".into(),
+            region: "us-east-1".into(),
+        });
+        cfg.filesystem_storage = Some(FilesystemStorageConfig {
+            root: "./data/blobs".into(),
+        });
+
+        let error = select_backend_plugins(&cfg).expect_err("ambiguous blob config should fail");
+        assert!(error
+            .to_string()
+            .contains("configure only one blob backend"));
+    }
+
+    #[test]
+    fn parse_generate_config_command_supports_output_and_force() {
+        let command = parse_command(vec![
+            "generate-config".into(),
+            "standalone".into(),
+            "--output".into(),
+            "config.toml".into(),
+            "--force".into(),
+        ])
+        .expect("command should parse");
+
+        assert_eq!(
+            command,
+            Command::GenerateConfig {
+                profile: GeneratedConfigProfile::Standalone,
+                output: Some(PathBuf::from("config.toml")),
+                force: true,
+            }
+        );
     }
 
     #[test]

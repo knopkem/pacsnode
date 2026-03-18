@@ -25,6 +25,7 @@ impl Plugin for S3BlobStorePlugin {
             "S3 Blob Store",
             env!("CARGO_PKG_VERSION"),
         )
+        .disabled_by_default()
     }
 
     async fn init(&mut self, ctx: &PluginContext) -> Result<(), PluginError> {

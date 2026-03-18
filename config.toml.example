@@ -105,10 +105,24 @@ enabled = []
 
 # Example local auth config:
 # [plugins.basic-auth]
+# mode = "local"
 # jwt_secret = "replace-with-a-long-random-secret"
 # access_token_ttl_secs = 900
 # refresh_token_ttl_secs = 604800
 # public_paths = ["/health", "/metrics"]
+#
+# Example external OIDC bearer-token validation:
+# [plugins.basic-auth]
+# mode = "oidc"
+# public_paths = ["/health", "/metrics"]
+#
+# [plugins.basic-auth.oidc]
+# issuer = "https://keycloak.example.test/realms/pacs"
+# audience = "pacsnode"
+# public_key_pem = "${PACS_OIDC_PUBLIC_KEY_PEM}"
+# role_claim = "realm_access.roles"
+# attributes_claims = ["department", "modality_access", "email"]
+# role_map = { pacs_admin = "admin", pacs_viewer = "viewer" }
 #
 # Bootstrap the first admin user after enabling this plugin:
 #   pacsnode create-admin --username admin --email admin@example.test

@@ -610,7 +610,12 @@ struct AuditResultsView {
 async fn dashboard_page(
     State(state): State<AppState>,
     Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
+    if let Err(message) = require_admin(user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
     let stats_markup = match render_stats_markup(&runtime).await {
         Ok(markup) => markup,
         Err(status) => return error_response(status, "admin dashboard failed to query PACS state"),
@@ -634,7 +639,12 @@ async fn dashboard_page(
 async fn system_page(
     State(state): State<AppState>,
     Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
+    if let Err(message) = require_admin(user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
     let settings_markup = match render_system_settings_markup(&state, &runtime, None, None).await {
         Ok(markup) => markup,
         Err(status) => return error_response(status, "admin system settings failed to load"),
@@ -661,8 +671,13 @@ async fn save_system_settings(
     State(state): State<AppState>,
     headers: HeaderMap,
     Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
     body: String,
 ) -> Response {
+    if let Err(message) = require_admin(user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
     let input = parse_server_settings_form(&body);
     let form = ServerSettingsFormView::from_input(&input);
     let settings = match input.into_settings() {
@@ -696,7 +711,12 @@ async fn studies_page(
     State(state): State<AppState>,
     Query(filters): Query<StudiesFilters>,
     Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
+    if let Err(message) = require_admin(user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
     let results_markup = match render_studies_results_markup(&state, &runtime, &filters).await {
         Ok(markup) => markup,
         Err(status) => return error_response(status, "admin studies browser failed to render"),
@@ -717,7 +737,12 @@ async fn studies_results_fragment(
     State(state): State<AppState>,
     Query(filters): Query<StudiesFilters>,
     Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
+    if let Err(message) = require_admin(user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
     match render_studies_results_markup(&state, &runtime, &filters).await {
         Ok(markup) => html_markup_response(markup),
         Err(status) => error_response(status, "admin studies browser failed to load results"),
@@ -729,7 +754,13 @@ async fn delete_study(
     Path(study_uid): Path<String>,
     Query(filters): Query<StudiesFilters>,
     Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
+    let actor = match require_admin(user) {
+        Ok(actor) => actor,
+        Err(message) => return error_response(StatusCode::FORBIDDEN, message),
+    };
+
     let study_uid = StudyUid::from(study_uid.as_str());
     let blob_keys = match collect_study_blob_keys(&state, &study_uid).await {
         Ok(blob_keys) => blob_keys,
@@ -751,7 +782,7 @@ async fn delete_study(
         .emit_event(PacsEvent::ResourceDeleted {
             level: ResourceLevel::Study,
             uid: study_uid.to_string(),
-            user_id: None,
+            user_id: Some(actor.user_id.clone()),
         })
         .await;
 
@@ -1516,7 +1547,12 @@ async fn delete_user(
 async fn nodes_page(
     State(state): State<AppState>,
     Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
+    if let Err(message) = require_admin(user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
     let nodes_markup =
         match render_nodes_panel_markup(&state, &runtime, NodeFormView::default(), None).await {
             Ok(markup) => markup,
@@ -1536,7 +1572,12 @@ async fn edit_node(
     headers: HeaderMap,
     Path(ae_title): Path<String>,
     Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
+    if let Err(message) = require_admin(user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
     let node = match load_node(&state, &ae_title).await {
         Ok(node) => node,
         Err(error) => {
@@ -1572,8 +1613,13 @@ async fn save_node(
     State(state): State<AppState>,
     headers: HeaderMap,
     Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
     Form(input): Form<NodeFormInput>,
 ) -> Response {
+    if let Err(message) = require_admin(user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
     let form = NodeFormView::from_input(&input);
     let node = match input.into_node() {
         Ok(node) => node,
@@ -1616,7 +1662,12 @@ async fn delete_node(
     headers: HeaderMap,
     Path(ae_title): Path<String>,
     Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
+    if let Err(message) = require_admin(user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
     if let Err(error) = state.store.delete_node(&ae_title).await {
         return render_nodes_response(
             &state,
@@ -1648,7 +1699,12 @@ async fn verify_node(
     headers: HeaderMap,
     Path(ae_title): Path<String>,
     Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
+    if let Err(message) = require_admin(user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
     let node = match load_node(&state, &ae_title).await {
         Ok(node) => node,
         Err(error) => {
@@ -1707,7 +1763,12 @@ async fn audit_page(
     State(state): State<AppState>,
     Query(filters): Query<AuditFilters>,
     Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
+    if let Err(message) = require_admin(user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
     let results_markup = match render_audit_results_markup(&state, &runtime, &filters).await {
         Ok(markup) => markup,
         Err(status) => return error_response(status, "admin audit explorer failed to render"),
@@ -1728,7 +1789,12 @@ async fn audit_results_fragment(
     State(state): State<AppState>,
     Query(filters): Query<AuditFilters>,
     Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
 ) -> Response {
+    if let Err(message) = require_admin(user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
     match render_audit_results_markup(&state, &runtime, &filters).await {
         Ok(markup) => html_markup_response(markup),
         Err(status) => error_response(status, "admin audit explorer failed to load results"),
@@ -1746,7 +1812,12 @@ async fn admin_css() -> Response {
 
 async fn events_stream(
     Extension(runtime): Extension<Arc<AdminRuntime>>,
-) -> Sse<impl futures_core::Stream<Item = Result<Event, Infallible>>> {
+    user: Option<Extension<AuthenticatedUser>>,
+) -> Response {
+    if let Err(message) = require_admin(user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
     let mut rx = runtime.subscribe();
     let runtime_for_stream = Arc::clone(&runtime);
 
@@ -1757,7 +1828,7 @@ async fn events_stream(
                     if should_emit_stats(&event) {
                         match render_stats_markup(&runtime_for_stream).await {
                             Ok(markup) => {
-                                yield Ok(Event::default().event("stats").data(markup));
+                                yield Ok::<Event, Infallible>(Event::default().event("stats").data(markup));
                             }
                             Err(status) => {
                                 error!(?status, "failed to render admin stats event");
@@ -1768,7 +1839,7 @@ async fn events_stream(
                     let activity_item = activity_view_from_entry(crate::runtime::activity_from_event(&event));
                     match (RecentActivityItemsTemplate { entries: vec![activity_item.clone()] }).render() {
                         Ok(markup) => {
-                            yield Ok(Event::default().event("activity").data(markup));
+                            yield Ok::<Event, Infallible>(Event::default().event("activity").data(markup));
                         }
                         Err(error) => {
                             error!(error = %error, "failed to render admin activity fragment");
@@ -1777,7 +1848,7 @@ async fn events_stream(
 
                     match (ToastTemplate { item: activity_item }).render() {
                         Ok(markup) => {
-                            yield Ok(Event::default().event("toast").data(markup));
+                            yield Ok::<Event, Infallible>(Event::default().event("toast").data(markup));
                         }
                         Err(error) => {
                             error!(error = %error, "failed to render admin toast fragment");
@@ -1792,11 +1863,13 @@ async fn events_stream(
         }
     };
 
-    Sse::new(stream).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(15))
-            .text("keepalive"),
-    )
+    Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keepalive"),
+        )
+        .into_response()
 }
 
 fn should_emit_stats(event: &PacsEvent) -> bool {
@@ -3683,6 +3756,272 @@ fn normalized_patient_name(value: &Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        Extension, Router,
+    };
+    use bytes::Bytes;
+    use pacs_core::{
+        AuditLogEntry, AuditLogPage, AuditLogQuery, BlobStore, DicomJson, DicomNode, Instance,
+        InstanceQuery, MetadataStore, NewAuditLogEntry, PacsResult, PacsStatistics, PasswordPolicy,
+        RefreshToken, Series, SeriesQuery, SeriesUid, ServerSettings, SopInstanceUid, Study,
+        StudyQuery, StudyUid, User, UserId, UserQuery,
+    };
+    use pacs_plugin::{AuthenticatedUser, PluginRegistry, ServerInfo};
+    use tower::ServiceExt;
+
+    #[derive(Default)]
+    struct NoopMetadataStore;
+
+    #[async_trait]
+    impl MetadataStore for NoopMetadataStore {
+        async fn store_study(&self, _study: &Study) -> PacsResult<()> {
+            Ok(())
+        }
+        async fn store_series(&self, _series: &Series) -> PacsResult<()> {
+            Ok(())
+        }
+        async fn store_instance(&self, _instance: &Instance) -> PacsResult<()> {
+            Ok(())
+        }
+        async fn query_studies(&self, _q: &StudyQuery) -> PacsResult<Vec<Study>> {
+            Ok(vec![])
+        }
+        async fn query_series(&self, _q: &SeriesQuery) -> PacsResult<Vec<Series>> {
+            Ok(vec![])
+        }
+        async fn query_instances(&self, _q: &InstanceQuery) -> PacsResult<Vec<Instance>> {
+            Ok(vec![])
+        }
+        async fn get_study(&self, _uid: &StudyUid) -> PacsResult<Study> {
+            unreachable!()
+        }
+        async fn get_series(&self, _uid: &SeriesUid) -> PacsResult<Series> {
+            unreachable!()
+        }
+        async fn get_instance(&self, _uid: &SopInstanceUid) -> PacsResult<Instance> {
+            unreachable!()
+        }
+        async fn get_instance_metadata(&self, _uid: &SopInstanceUid) -> PacsResult<DicomJson> {
+            unreachable!()
+        }
+        async fn delete_study(&self, _uid: &StudyUid) -> PacsResult<()> {
+            Ok(())
+        }
+        async fn delete_series(&self, _uid: &SeriesUid) -> PacsResult<()> {
+            Ok(())
+        }
+        async fn delete_instance(&self, _uid: &SopInstanceUid) -> PacsResult<()> {
+            Ok(())
+        }
+        async fn get_statistics(&self) -> PacsResult<PacsStatistics> {
+            Ok(PacsStatistics {
+                num_studies: 0,
+                num_series: 0,
+                num_instances: 0,
+                disk_usage_bytes: 0,
+            })
+        }
+        async fn store_user(&self, _user: &User) -> PacsResult<()> {
+            Ok(())
+        }
+        async fn get_user(&self, id: &UserId) -> PacsResult<User> {
+            Err(PacsError::NotFound {
+                resource: "user",
+                uid: id.to_string(),
+            })
+        }
+        async fn get_user_by_username(&self, username: &str) -> PacsResult<User> {
+            Err(PacsError::NotFound {
+                resource: "user",
+                uid: username.to_string(),
+            })
+        }
+        async fn query_users(&self, _q: &UserQuery) -> PacsResult<Vec<User>> {
+            Ok(vec![])
+        }
+        async fn delete_user(&self, id: &UserId) -> PacsResult<()> {
+            Err(PacsError::NotFound {
+                resource: "user",
+                uid: id.to_string(),
+            })
+        }
+        async fn store_refresh_token(&self, _token: &RefreshToken) -> PacsResult<()> {
+            Ok(())
+        }
+        async fn get_refresh_token(&self, token_hash: &str) -> PacsResult<RefreshToken> {
+            Err(PacsError::NotFound {
+                resource: "refresh_token",
+                uid: token_hash.to_string(),
+            })
+        }
+        async fn revoke_refresh_tokens(&self, _user_id: &UserId) -> PacsResult<()> {
+            Ok(())
+        }
+        async fn get_password_policy(&self) -> PacsResult<PasswordPolicy> {
+            Ok(PasswordPolicy::default())
+        }
+        async fn upsert_password_policy(&self, _policy: &PasswordPolicy) -> PacsResult<()> {
+            Ok(())
+        }
+        async fn list_nodes(&self) -> PacsResult<Vec<DicomNode>> {
+            Ok(vec![])
+        }
+        async fn upsert_node(&self, _node: &DicomNode) -> PacsResult<()> {
+            Ok(())
+        }
+        async fn delete_node(&self, _ae_title: &str) -> PacsResult<()> {
+            Ok(())
+        }
+        async fn get_server_settings(&self) -> PacsResult<Option<ServerSettings>> {
+            Ok(None)
+        }
+        async fn upsert_server_settings(&self, _settings: &ServerSettings) -> PacsResult<()> {
+            Ok(())
+        }
+        async fn search_audit_logs(&self, _q: &AuditLogQuery) -> PacsResult<AuditLogPage> {
+            Ok(AuditLogPage {
+                entries: vec![],
+                total: 0,
+                limit: 10,
+                offset: 0,
+            })
+        }
+        async fn get_audit_log(&self, _id: i64) -> PacsResult<AuditLogEntry> {
+            unreachable!()
+        }
+        async fn store_audit_log(&self, _entry: &NewAuditLogEntry) -> PacsResult<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct NoopBlobStore;
+
+    #[async_trait]
+    impl BlobStore for NoopBlobStore {
+        async fn put(&self, _key: &str, _data: Bytes) -> PacsResult<()> {
+            Ok(())
+        }
+        async fn get(&self, _key: &str) -> PacsResult<Bytes> {
+            unreachable!()
+        }
+        async fn delete(&self, _key: &str) -> PacsResult<()> {
+            Ok(())
+        }
+        async fn exists(&self, _key: &str) -> PacsResult<bool> {
+            Ok(false)
+        }
+        async fn presigned_url(&self, _key: &str, _ttl_secs: u32) -> PacsResult<String> {
+            Ok(String::new())
+        }
+    }
+
+    fn admin_user(role: UserRole) -> AuthenticatedUser {
+        AuthenticatedUser::new("1", "alice", role.as_str(), serde_json::json!({}))
+    }
+
+    fn test_admin_app(user: Option<AuthenticatedUser>) -> Router {
+        let store: Arc<dyn MetadataStore> = Arc::new(NoopMetadataStore);
+        let state = AppState {
+            server_info: ServerInfo {
+                ae_title: "TESTPACS".into(),
+                http_port: 8042,
+                dicom_port: 4242,
+                version: env!("CARGO_PKG_VERSION"),
+            },
+            server_settings: ServerSettings::default(),
+            store: Arc::clone(&store),
+            blobs: Arc::new(NoopBlobStore),
+            plugins: Arc::new(PluginRegistry::new()),
+        };
+        let runtime = Arc::new(
+            AdminRuntime::new(
+                serde_json::from_value(serde_json::json!({
+                    "route_prefix": "/admin",
+                    "redirect_root": false,
+                    "activity_limit": 24
+                }))
+                .unwrap(),
+                state.server_info.clone(),
+                store,
+            )
+            .unwrap(),
+        );
+
+        let router = routes(runtime);
+        let router = if let Some(user) = user {
+            router.layer(Extension(user))
+        } else {
+            router
+        };
+
+        router.with_state(state)
+    }
+
+    #[tokio::test]
+    async fn dashboard_requires_admin_authentication() {
+        let resp = test_admin_app(None)
+            .oneshot(
+                Request::builder()
+                    .uri("/admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn system_page_forbids_non_admin_users() {
+        let resp = test_admin_app(Some(admin_user(UserRole::Viewer)))
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/system")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn system_page_allows_admin_users() {
+        let resp = test_admin_app(Some(admin_user(UserRole::Admin)))
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/system")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn events_stream_forbids_non_admin_users() {
+        let resp = test_admin_app(Some(admin_user(UserRole::Viewer)))
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/events")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
 
     #[test]
     fn bytes_are_formatted_human_readably() {

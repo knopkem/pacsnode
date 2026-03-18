@@ -94,7 +94,8 @@
 | **Lua/Python Scripting** | ❌ | ✅ | Orthanc: server-side automation |
 | **Peer-to-Peer Sync** | ❌ | ✅ | Orthanc: replicate between Orthanc instances |
 | **Plugin System** | ✅ | ✅ | Compile-time trait-based plugin system with built-in storage/DIMSE plugins and optional auth/audit/metrics plugins |
-| **User Management** | ⚠️ 🔮 | ✅ (plugin) | Optional `basic-auth` plugin supports a configured local credential + JWTs; no user CRUD, groups, or roles yet |
+| **User Management** | ✅ | ✅ (plugin) | Local DB-backed users, bootstrap admin CLI, password policy, refresh tokens, and admin dashboard/API support are implemented; groups and external provisioning are still missing |
+| **Admin Dashboard** | ✅ | ✅ (plugin) | Optional admin web UI covers users, password policy, nodes, server settings, and audit review |
 | **Audit Log API** | ✅ | ✅ (plugin) | `GET /api/audit/logs` and `GET /api/audit/logs/{id}` provide filtered review/search over the append-only audit trail |
 
 ---
@@ -181,7 +182,7 @@
 
 | Feature | pacsnode | Orthanc | Notes |
 |---------|:--------:|:-------:|-------|
-| **Built-in web UI** | ⚠️ | ✅ | Optional `ohif-viewer` plugin can host a user-supplied OHIF build, but pacsnode does not ship a bundled UI distribution |
+| **Built-in web UI** | ⚠️ | ✅ | Optional admin dashboard ships with pacsnode, and `ohif-viewer` can host OHIF assets, but there is no bundled diagnostic worklist/viewer shell yet |
 | **OHIF Viewer integration** | ✅ | ✅ (plugin) | Optional `ohif-viewer` plugin serves a pre-built OHIF distribution with SPA fallback and optional root redirect |
 | **Stone Web Viewer** | ❌ | ✅ (plugin) | Orthanc-specific advanced viewer |
 | **Custom study list / worklist UI** | ❌ 🔮 | ❌ | Planned: `@pacsnode/extension-worklist` |
@@ -250,12 +251,12 @@ Listed here for completeness and long-term roadmap consideration.
 |----------|:--------:|:-------:|:---:|
 | **DIMSE Services** | 88% | 95% | C-CANCEL, Storage Commitment, MWL |
 | **DICOMweb** | 95% | 95% | Main remaining gap is UPS-RS/worklist surface, which Orthanc also lacks natively |
-| **REST API** | 65% | 90% | Biggest gaps are anonymize/modify/merge/split/export/jobs plus real user management |
+| **REST API** | 75% | 90% | Biggest gaps are anonymize/modify/merge/split/export/jobs rather than core administration |
 | **Transfer Syntax / Codecs** | 80% | 85% | Main remaining gaps are classic JPEG Lossless encode support, lossy J2K hardening, and MPEG |
 | **Storage** | 85% | 85% | Main remaining gaps are storage commitment, compression-at-rest, and lifecycle/retention tooling |
 | **Database** | 95% | 85% | pacsnode ahead: JSONB, GIN, sqlx compile-time |
-| **Security** | 45% | 60% | Main remaining gaps are RBAC, OIDC/API keys, TLS, CORS hardening, and PHI log filtering |
-| **Viewer / UI** | 45% | 70% | OHIF hosting now exists, but bundled assets and a dedicated study/worklist shell are still missing |
+| **Security** | 65% | 60% | Main remaining gaps are policy coverage expansion, API keys, TLS, CORS hardening, and PHI log filtering |
+| **Viewer / UI** | 55% | 70% | Admin UI and OHIF hosting now exist, but a bundled diagnostic worklist/viewer shell is still missing |
 | **System / Ops** | 95% | 85% | Main remaining gaps are async jobs, HA/federation work, and hot reload |
 | **Enterprise Features** | 5% | 25% | Long-term roadmap items |
 
@@ -265,7 +266,7 @@ Listed here for completeness and long-term roadmap consideration.
 
 ### 🔴 Critical (blocks clinical use)
 
-1. **Authentication & RBAC** — no patient data should be accessible without login
+1. **Authorization coverage hardening** — login, roles, and OIDC bearer validation exist, but policy coverage still needs to be completed and reviewed across every workflow
 2. **TLS termination** — at minimum via reverse proxy (Nginx/Caddy), ideally native
 3. **CORS tightening** — replace `permissive()` with configured origins
 4. **PHI log filtering** — enforce the stated “no PHI in logs” policy at the logging boundary

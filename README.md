@@ -9,7 +9,10 @@ A modern, high-performance **Picture Archiving and Communication System (PACS)**
 - **DICOMweb** — STOW-RS, QIDO-RS, WADO-RS (PS3.18 compliant)
 - **DIMSE** — C-STORE, C-FIND, C-MOVE, C-GET, C-ECHO SCP + SCU
 - **REST API** — Study/Series/Instance CRUD, remote node management, statistics
+- **Security Plugins** — Optional local multi-user auth, refresh-token rotation, route-level authorization, audit logging, and admin dashboard
+- **Federated Auth** — External OIDC bearer-token validation via issuer discovery, JWKS, or static RSA public keys
 - **Backend Choice** — PostgreSQL + S3 by default (recommended), or SQLite + local filesystem in [standalone mode](#standalone-mode) for simple single-machine use
+- **Plugin Architecture** — Compile-time optional plugins for auth, audit, admin, metrics, and viewer hosting
 - **Async** — Built on Tokio with fully async I/O throughout
 - **Single Binary** — Zero runtime dependencies beyond your selected metadata/blob backends
 
@@ -49,6 +52,7 @@ A modern, high-performance **Picture Archiving and Communication System (PACS)**
 | Crate | Role |
 |-------|------|
 | `pacs-core` | Domain types (`Study`, `Series`, `Instance`), UID newtypes, `MetadataStore` + `BlobStore` traits, error types |
+| `pacs-plugin` | Shared plugin traits, middleware/route extension points, plugin registry |
 | `pacs-dicom` | Bridge to dicom-toolkit-rs — DICOM parsing, tag extraction, JSON conversion |
 | `pacs-store` | PostgreSQL `MetadataStore` implementation |
 | `pacs-sqlite-store` | SQLite `MetadataStore` implementation for standalone deployments |
@@ -56,7 +60,19 @@ A modern, high-performance **Picture Archiving and Communication System (PACS)**
 | `pacs-fs-storage` | Filesystem `BlobStore` implementation for standalone deployments |
 | `pacs-dimse` | DICOM SCP server + SCU client (C-STORE, C-FIND, C-MOVE, C-GET, C-ECHO) |
 | `pacs-api` | Axum HTTP server — DICOMweb (STOW/QIDO/WADO-RS) + REST endpoints |
+| `pacs-auth-plugin` | Optional local auth and federated bearer-token validation plugin |
+| `pacs-audit-plugin` | Optional append-only audit trail plugin |
+| `pacs-admin-plugin` | Optional admin dashboard for system settings, users, nodes, and audit review |
+| `pacs-metrics-plugin` | Optional Prometheus metrics endpoint and counters |
+| `pacs-viewer-plugin` | Optional OHIF viewer hosting plugin |
 | `pacs-server` | Binary entry point — config loading, startup wiring, graceful shutdown |
+
+## Documentation
+
+- [Feature matrix and gap analysis](DOCS/feature-matrix.md)
+- [Authentication tutorial](DOCS/auth-tutorial.md)
+- [OHIF integration requirements](DOCS/ohif-server-requirements.md)
+- [Plugin architecture notes](DOCS/plugin-system.md)
 
 ---
 
@@ -309,6 +325,27 @@ See [`config.toml.example`](config.toml.example) for a fully-commented reference
 | `logging.level` | `PACS_LOGGING__LEVEL` | `info` | Log level ([tracing env_filter syntax](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html)) |
 | `logging.format` | `PACS_LOGGING__FORMAT` | `json` | `json` or `pretty` |
 
+#### Optional Security & UI Plugins — `both`
+
+Enable optional features by adding plugin IDs under `[plugins].enabled`.
+
+```toml
+[plugins]
+enabled = ["basic-auth", "admin-dashboard"]
+```
+
+Common plugin IDs:
+
+| Plugin ID | Purpose |
+|-----------|---------|
+| `basic-auth` | Local username/password auth or external OIDC bearer-token validation |
+| `audit-logger` | Append-only audit trail; auto-enabled by default for secured deployments |
+| `admin-dashboard` | Admin web UI for users, password policy, nodes, settings, and audit review |
+| `prometheus-metrics` | `/metrics` endpoint with HTTP and PACS counters |
+| `ohif-viewer` | Static OHIF viewer hosting |
+
+For full setup examples, see [DOCS/auth-tutorial.md](DOCS/auth-tutorial.md).
+
 #### Bootstrap DICOM Nodes — `both`
 
 You can pre-seed the remote node registry directly from `config.toml` with
@@ -340,6 +377,21 @@ still works alongside it.
 > **Important:** startup seeding is additive/upsert-only. If you remove a node
 > from `config.toml`, pacsnode does not delete the existing row from
 > `dicom_nodes`; remove it explicitly via `DELETE /api/nodes/{ae_title}`.
+
+---
+
+## Authentication & Authorization
+
+`basic-auth` is the optional security plugin for HTTP routes. It supports two deployment modes:
+
+- **Local auth** — pacsnode stores users in the metadata database, issues short-lived access tokens plus refresh tokens, enforces password policy and account lockout, and supports bootstrap admin creation from the CLI.
+- **OIDC bearer validation** — pacsnode validates externally issued bearer tokens using issuer discovery, explicit JWKS, or a static RSA public key. Interactive login remains the responsibility of your identity provider or reverse proxy.
+
+Current authorization coverage includes route-level enforcement across DICOMweb, REST, and admin surfaces, using the built-in roles `admin`, `radiologist`, `technologist`, `viewer`, and `uploader` plus optional claim/user attributes.
+
+Use the auth tutorial for end-to-end examples:
+
+- [DOCS/auth-tutorial.md](DOCS/auth-tutorial.md)
 
 ---
 
@@ -678,10 +730,11 @@ The dependency is currently referenced as a git dependency (branch `main`). Once
 
 ## Security
 
-- **PHI Protection** — Patient names, IDs, and dates are never written to log output. Only DICOM UIDs appear in structured log fields.
-- **Audit Logging** — All data access is recorded in an append-only `audit_log` table (HIPAA compliance).
-- **TLS** — Configurable for both HTTP (Axum) and DIMSE (dicom-toolkit-rs rustls).
-- **Authentication** — JWT + Basic Auth support for the REST/DICOMweb API.
+- **PHI Protection** — Logging is designed around UID-based fields, but PHI redaction still needs hardening and should not be treated as complete.
+- **Audit Logging** — The optional `audit-logger` plugin records data access and administrative events in an append-only `audit_log` table.
+- **TLS** — Native HTTP and DIMSE TLS are not implemented yet; terminate TLS at a reverse proxy today.
+- **Authentication** — The optional `basic-auth` plugin supports local multi-user auth and external OIDC bearer-token validation for REST, DICOMweb, and admin routes.
+- **Authorization** — Built-in roles and attribute-aware policy checks protect route access, but policy coverage is still expanding.
 - **Secrets** — All credentials are loaded from configuration or environment variables, never hardcoded.
 - **Input Validation** — Malformed UIDs, oversized payloads, and unexpected content types are rejected with appropriate HTTP 4xx responses.
 

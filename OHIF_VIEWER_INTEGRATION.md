@@ -18,11 +18,15 @@ The plugin is compiled in, but it is disabled by default.
 Build or obtain an OHIF distribution and copy the generated static files onto the pacsnode host. For example:
 
 ```bash
-mkdir -p /opt/pacsnode/viewer
-cp -R /path/to/ohif-build/* /opt/pacsnode/viewer/
+mkdir -p web/viewer
+cp -R /path/to/ohif-build/* web/viewer/
 ```
 
 Make sure the directory contains `index.html` and the rest of the generated assets.
+
+For the repo-bundled setup, `./web/viewer` is the default `static_dir`. If you
+copy the built viewer there and enable the plugin, you do not need to configure
+`static_dir` manually.
 
 ### OHIF subpath build requirement
 
@@ -31,32 +35,33 @@ Otherwise the generated `index.html` may point to root URLs such as
 `/app-config.js`, `/manifest.json`, or `/assets/...`, which produces a white page
 and `404 Not Found` errors when pacsnode serves the viewer under `/viewer/`.
 
-For OHIF, set both:
+For OHIF, set:
 
 - `PUBLIC_URL=/viewer/` when building the static bundle
-- `routerBasename: '/viewer'` in your OHIF `app-config.js`
 
 Example:
 
 ```bash
-PUBLIC_URL=/viewer/ APP_CONFIG=config/default.js yarn build
-```
-
-And in the OHIF config:
-
-```js
-window.config = {
-  routerBasename: '/viewer',
-  // ...other OHIF config...
-};
+PUBLIC_URL=/viewer/ yarn build
 ```
 
 `pacsnode` also rewrites common root-absolute asset references in the served HTML
 shell to the configured `route_prefix`, and serves common root-level generated
 bundle/icon requests from the viewer static directory. That helps with stock OHIF
 builds whose runtime still asks for chunk files such as `/6409.bundle....js` or
-icons under `/assets/...`, but a subpath-aware OHIF build is still the supported
-deployment configuration.
+icons under `/assets/...`.
+
+By default, `pacsnode` also serves its own generated `app-config.js` that points
+OHIF at pacsnode's own DICOMweb routes:
+
+- `routerBasename = "/viewer"`
+- `qidoRoot = "/wado"`
+- `wadoRoot = "/wado"`
+- `wadoUriRoot = "/wado"`
+
+That replaces OHIF's sample config that often points to public AWS/DCM4CHEE demo
+servers. If you want to keep a custom `app-config.js` from the viewer bundle,
+set `generate_app_config = false`.
 
 ## Enable the plugin
 
@@ -67,11 +72,12 @@ Add the plugin ID to `[plugins].enabled` and configure the static asset location
 enabled = ["ohif-viewer"]
 
 [plugins.ohif-viewer]
-static_dir = "/opt/pacsnode/viewer"
+static_dir = "./web/viewer"
 route_prefix = "/viewer"
 redirect_root = true
 index_file = "index.html"
 fallback_file = "index.html"
+generate_app_config = true
 ```
 
 `route_prefix` must be an absolute path and cannot be `/`.
@@ -87,7 +93,7 @@ the pacsnode plugin configuration. The normal upgrade flow is:
 
 1. Check out or download the OHIF version you want to deploy.
 2. Build its static distribution.
-3. Replace the files inside the configured `static_dir`.
+3. Replace the files inside `./web/viewer/` (or your configured `static_dir`).
 4. Restart `pacsnode`.
 5. Open `http://<host>:8042/viewer/` and verify the viewer loads and can still
    query the pacsnode DICOMweb endpoints.
@@ -95,8 +101,8 @@ the pacsnode plugin configuration. The normal upgrade flow is:
 Example:
 
 ```bash
-rm -rf /opt/pacsnode/viewer/*
-cp -R /path/to/new-ohif-build/* /opt/pacsnode/viewer/
+rm -rf web/viewer/*
+cp -R /path/to/new-ohif-build/* web/viewer/
 systemctl restart pacsnode
 ```
 
@@ -122,3 +128,6 @@ The viewer shell can stay public while your DICOMweb routes remain protected.
 - Some OHIF builds request generated chunk files and icons from the site root even
   when the viewer is mounted under `/viewer`; the plugin now aliases common
   root-level asset requests into the configured `static_dir`.
+- The default `generate_app_config = true` mode serves a pacsnode-targeted
+  `app-config.js` so the viewer uses local `/wado` endpoints instead of the
+  sample upstream demo servers.

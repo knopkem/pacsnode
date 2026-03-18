@@ -158,11 +158,12 @@ enabled = []
 #
 # Example OHIF/static viewer config:
 # [plugins.ohif-viewer]
-# static_dir = "/opt/pacsnode/viewer"
+# static_dir = "./web/viewer"
 # route_prefix = "/viewer"
 # redirect_root = true
 # index_file = "index.html"
 # fallback_file = "index.html"
+# generate_app_config = true
 #
 # If basic-auth and ohif-viewer are both enabled, add "/" and "/viewer" to
 # [plugins.basic-auth].public_paths so the viewer shell can load before it makes

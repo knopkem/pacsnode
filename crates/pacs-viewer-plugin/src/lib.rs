@@ -58,6 +58,8 @@ struct ViewerPluginConfig {
     index_file: String,
     #[serde(default = "default_fallback_file")]
     fallback_file: String,
+    #[serde(default = "default_generate_app_config")]
+    generate_app_config: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +68,7 @@ struct ViewerRuntime {
     route_prefix: String,
     viewer_root: String,
     redirect_root: bool,
+    generate_app_config: bool,
     index_file: PathBuf,
     index_path: PathBuf,
     fallback_path: PathBuf,
@@ -74,11 +77,12 @@ struct ViewerRuntime {
 enum AssetResolution {
     File(PathBuf),
     Fallback,
+    GeneratedAppConfig,
     NotFound,
 }
 
 fn default_static_dir() -> String {
-    "/opt/pacsnode/viewer".into()
+    "./web/viewer".into()
 }
 
 fn default_route_prefix() -> String {
@@ -95,6 +99,10 @@ fn default_redirect_root() -> bool {
 
 fn default_fallback_file() -> String {
     "index.html".into()
+}
+
+fn default_generate_app_config() -> bool {
+    true
 }
 
 #[async_trait]
@@ -226,6 +234,7 @@ impl ViewerRuntime {
             route_prefix: route_prefix.clone(),
             viewer_root: format!("{route_prefix}/"),
             redirect_root: config.redirect_root,
+            generate_app_config: config.generate_app_config,
             index_path: PathBuf::new(),
             index_file,
             fallback_path: PathBuf::new(),
@@ -277,6 +286,10 @@ impl ViewerRuntime {
             return Ok(AssetResolution::File(self.index_path.clone()));
         };
 
+        if self.generate_app_config && is_generated_app_config_path(requested_path) {
+            return Ok(AssetResolution::GeneratedAppConfig);
+        }
+
         let Some(relative_path) = sanitize_relative_request_path(requested_path) else {
             return Ok(AssetResolution::NotFound);
         };
@@ -319,6 +332,7 @@ async fn serve_viewer_request(
         AssetResolution::Fallback => {
             serve_file(runtime.as_ref(), runtime.fallback_path.clone(), request).await
         }
+        AssetResolution::GeneratedAppConfig => serve_generated_app_config(runtime.as_ref()),
         AssetResolution::NotFound => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -328,6 +342,10 @@ async fn serve_root_asset_alias_request(
     requested_path: String,
     request: Request,
 ) -> Response {
+    if runtime.generate_app_config && is_generated_app_config_path(&requested_path) {
+        return serve_generated_app_config(runtime.as_ref());
+    }
+
     let request_path = format!("/{requested_path}");
     if !looks_like_static_asset_path(&request_path) {
         return StatusCode::NOT_FOUND.into_response();
@@ -392,6 +410,17 @@ async fn serve_file(runtime: &ViewerRuntime, path: PathBuf, request: Request) ->
         Ok(response) => response.into_response(),
         Err(error) => match error {},
     }
+}
+
+fn serve_generated_app_config(runtime: &ViewerRuntime) -> Response {
+    (
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        generated_app_config(runtime),
+    )
+        .into_response()
 }
 
 async fn serve_html_file(runtime: &ViewerRuntime, path: &Path) -> Response {
@@ -581,6 +610,45 @@ fn looks_like_static_asset_path(value: &str) -> bool {
             .rsplit('/')
             .next()
             .is_some_and(|segment| segment.contains('.'))
+}
+
+fn is_generated_app_config_path(path: &str) -> bool {
+    path == "app-config.js"
+}
+
+fn generated_app_config(runtime: &ViewerRuntime) -> String {
+    let config = serde_json::json!({
+        "routerBasename": runtime.route_prefix,
+        "extensions": [],
+        "modes": [],
+        "showStudyList": true,
+        "dataSources": [
+            {
+                "namespace": "@ohif/extension-default.dataSourcesModule.dicomweb",
+                "sourceName": "dicomweb",
+                "configuration": {
+                    "friendlyName": "pacsnode DICOMweb",
+                    "name": "pacsnode",
+                    "wadoUriRoot": "/wado",
+                    "qidoRoot": "/wado",
+                    "wadoRoot": "/wado",
+                    "qidoSupportsIncludeField": false,
+                    "supportsReject": false,
+                    "supportsFuzzyMatching": true,
+                    "supportsWildcard": true,
+                    "imageRendering": "wadors",
+                    "thumbnailRendering": "wadors",
+                    "enableStudyLazyLoad": true
+                }
+            }
+        ],
+        "defaultDataSourceName": "dicomweb"
+    });
+
+    format!(
+        "window.config = {};\n",
+        serde_json::to_string_pretty(&config).expect("generated OHIF app config is serializable")
+    )
 }
 
 register_plugin!(OhifViewerPlugin::default);
@@ -1007,6 +1075,103 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(body.as_ref(), b"png-bytes");
+    }
+
+    #[tokio::test]
+    async fn viewer_serves_generated_app_config_pointing_to_pacsnode() {
+        let dir = TestViewerDir::new();
+        dir.write("index.html", "<html>viewer</html>");
+        dir.write(
+            "app-config.js",
+            "window.config = { qidoRoot: 'https://example.com' };",
+        );
+        let plugin = init_plugin(&dir).await;
+        let app = plugin.routes().with_state(app_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/viewer/app-config.js")
+                    .header(header::ACCEPT, "*/*")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/javascript; charset=utf-8"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains(r#""routerBasename": "/viewer""#));
+        assert!(body.contains(r#""wadoUriRoot": "/wado""#));
+        assert!(body.contains(r#""qidoRoot": "/wado""#));
+        assert!(body.contains(r#""wadoRoot": "/wado""#));
+        assert!(body.contains(r#""defaultDataSourceName": "dicomweb""#));
+        assert!(!body.contains("example.com"));
+    }
+
+    #[tokio::test]
+    async fn root_alias_serves_generated_app_config() {
+        let dir = TestViewerDir::new();
+        dir.write("index.html", "<html>viewer</html>");
+        let plugin = init_plugin(&dir).await;
+        let app = plugin.routes().with_state(app_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/app-config.js")
+                    .header(header::ACCEPT, "*/*")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains(r#""routerBasename": "/viewer""#));
+    }
+
+    #[tokio::test]
+    async fn generated_app_config_can_be_disabled() {
+        let dir = TestViewerDir::new();
+        dir.write("index.html", "<html>viewer</html>");
+        dir.write(
+            "app-config.js",
+            "window.config = { qidoRoot: 'https://server.dcmjs.org/dcm4chee-arc/aets/DCM4CHEE/rs' };",
+        );
+
+        let mut plugin = OhifViewerPlugin::default();
+        plugin
+            .init(&plugin_context(serde_json::json!({
+                "static_dir": dir.root(),
+                "generate_app_config": false,
+            })))
+            .await
+            .unwrap();
+        let app = plugin.routes().with_state(app_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/viewer/app-config.js")
+                    .header(header::ACCEPT, "*/*")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("server.dcmjs.org"));
     }
 
     #[tokio::test]

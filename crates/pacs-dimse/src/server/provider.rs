@@ -18,8 +18,11 @@ use pacs_dicom::tags::{
     dataset_to_dicom_json, date_display_string, optional_i32, optional_i32_from_u16,
     optional_string, parse_dicom_date, BODY_PART_EXAMINED, MODALITIES_IN_STUDY,
 };
-use pacs_plugin::{FindScpHandler, GetScpHandler, MoveScpHandler, StoreScpHandler};
-use pacs_plugin::{PacsEvent, PluginRegistry, QuerySource};
+use pacs_dicom::transcode_part10;
+use pacs_plugin::{
+    FindScpHandler, GetScpHandler, MoveScpHandler, PacsEvent, PluginRegistry, QuerySource,
+    StoreRequest, StoreScpHandler,
+};
 use tracing::{debug, error, instrument, warn};
 
 // ── C-STORE provider ──────────────────────────────────────────────────────────
@@ -28,37 +31,66 @@ use tracing::{debug, error, instrument, warn};
 pub struct PacsStoreProvider {
     store: Arc<dyn MetadataStore>,
     blobs: Arc<dyn BlobStore>,
+    storage_transfer_syntax: Option<String>,
     plugins: Option<Arc<PluginRegistry>>,
 }
 
 impl PacsStoreProvider {
     /// Creates a new `PacsStoreProvider` backed by the given stores.
     pub fn new(store: Arc<dyn MetadataStore>, blobs: Arc<dyn BlobStore>) -> Self {
-        Self::with_plugins(store, blobs, None)
+        Self::with_storage_transfer_syntax(store, blobs, None)
+    }
+
+    /// Creates a new `PacsStoreProvider` with an explicit archive transfer syntax policy.
+    pub fn with_storage_transfer_syntax(
+        store: Arc<dyn MetadataStore>,
+        blobs: Arc<dyn BlobStore>,
+        storage_transfer_syntax: Option<String>,
+    ) -> Self {
+        Self::with_plugins(store, blobs, storage_transfer_syntax, None)
     }
 
     /// Creates a new `PacsStoreProvider` backed by the given stores and plugin registry.
     pub fn with_plugins(
         store: Arc<dyn MetadataStore>,
         blobs: Arc<dyn BlobStore>,
+        storage_transfer_syntax: Option<String>,
         plugins: Option<Arc<PluginRegistry>>,
     ) -> Self {
         Self {
             store,
             blobs,
+            storage_transfer_syntax,
             plugins,
         }
     }
 }
 
-impl StoreServiceProvider for PacsStoreProvider {
-    #[instrument(skip(self, event), fields(
-        sop_class = %event.sop_class_uid,
-        sop_instance = %event.sop_instance_uid,
-        calling_ae = %event.calling_ae,
+fn encode_part10_from_dataset(
+    sop_class_uid: &str,
+    sop_instance_uid: &str,
+    dataset: DataSet,
+    transfer_syntax_uid: &str,
+) -> Result<Bytes, String> {
+    let mut buf = Vec::new();
+    let mut file = FileFormat::from_dataset(sop_class_uid, sop_instance_uid, dataset);
+    file.meta.transfer_syntax_uid = transfer_syntax_uid.to_string();
+    let mut writer = DicomWriter::new(&mut buf);
+    writer
+        .write_file(&file)
+        .map_err(|error| error.to_string())?;
+    Ok(Bytes::from(buf))
+}
+
+impl PacsStoreProvider {
+    #[instrument(skip(self, request), fields(
+        sop_class = %request.event.sop_class_uid,
+        sop_instance = %request.event.sop_instance_uid,
+        calling_ae = %request.event.calling_ae,
     ))]
-    async fn on_store(&self, event: StoreEvent) -> StoreResult {
+    async fn handle_store_request(&self, request: StoreRequest) -> StoreResult {
         debug!("C-STORE received");
+        let event = request.event;
         // ── Extract required UIDs ──────────────────────────────────────────
         let study_uid_str = event
             .dataset
@@ -93,27 +125,44 @@ impl StoreServiceProvider for PacsStoreProvider {
         let series_uid = SeriesUid::from(series_uid_str.as_str());
         let instance_uid = SopInstanceUid::from(sop_instance_uid_str.as_str());
 
-        // ── Encode dataset to a Part 10 file (Explicit VR Little Endian) ───
-        let encoded = {
-            let mut buf = Vec::new();
-            {
-                let file = FileFormat::from_dataset(
-                    &event.sop_class_uid,
-                    &event.sop_instance_uid,
-                    event.dataset.clone(),
-                );
-                let mut writer = DicomWriter::new(&mut buf);
-                if let Err(e) = writer.write_file(&file) {
-                    error!(error = %e, "Failed to encode received DICOM dataset");
+        let inbound_transfer_syntax = request.transfer_syntax_uid.as_str();
+        let base_encoded = match encode_part10_from_dataset(
+            &event.sop_class_uid,
+            &event.sop_instance_uid,
+            event.dataset.clone(),
+            inbound_transfer_syntax,
+        ) {
+            Ok(encoded) => encoded,
+            Err(error_message) => {
+                error!(error = %error_message, "Failed to encode received DICOM dataset");
+                return StoreResult::failure(STATUS_PROCESSING_FAILURE);
+            }
+        };
+
+        let storage_transfer_syntax = self
+            .storage_transfer_syntax
+            .clone()
+            .unwrap_or_else(|| inbound_transfer_syntax.to_string());
+        let encoded = if storage_transfer_syntax == inbound_transfer_syntax {
+            base_encoded
+        } else {
+            match transcode_part10(base_encoded, &storage_transfer_syntax) {
+                Ok(transcoded) => transcoded,
+                Err(error) => {
+                    error!(
+                        error = %error,
+                        inbound_transfer_syntax = %inbound_transfer_syntax,
+                        storage_transfer_syntax = %storage_transfer_syntax,
+                        "Failed to transcode received DICOM dataset for storage"
+                    );
                     return StoreResult::failure(STATUS_PROCESSING_FAILURE);
                 }
             }
-            buf
         };
 
         // ── Store raw bytes in the blob store ──────────────────────────────
         let blob_key = blob_key_for(&study_uid, &series_uid, &instance_uid);
-        if let Err(e) = self.blobs.put(&blob_key, Bytes::from(encoded)).await {
+        if let Err(e) = self.blobs.put(&blob_key, encoded).await {
             error!(error = %e, blob_key = %blob_key, "Failed to persist DICOM blob");
             return StoreResult::failure(STATUS_PROCESSING_FAILURE);
         }
@@ -198,7 +247,7 @@ impl StoreServiceProvider for PacsStoreProvider {
             study_uid: study_uid.clone(),
             sop_class_uid,
             instance_number,
-            transfer_syntax: Some("1.2.840.10008.1.2.1".to_string()),
+            transfer_syntax: Some(storage_transfer_syntax),
             rows,
             columns,
             blob_key,
@@ -237,9 +286,19 @@ impl StoreServiceProvider for PacsStoreProvider {
     }
 }
 
+impl StoreServiceProvider for PacsStoreProvider {
+    async fn on_store(&self, event: StoreEvent) -> StoreResult {
+        self.handle_store_request(StoreRequest {
+            event,
+            transfer_syntax_uid: "1.2.840.10008.1.2.1".to_string(),
+        })
+        .await
+    }
+}
+
 impl StoreScpHandler for PacsStoreProvider {
-    fn handle_store(&self, event: StoreEvent) -> pacs_plugin::BoxFuture<'_, StoreResult> {
-        Box::pin(StoreServiceProvider::on_store(self, event))
+    fn handle_store(&self, request: StoreRequest) -> pacs_plugin::BoxFuture<'_, StoreResult> {
+        Box::pin(self.handle_store_request(request))
     }
 }
 
@@ -844,6 +903,7 @@ mod tests {
         AuditLogEntry, AuditLogPage, AuditLogQuery, NewAuditLogEntry, PacsResult, PacsStatistics,
         PasswordPolicy, RefreshToken, SeriesUid, ServerSettings, StudyUid, User, UserId, UserQuery,
     };
+    use pacs_plugin::{StoreRequest, StoreScpHandler};
 
     // ── Mock MetadataStore ────────────────────────────────────────────────────
 
@@ -1071,6 +1131,104 @@ mod tests {
 
         let provider = PacsStoreProvider::new(Arc::new(mock_store), Arc::new(mock_blobs));
         let result = provider.on_store(minimal_store_event()).await;
+        assert_eq!(result.status, 0x0000, "Expected success status");
+    }
+
+    #[tokio::test]
+    async fn handle_store_preserves_inbound_transfer_syntax_when_unconfigured() {
+        let mut mock_store = MockTestStore::new();
+        mock_store.expect_store_study().once().returning(|_| Ok(()));
+        mock_store
+            .expect_store_series()
+            .once()
+            .returning(|_| Ok(()));
+        mock_store
+            .expect_store_instance()
+            .once()
+            .returning(|instance| {
+                assert_eq!(
+                    instance.transfer_syntax.as_deref(),
+                    Some("1.2.840.10008.1.2.2")
+                );
+                Ok(())
+            });
+
+        let mut mock_blobs = MockTestBlobs::new();
+        mock_blobs
+            .expect_put()
+            .once()
+            .withf(|_, data| {
+                let file =
+                    dicom_toolkit_data::DicomReader::new(std::io::Cursor::new(data.as_ref()))
+                        .read_file()
+                        .ok();
+                matches!(
+                    file.as_ref()
+                        .map(|file| file.meta.transfer_syntax_uid.as_str()),
+                    Some("1.2.840.10008.1.2.2")
+                )
+            })
+            .returning(|_, _| Ok(()));
+
+        let provider = PacsStoreProvider::new(Arc::new(mock_store), Arc::new(mock_blobs));
+        let result = provider
+            .handle_store(StoreRequest {
+                event: minimal_store_event(),
+                transfer_syntax_uid: "1.2.840.10008.1.2.2".into(),
+            })
+            .await;
+
+        assert_eq!(result.status, 0x0000, "Expected success status");
+    }
+
+    #[tokio::test]
+    async fn handle_store_transcodes_to_configured_storage_syntax() {
+        let mut mock_store = MockTestStore::new();
+        mock_store.expect_store_study().once().returning(|_| Ok(()));
+        mock_store
+            .expect_store_series()
+            .once()
+            .returning(|_| Ok(()));
+        mock_store
+            .expect_store_instance()
+            .once()
+            .returning(|instance| {
+                assert_eq!(
+                    instance.transfer_syntax.as_deref(),
+                    Some("1.2.840.10008.1.2.1.99")
+                );
+                Ok(())
+            });
+
+        let mut mock_blobs = MockTestBlobs::new();
+        mock_blobs
+            .expect_put()
+            .once()
+            .withf(|_, data| {
+                let file =
+                    dicom_toolkit_data::DicomReader::new(std::io::Cursor::new(data.as_ref()))
+                        .read_file()
+                        .ok();
+                matches!(
+                    file.as_ref()
+                        .map(|file| file.meta.transfer_syntax_uid.as_str()),
+                    Some("1.2.840.10008.1.2.1.99")
+                )
+            })
+            .returning(|_, _| Ok(()));
+
+        let provider = PacsStoreProvider::with_storage_transfer_syntax(
+            Arc::new(mock_store),
+            Arc::new(mock_blobs),
+            Some("1.2.840.10008.1.2.1.99".into()),
+        );
+        let result = provider
+            .handle_store(StoreRequest {
+                event: minimal_store_event(),
+                transfer_syntax_uid: "1.2.840.10008.1.2.1".into(),
+            })
+            .await;
+
         assert_eq!(result.status, 0x0000, "Expected success status");
     }
 

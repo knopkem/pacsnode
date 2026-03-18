@@ -25,10 +25,19 @@ pub trait BlobStorePlugin: Plugin {
 /// Object-safe boxed future type used by DIMSE handler capabilities.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// C-STORE request data forwarded to internal pacsnode SCP handlers.
+#[derive(Clone)]
+pub struct StoreRequest {
+    /// The decoded DIMSE store event.
+    pub event: StoreEvent,
+    /// The transfer syntax negotiated for the inbound C-STORE sub-operation.
+    pub transfer_syntax_uid: String,
+}
+
 /// Object-safe handler for C-STORE SCP callbacks.
 pub trait StoreScpHandler: Send + Sync {
     /// Handles a C-STORE request.
-    fn handle_store(&self, event: StoreEvent) -> BoxFuture<'_, StoreResult>;
+    fn handle_store(&self, request: StoreRequest) -> BoxFuture<'_, StoreResult>;
 }
 
 /// Object-safe handler for C-FIND SCP callbacks.

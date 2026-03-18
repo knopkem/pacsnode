@@ -51,18 +51,6 @@ instead of pacsnode-specific patching where possible:
 
 No blocking upstream items at this time.
 
-### Minor / low-priority
-
-- `dicom-toolkit-data` Part 10 parsing (`reader.rs`) does not recover payloads
-  that start with group `0002` file meta information in Explicit VR LE but omit
-  the 128-byte preamble and `DICM` marker. When the preamble is absent, the
-  reader falls back to raw Implicit VR LE from offset 0, which misinterprets
-  Explicit VR LE meta headers. pacsnode works around this in
-  `decode_store_dataset()` by synthesizing the preamble before retrying, but a
-  toolkit-side heuristic (detect group 0002 at offset 0 → try Explicit VR LE
-  meta parse first) would eliminate that workaround. In practice this is rarely
-  triggered now that SCP dataset receive is working correctly.
-
 ---
 
 ## Source references

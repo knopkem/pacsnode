@@ -49,6 +49,15 @@
         <span>DIMSE Timeout (s)</span>
         <input type="number" name="dimse_timeout_secs" min="1" value="{{ form.dimse_timeout_secs }}" required />
       </label>
+      <label class="field">
+        <span>Storage Transfer Syntax</span>
+        <select name="storage_transfer_syntax">
+          {% for option in storage_syntax_options %}
+          <option value="{{ option.uid }}" {% if option.selected %}selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+        <small>Choose how newly ingested DICOM objects are archived. “Store as received” preserves each inbound transfer syntax.</small>
+      </label>
     </div>
 
     <div class="checkbox-group">

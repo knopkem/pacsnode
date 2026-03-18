@@ -8,10 +8,31 @@ use axum::{
 };
 use bytes::Bytes;
 use pacs_core::{blob_key_for, PacsError, PolicyAction, PolicyEngine, PolicyResource, UserRole};
+use pacs_dicom::{transcode_part10, ParsedDicom};
 use pacs_plugin::{AuthenticatedUser, PacsEvent};
 use serde_json::json;
 
 use crate::{error::ApiError, policy::authorize_action, state::AppState};
+
+fn prepare_part_for_storage(
+    part: &ParsedDicom,
+    storage_transfer_syntax: Option<&str>,
+) -> Result<ParsedDicom, ApiError> {
+    let Some(target_ts_uid) = storage_transfer_syntax
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(part.clone());
+    };
+
+    if part.transfer_syntax_uid == target_ts_uid {
+        return Ok(part.clone());
+    }
+
+    let transcoded = transcode_part10(part.encoded_bytes.clone(), target_ts_uid)
+        .map_err(|error| ApiError::from(PacsError::DicomParse(error.to_string())))?;
+    ParsedDicom::from_bytes(transcoded).map_err(ApiError::from)
+}
 
 /// `POST /wado/studies` — STOW-RS store endpoint (PS3.18 §10.5).
 ///
@@ -73,7 +94,11 @@ pub async fn stow_store(
         }
     }
 
-    for p in &parsed {
+    for parsed_part in &parsed {
+        let p = prepare_part_for_storage(
+            parsed_part,
+            state.server_settings.storage_transfer_syntax.as_deref(),
+        )?;
         let blob_key = blob_key_for(
             &p.instance.study_uid,
             &p.instance.series_uid,
@@ -148,7 +173,7 @@ mod tests {
     };
     use bytes::Bytes;
     use dicom_toolkit_data::{DataSet, DicomWriter, FileFormat};
-    use dicom_toolkit_dict::{tags, Vr};
+    use dicom_toolkit_dict::{tags, ts::transfer_syntaxes, Vr};
     use http_body_util::BodyExt;
     use pacs_core::UserRole;
     use pacs_plugin::AuthenticatedUser;
@@ -178,6 +203,44 @@ mod tests {
             .write_file(&ff)
             .unwrap();
         buf
+    }
+
+    #[test]
+    fn prepare_part_for_storage_preserves_source_when_unconfigured() {
+        let bytes = Bytes::from(make_dicom_part(
+            "1.2.840.10008.5.1.4.1.1.2",
+            "CT",
+            "1.2.3.4.5",
+        ));
+        let parsed = ParsedDicom::from_bytes(bytes).unwrap();
+
+        let prepared = prepare_part_for_storage(&parsed, None).unwrap();
+        assert_eq!(prepared.transfer_syntax_uid, parsed.transfer_syntax_uid);
+        assert_eq!(prepared.encoded_bytes, parsed.encoded_bytes);
+    }
+
+    #[test]
+    fn prepare_part_for_storage_transcodes_when_configured() {
+        let bytes = Bytes::from(make_dicom_part(
+            "1.2.840.10008.5.1.4.1.1.2",
+            "CT",
+            "1.2.3.4.6",
+        ));
+        let parsed = ParsedDicom::from_bytes(bytes).unwrap();
+
+        let prepared = prepare_part_for_storage(
+            &parsed,
+            Some(transfer_syntaxes::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN.uid),
+        )
+        .unwrap();
+        assert_eq!(
+            prepared.transfer_syntax_uid,
+            transfer_syntaxes::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN.uid
+        );
+        assert_eq!(
+            prepared.instance.transfer_syntax.as_deref(),
+            Some(transfer_syntaxes::DEFLATED_EXPLICIT_VR_LITTLE_ENDIAN.uid)
+        );
     }
 
     fn build_multipart_body(boundary: &str, parts: &[Vec<u8>]) -> Bytes {

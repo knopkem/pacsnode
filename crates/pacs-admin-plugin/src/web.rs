@@ -140,6 +140,7 @@ struct SystemSettingsPanelTemplate {
     source_label: String,
     restart_required: bool,
     syntax_options: Vec<TransferSyntaxOptionView>,
+    storage_syntax_options: Vec<StorageTransferSyntaxOptionView>,
     preferred_syntax_order: Vec<PreferredTransferSyntaxItemView>,
 }
 
@@ -296,6 +297,7 @@ struct ServerSettingsFormInput {
     accepted_transfer_syntaxes: Vec<String>,
     #[serde(deserialize_with = "deserialize_one_or_many_strings")]
     preferred_transfer_syntaxes: Vec<String>,
+    storage_transfer_syntax: String,
     max_associations: String,
     dimse_timeout_secs: String,
 }
@@ -330,6 +332,7 @@ fn parse_server_settings_form(body: &str) -> ServerSettingsFormInput {
             "ae_whitelist_enabled" => input.ae_whitelist_enabled = Some(value),
             "accepted_transfer_syntaxes" => input.accepted_transfer_syntaxes.push(value),
             "preferred_transfer_syntaxes" => input.preferred_transfer_syntaxes.push(value),
+            "storage_transfer_syntax" => input.storage_transfer_syntax = value,
             "max_associations" => input.max_associations = value,
             "dimse_timeout_secs" => input.dimse_timeout_secs = value,
             _ => {}
@@ -346,6 +349,7 @@ struct ServerSettingsFormView {
     ae_whitelist_enabled: bool,
     accepted_transfer_syntaxes: Vec<String>,
     preferred_transfer_syntaxes: Vec<String>,
+    storage_transfer_syntax: String,
     max_associations: String,
     dimse_timeout_secs: String,
 }
@@ -355,6 +359,12 @@ struct TransferSyntaxOptionView {
     label: String,
     is_required: bool,
     accepted_selected: bool,
+}
+
+struct StorageTransferSyntaxOptionView {
+    uid: String,
+    label: String,
+    selected: bool,
 }
 
 struct PreferredTransferSyntaxItemView {
@@ -1999,6 +2009,8 @@ async fn render_system_settings_markup(
     let form =
         form_override.unwrap_or_else(|| ServerSettingsFormView::from_settings(&persisted_settings));
     let syntax_options = transfer_syntax_option_views(&form.accepted_transfer_syntaxes);
+    let storage_syntax_options =
+        storage_transfer_syntax_option_views(form.storage_transfer_syntax.as_str());
     let preferred_syntax_order =
         preferred_transfer_syntax_item_views(&form.preferred_transfer_syntaxes);
 
@@ -2013,6 +2025,7 @@ async fn render_system_settings_markup(
         },
         restart_required: persisted_settings != state.server_settings,
         syntax_options,
+        storage_syntax_options,
         preferred_syntax_order,
     }
     .render()
@@ -2850,8 +2863,30 @@ fn transfer_syntax_label(uid: &str) -> String {
         "1.2.840.10008.1.2.4.80" => "JPEG-LS Lossless".into(),
         "1.2.840.10008.1.2.4.90" => "JPEG 2000 Lossless Only".into(),
         "1.2.840.10008.1.2.4.91" => "JPEG 2000".into(),
+        "1.2.840.10008.1.2.4.201" => "HTJ2K Lossless Only".into(),
+        "1.2.840.10008.1.2.4.202" => "HTJ2K".into(),
         _ => uid.to_string(),
     }
+}
+
+fn storage_transfer_syntax_option_views(
+    selected_value: &str,
+) -> Vec<StorageTransferSyntaxOptionView> {
+    let mut options = vec![StorageTransferSyntaxOptionView {
+        uid: String::new(),
+        label: "Store as received (no recoding)".into(),
+        selected: selected_value.trim().is_empty(),
+    }];
+
+    options.extend(supported_retrieve_transfer_syntaxes().iter().map(|uid| {
+        StorageTransferSyntaxOptionView {
+            uid: (*uid).to_string(),
+            label: transfer_syntax_label(uid),
+            selected: selected_value == *uid,
+        }
+    }));
+
+    options
 }
 
 fn supported_transfer_syntax_uid_set() -> HashSet<String> {
@@ -3662,6 +3697,7 @@ impl ServerSettingsFormInput {
             normalize_accepted_transfer_syntax_selection(self.accepted_transfer_syntaxes);
         let submitted_preferred_transfer_syntaxes =
             normalize_syntax_selection(self.preferred_transfer_syntaxes);
+        let storage_transfer_syntax = self.storage_transfer_syntax.trim().to_string();
         let accept_all_transfer_syntaxes =
             supported_retrieve_transfer_syntaxes().iter().all(|uid| {
                 accepted_transfer_syntaxes
@@ -3687,6 +3723,14 @@ impl ServerSettingsFormInput {
                 "Unsupported preferred transfer syntax: {invalid}"
             )));
         }
+        if !storage_transfer_syntax.is_empty()
+            && !supported_uids.contains(storage_transfer_syntax.as_str())
+        {
+            return Err(validation_flash(&format!(
+                "Unsupported storage transfer syntax: {}",
+                storage_transfer_syntax
+            )));
+        }
 
         Ok(ServerSettings {
             dicom_port,
@@ -3695,6 +3739,8 @@ impl ServerSettingsFormInput {
             accept_all_transfer_syntaxes,
             accepted_transfer_syntaxes,
             preferred_transfer_syntaxes,
+            storage_transfer_syntax: (!storage_transfer_syntax.is_empty())
+                .then_some(storage_transfer_syntax),
             max_associations,
             dimse_timeout_secs,
         })
@@ -3714,6 +3760,7 @@ impl ServerSettingsFormView {
                 &accepted_transfer_syntaxes,
                 input.preferred_transfer_syntaxes.clone(),
             ),
+            storage_transfer_syntax: input.storage_transfer_syntax.trim().to_string(),
             max_associations: input.max_associations.trim().to_string(),
             dimse_timeout_secs: input.dimse_timeout_secs.trim().to_string(),
         }
@@ -3733,6 +3780,7 @@ impl ServerSettingsFormView {
                 &accepted_transfer_syntaxes,
                 settings.preferred_transfer_syntaxes.clone(),
             ),
+            storage_transfer_syntax: settings.storage_transfer_syntax.clone().unwrap_or_default(),
             max_associations: settings.max_associations.to_string(),
             dimse_timeout_secs: settings.dimse_timeout_secs.to_string(),
         }
@@ -4392,6 +4440,7 @@ mod tests {
             ae_whitelist_enabled: None,
             accepted_transfer_syntaxes: vec!["1.2.840.10008.1.2.1".into()],
             preferred_transfer_syntaxes: vec!["1.2.840.10008.1.2.1".into()],
+            storage_transfer_syntax: String::new(),
             max_associations: "32".into(),
             dimse_timeout_secs: "45".into(),
         }
@@ -4413,6 +4462,7 @@ mod tests {
             ae_whitelist_enabled: None,
             accepted_transfer_syntaxes: all_supported_transfer_syntax_uids(),
             preferred_transfer_syntaxes: vec!["1.2.840.10008.1.2.1".into()],
+            storage_transfer_syntax: String::new(),
             max_associations: "32".into(),
             dimse_timeout_secs: "45".into(),
         }
@@ -4437,6 +4487,7 @@ mod tests {
                 "1.2.840.10008.1.2.2".into(),
                 "1.2.840.10008.1.2".into(),
             ],
+            storage_transfer_syntax: "1.2.840.10008.1.2.4.90".into(),
             max_associations: "32".into(),
             dimse_timeout_secs: "45".into(),
         }
@@ -4452,6 +4503,28 @@ mod tests {
                 "1.2.840.10008.1.2.1.99",
             ]
         );
+        assert_eq!(
+            settings.storage_transfer_syntax.as_deref(),
+            Some("1.2.840.10008.1.2.4.90")
+        );
+    }
+
+    #[test]
+    fn server_settings_form_accepts_store_as_received() {
+        let settings = ServerSettingsFormInput {
+            dicom_port: "11112".into(),
+            ae_title: "PACSUI".into(),
+            ae_whitelist_enabled: None,
+            accepted_transfer_syntaxes: vec!["1.2.840.10008.1.2.1".into()],
+            preferred_transfer_syntaxes: vec!["1.2.840.10008.1.2.1".into()],
+            storage_transfer_syntax: String::new(),
+            max_associations: "32".into(),
+            dimse_timeout_secs: "45".into(),
+        }
+        .into_settings()
+        .unwrap();
+
+        assert!(settings.storage_transfer_syntax.is_none());
     }
 
     #[test]

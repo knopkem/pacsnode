@@ -155,6 +155,7 @@ struct ServerSettingsRow {
     accept_all_transfer_syntaxes: bool,
     accepted_transfer_syntaxes: String,
     preferred_transfer_syntaxes: String,
+    storage_transfer_syntax: Option<String>,
     max_associations: i64,
     dimse_timeout_secs: i64,
 }
@@ -217,6 +218,7 @@ impl TryFrom<ServerSettingsRow> for ServerSettings {
                 .map_err(|error| {
                     PacsError::Config(format!("invalid preferred_transfer_syntaxes JSON: {error}"))
                 })?,
+            storage_transfer_syntax: row.storage_transfer_syntax,
             max_associations: row
                 .max_associations
                 .try_into()
@@ -1109,6 +1111,7 @@ impl MetadataStore for SqliteMetadataStore {
                 accept_all_transfer_syntaxes,
                 accepted_transfer_syntaxes,
                 preferred_transfer_syntaxes,
+                storage_transfer_syntax,
                 max_associations,
                 dimse_timeout_secs
             FROM server_settings
@@ -1148,12 +1151,13 @@ impl MetadataStore for SqliteMetadataStore {
                 accept_all_transfer_syntaxes,
                 accepted_transfer_syntaxes,
                 preferred_transfer_syntaxes,
+                storage_transfer_syntax,
                 max_associations,
                 dimse_timeout_secs,
                 created_at,
                 updated_at
             ) VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'),
                 STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')
             )
@@ -1164,6 +1168,7 @@ impl MetadataStore for SqliteMetadataStore {
                 accept_all_transfer_syntaxes = excluded.accept_all_transfer_syntaxes,
                 accepted_transfer_syntaxes = excluded.accepted_transfer_syntaxes,
                 preferred_transfer_syntaxes = excluded.preferred_transfer_syntaxes,
+                storage_transfer_syntax = excluded.storage_transfer_syntax,
                 max_associations = excluded.max_associations,
                 dimse_timeout_secs = excluded.dimse_timeout_secs,
                 updated_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -1176,6 +1181,7 @@ impl MetadataStore for SqliteMetadataStore {
         .bind(settings.accept_all_transfer_syntaxes)
         .bind(accepted_transfer_syntaxes)
         .bind(preferred_transfer_syntaxes)
+        .bind(&settings.storage_transfer_syntax)
         .bind(settings.max_associations as i64)
         .bind(settings.dimse_timeout_secs as i64)
         .execute(&self.pool)
@@ -1581,6 +1587,7 @@ mod tests {
                 "1.2.840.10008.1.2.4.50".into(),
             ],
             preferred_transfer_syntaxes: vec!["1.2.840.10008.1.2.4.50".into()],
+            storage_transfer_syntax: Some("1.2.840.10008.1.2.4.90".into()),
             max_associations: 32,
             dimse_timeout_secs: 45,
         };

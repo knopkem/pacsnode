@@ -137,6 +137,7 @@ fn make_server_settings() -> ServerSettings {
             "1.2.840.10008.1.2.4.50".into(),
         ],
         preferred_transfer_syntaxes: vec!["1.2.840.10008.1.2.4.50".into()],
+        storage_transfer_syntax: Some("1.2.840.10008.1.2.4.90".into()),
         max_associations: 24,
         dimse_timeout_secs: 40,
     }

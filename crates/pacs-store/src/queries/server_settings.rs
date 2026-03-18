@@ -13,6 +13,7 @@ struct ServerSettingsRow {
     accept_all_transfer_syntaxes: bool,
     accepted_transfer_syntaxes: Vec<String>,
     preferred_transfer_syntaxes: Vec<String>,
+    storage_transfer_syntax: Option<String>,
     max_associations: i64,
     dimse_timeout_secs: i64,
 }
@@ -31,6 +32,7 @@ impl TryFrom<ServerSettingsRow> for ServerSettings {
             accept_all_transfer_syntaxes: row.accept_all_transfer_syntaxes,
             accepted_transfer_syntaxes: row.accepted_transfer_syntaxes,
             preferred_transfer_syntaxes: row.preferred_transfer_syntaxes,
+            storage_transfer_syntax: row.storage_transfer_syntax,
             max_associations: row
                 .max_associations
                 .try_into()
@@ -53,6 +55,7 @@ pub(crate) async fn get(pool: &PgPool) -> PacsResult<Option<ServerSettings>> {
             accept_all_transfer_syntaxes,
             accepted_transfer_syntaxes,
             preferred_transfer_syntaxes,
+            storage_transfer_syntax,
             max_associations,
             dimse_timeout_secs
         FROM server_settings
@@ -78,10 +81,11 @@ pub(crate) async fn upsert(pool: &PgPool, settings: &ServerSettings) -> PacsResu
             accept_all_transfer_syntaxes,
             accepted_transfer_syntaxes,
             preferred_transfer_syntaxes,
+            storage_transfer_syntax,
             max_associations,
             dimse_timeout_secs
         ) VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
         )
         ON CONFLICT (settings_key) DO UPDATE SET
             dicom_port = EXCLUDED.dicom_port,
@@ -90,6 +94,7 @@ pub(crate) async fn upsert(pool: &PgPool, settings: &ServerSettings) -> PacsResu
             accept_all_transfer_syntaxes = EXCLUDED.accept_all_transfer_syntaxes,
             accepted_transfer_syntaxes = EXCLUDED.accepted_transfer_syntaxes,
             preferred_transfer_syntaxes = EXCLUDED.preferred_transfer_syntaxes,
+            storage_transfer_syntax = EXCLUDED.storage_transfer_syntax,
             max_associations = EXCLUDED.max_associations,
             dimse_timeout_secs = EXCLUDED.dimse_timeout_secs,
             updated_at = NOW()
@@ -102,6 +107,7 @@ pub(crate) async fn upsert(pool: &PgPool, settings: &ServerSettings) -> PacsResu
     .bind(settings.accept_all_transfer_syntaxes)
     .bind(&settings.accepted_transfer_syntaxes)
     .bind(&settings.preferred_transfer_syntaxes)
+    .bind(&settings.storage_transfer_syntax)
     .bind(settings.max_associations as i64)
     .bind(settings.dimse_timeout_secs as i64)
     .execute(pool)

@@ -183,6 +183,7 @@ async fn main() -> Result<()> {
         accept_all_transfer_syntaxes: runtime_server_settings.accept_all_transfer_syntaxes,
         accepted_transfer_syntaxes: runtime_server_settings.accepted_transfer_syntaxes.clone(),
         preferred_transfer_syntaxes: runtime_server_settings.preferred_transfer_syntaxes.clone(),
+        storage_transfer_syntax: runtime_server_settings.storage_transfer_syntax.clone(),
         max_associations: runtime_server_settings.max_associations,
         timeout_secs: runtime_server_settings.dimse_timeout_secs,
     };
@@ -733,6 +734,14 @@ fn build_plugin_configs(
     backend_selection: BackendSelection,
 ) -> Result<HashMap<String, serde_json::Value>> {
     let mut configs = cfg.plugins.configs.clone();
+
+    let store_scp_config = configs
+        .remove(pacs_dimse::PACS_STORE_SCP_PLUGIN_ID)
+        .unwrap_or_else(empty_object);
+    configs.insert(
+        pacs_dimse::PACS_STORE_SCP_PLUGIN_ID.into(),
+        store_scp_config,
+    );
 
     match backend_selection.metadata_plugin_id {
         #[cfg(feature = "postgres")]

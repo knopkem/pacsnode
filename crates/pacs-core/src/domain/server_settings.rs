@@ -31,6 +31,11 @@ pub struct ServerSettings {
     pub accepted_transfer_syntaxes: Vec<String>,
     /// Preferred DIMSE SCP transfer syntax order, highest priority first.
     pub preferred_transfer_syntaxes: Vec<String>,
+    /// Optional transfer syntax that newly ingested objects should be stored as.
+    ///
+    /// When `None`, pacsnode stores each received object using its inbound
+    /// transfer syntax instead of forcing archive-wide recoding.
+    pub storage_transfer_syntax: Option<String>,
     /// Maximum number of concurrent DIMSE associations.
     pub max_associations: usize,
     /// DIMSE association timeout in seconds.
@@ -46,6 +51,7 @@ impl Default for ServerSettings {
             accept_all_transfer_syntaxes: true,
             accepted_transfer_syntaxes: Vec::new(),
             preferred_transfer_syntaxes: Vec::new(),
+            storage_transfer_syntax: None,
             max_associations: 64,
             dimse_timeout_secs: 30,
         }

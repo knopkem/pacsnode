@@ -42,7 +42,7 @@ pub use auth::AuthenticatedUser;
 pub use capabilities::{
     BlobStorePlugin, BoxFuture, CodecPlugin, EventKind, EventPlugin, FindScpHandler, FindScpPlugin,
     GetScpHandler, GetScpPlugin, MetadataStorePlugin, MiddlewarePlugin, MoveScpHandler,
-    MoveScpPlugin, ProcessingPlugin, RoutePlugin, StoreScpHandler, StoreScpPlugin,
+    MoveScpPlugin, ProcessingPlugin, RoutePlugin, StoreRequest, StoreScpHandler, StoreScpPlugin,
 };
 pub use context::PluginContext;
 pub use error::PluginError;

@@ -15,6 +15,8 @@ pub struct DimseConfig {
     pub accepted_transfer_syntaxes: Vec<String>,
     /// Preferred DIMSE SCP transfer syntax order, highest priority first.
     pub preferred_transfer_syntaxes: Vec<String>,
+    /// Optional transfer syntax to use when archiving newly ingested objects.
+    pub storage_transfer_syntax: Option<String>,
     /// Maximum number of concurrent associations.
     pub max_associations: usize,
     /// Timeout in seconds for DIMSE operations and association negotiation.
@@ -30,6 +32,7 @@ impl Default for DimseConfig {
             accept_all_transfer_syntaxes: true,
             accepted_transfer_syntaxes: Vec::new(),
             preferred_transfer_syntaxes: Vec::new(),
+            storage_transfer_syntax: None,
             max_associations: 64,
             timeout_secs: 30,
         }
@@ -82,6 +85,7 @@ mod tests {
             accept_all_transfer_syntaxes: false,
             accepted_transfer_syntaxes: vec!["1.2.840.10008.1.2.1".into()],
             preferred_transfer_syntaxes: vec!["1.2.840.10008.1.2.4.50".into()],
+            storage_transfer_syntax: Some("1.2.840.10008.1.2.4.90".into()),
             max_associations: 10,
             timeout_secs: 60,
         };
@@ -97,6 +101,7 @@ mod tests {
             cfg.accepted_transfer_syntaxes,
             cloned.accepted_transfer_syntaxes
         );
+        assert_eq!(cfg.storage_transfer_syntax, cloned.storage_transfer_syntax);
         assert_eq!(
             cfg.preferred_transfer_syntaxes,
             cloned.preferred_transfer_syntaxes

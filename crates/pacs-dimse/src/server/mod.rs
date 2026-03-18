@@ -12,13 +12,13 @@ use dicom_toolkit_net::{
         MoveServiceProvider, RetrieveItem, StoreEvent, StoreResult, StoreServiceProvider,
     },
     Association, AssociationConfig, DestinationLookup, DicomServer as NetDicomServer,
-    PresentationContextRq, StaticDestinationLookup, StoreRequest,
+    PresentationContextRq, StaticDestinationLookup, StoreRequest as NetStoreRequest,
 };
 use pacs_core::{BlobStore, MetadataStore, PacsError};
 use pacs_dicom::prepare_dimse_dataset;
 use pacs_plugin::{
     FindScpHandler, GetScpHandler, MoveScpHandler, PacsEvent, PluginError, PluginRegistry,
-    StoreScpHandler,
+    StoreRequest, StoreScpHandler,
 };
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -48,7 +48,18 @@ impl DynStoreProvider {
 
 impl StoreServiceProvider for DynStoreProvider {
     async fn on_store(&self, event: StoreEvent) -> StoreResult {
-        self.inner.handle_store(event).await
+        self.inner
+            .handle_store(StoreRequest {
+                event,
+                transfer_syntax_uid: TS_EXPLICIT_LE.to_string(),
+            })
+            .await
+    }
+}
+
+impl StoreScpHandler for DynStoreProvider {
+    fn handle_store(&self, request: StoreRequest) -> pacs_plugin::BoxFuture<'_, StoreResult> {
+        self.inner.handle_store(request)
     }
 }
 
@@ -177,6 +188,14 @@ impl DicomServer {
 
     fn resolve_store_handler(&self) -> Result<Arc<dyn StoreScpHandler>, PluginError> {
         if let Some(plugins) = &self.plugins {
+            if plugins.has_plugin(crate::plugin::PACS_STORE_SCP_PLUGIN_ID) {
+                return Ok(Arc::new(PacsStoreProvider::with_plugins(
+                    Arc::clone(&self.store),
+                    Arc::clone(&self.blobs),
+                    self.config.storage_transfer_syntax.clone(),
+                    Some(Arc::clone(plugins)),
+                )));
+            }
             return plugins
                 .store_scp_handler()?
                 .ok_or_else(|| PluginError::MissingDependency {
@@ -185,9 +204,10 @@ impl DicomServer {
                 });
         }
 
-        Ok(Arc::new(PacsStoreProvider::new(
+        Ok(Arc::new(PacsStoreProvider::with_storage_transfer_syntax(
             Arc::clone(&self.store),
             Arc::clone(&self.blobs),
+            self.config.storage_transfer_syntax.clone(),
         )))
     }
 
@@ -623,25 +643,6 @@ fn decode_store_dataset(data: &[u8], negotiated_ts: &str, sop_instance_uid: &str
         );
     }
 
-    if payload_starts_with_file_meta(data) {
-        let mut synthetic_file = Vec::with_capacity(132 + data.len());
-        synthetic_file.extend_from_slice(&[0u8; 128]);
-        synthetic_file.extend_from_slice(b"DICM");
-        synthetic_file.extend_from_slice(data);
-
-        if let Ok(file) = DicomReader::new(synthetic_file.as_slice()).read_file() {
-            if store_dataset_has_required_uids(&file.dataset) {
-                warn!(
-                    sop_instance_uid = %sop_instance_uid,
-                    negotiated_transfer_syntax = %negotiated_ts,
-                    payload_len = data.len(),
-                    "Recovered C-STORE dataset by decoding file meta without a preamble"
-                );
-                return file.dataset;
-            }
-        }
-    }
-
     if let Ok(file) = DicomReader::new(data).read_file() {
         if store_dataset_has_required_uids(&file.dataset) {
             warn!(
@@ -738,7 +739,7 @@ async fn handle_store_rq<P>(
     provider: &P,
 ) -> Result<(), dicom_toolkit_core::error::DcmError>
 where
-    P: StoreServiceProvider,
+    P: StoreScpHandler,
 {
     let sop_class = cmd
         .get_string(tags::AFFECTED_SOP_CLASS_UID)
@@ -785,7 +786,12 @@ where
         dataset,
     };
 
-    let result = provider.on_store(event).await;
+    let result = provider
+        .handle_store(StoreRequest {
+            event,
+            transfer_syntax_uid: ts_uid,
+        })
+        .await;
 
     let mut rsp = DataSet::new();
     rsp.set_uid(tags::AFFECTED_SOP_CLASS_UID, &sop_class);
@@ -1170,7 +1176,7 @@ where
             }
         };
 
-        let req = StoreRequest {
+        let req = NetStoreRequest {
             sop_class_uid: item.sop_class_uid.clone(),
             sop_instance_uid: item.sop_instance_uid.clone(),
             priority: 0,
@@ -1229,7 +1235,11 @@ pub async fn build_dicom_server(
     blobs: Arc<dyn BlobStore>,
     known_nodes: Vec<DicomNode>,
 ) -> Result<NetDicomServer, DimseError> {
-    let store_provider = PacsStoreProvider::new(Arc::clone(&store), Arc::clone(&blobs));
+    let store_provider = PacsStoreProvider::with_storage_transfer_syntax(
+        Arc::clone(&store),
+        Arc::clone(&blobs),
+        config.storage_transfer_syntax.clone(),
+    );
     let query_provider = PacsQueryProvider::new(Arc::clone(&store), Arc::clone(&blobs));
     let query_provider2 = PacsQueryProvider::new(Arc::clone(&store), Arc::clone(&blobs));
     let query_provider3 = PacsQueryProvider::new(Arc::clone(&store), Arc::clone(&blobs));
@@ -1448,6 +1458,7 @@ mod ae_whitelist_tests {
                 accept_all_transfer_syntaxes: true,
                 accepted_transfer_syntaxes: Vec::new(),
                 preferred_transfer_syntaxes: Vec::new(),
+                storage_transfer_syntax: None,
                 max_associations: 64,
                 timeout_secs: 30,
             },
@@ -2184,6 +2195,7 @@ mod tests {
             accept_all_transfer_syntaxes: true,
             accepted_transfer_syntaxes: Vec::new(),
             preferred_transfer_syntaxes: Vec::new(),
+            storage_transfer_syntax: None,
             max_associations: 2,
             timeout_secs: 5,
         };

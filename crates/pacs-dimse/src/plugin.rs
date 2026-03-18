@@ -81,6 +81,7 @@ impl StoreScpPlugin for PacsStoreScpPlugin {
         Ok(Arc::new(PacsStoreProvider::with_plugins(
             store,
             blobs,
+            None,
             Some(plugins),
         )))
     }

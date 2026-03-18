@@ -90,6 +90,9 @@ pub struct ServerConfig {
     /// Preferred DIMSE SCP transfer syntax order, highest priority first.
     #[serde(default)]
     pub preferred_transfer_syntaxes: Vec<String>,
+    /// Optional transfer syntax to use when archiving newly ingested DICOM objects.
+    #[serde(default)]
+    pub storage_transfer_syntax: Option<String>,
     /// Maximum number of concurrent DIMSE associations.
     #[serde(default = "default_max_associations")]
     pub max_associations: usize,
@@ -109,6 +112,7 @@ impl ServerConfig {
             accept_all_transfer_syntaxes: self.accept_all_transfer_syntaxes,
             accepted_transfer_syntaxes: self.accepted_transfer_syntaxes.clone(),
             preferred_transfer_syntaxes: self.preferred_transfer_syntaxes.clone(),
+            storage_transfer_syntax: self.storage_transfer_syntax.clone(),
             max_associations: self.max_associations,
             dimse_timeout_secs: self.dimse_timeout_secs,
         }
@@ -415,6 +419,7 @@ impl Default for ServerConfig {
             accept_all_transfer_syntaxes: default_true(),
             accepted_transfer_syntaxes: Vec::new(),
             preferred_transfer_syntaxes: Vec::new(),
+            storage_transfer_syntax: None,
             max_associations: default_max_associations(),
             dimse_timeout_secs: default_dimse_timeout_secs(),
         }
@@ -435,6 +440,7 @@ mod tests {
         std::env::remove_var("PACS_SERVER__ACCEPTED_TRANSFER_SYNTAXES__1");
         std::env::remove_var("PACS_SERVER__PREFERRED_TRANSFER_SYNTAXES");
         std::env::remove_var("PACS_SERVER__PREFERRED_TRANSFER_SYNTAXES__0");
+        std::env::remove_var("PACS_SERVER__STORAGE_TRANSFER_SYNTAX");
     }
 
     /// All defaults should be sensible without any file or env vars.
@@ -457,6 +463,7 @@ mod tests {
         assert!(cfg.server.accept_all_transfer_syntaxes);
         assert!(cfg.server.accepted_transfer_syntaxes.is_empty());
         assert!(cfg.server.preferred_transfer_syntaxes.is_empty());
+        assert!(cfg.server.storage_transfer_syntax.is_none());
         assert_eq!(cfg.server.max_associations, 64);
         assert!(cfg.nodes.is_empty());
         assert!(
@@ -560,6 +567,7 @@ mod tests {
             accept_all_transfer_syntaxes = false
             accepted_transfer_syntaxes = ["1.2.840.10008.1.2.1", "1.2.840.10008.1.2.4.50"]
             preferred_transfer_syntaxes = ["1.2.840.10008.1.2.4.50"]
+            storage_transfer_syntax = "1.2.840.10008.1.2.4.90"
             [database]
             url = "postgres://u:p@h/db"
             [storage]
@@ -585,6 +593,10 @@ mod tests {
         assert_eq!(
             cfg.server.preferred_transfer_syntaxes,
             vec!["1.2.840.10008.1.2.4.50".to_string()]
+        );
+        assert_eq!(
+            cfg.server.storage_transfer_syntax.as_deref(),
+            Some("1.2.840.10008.1.2.4.90")
         );
     }
 

@@ -12,16 +12,18 @@
 //!
 //! Docker (or a compatible container runtime) must be available and running.
 
-use chrono::NaiveDate;
+use chrono::{NaiveDate, TimeZone, Utc};
 use pacs_core::{
-    DicomJson, Instance, InstanceQuery, MetadataStore, PacsError, Series, SeriesQuery, SeriesUid,
-    ServerSettings, SopInstanceUid, Study, StudyQuery, StudyUid,
+    DicomJson, Instance, InstanceQuery, MetadataStore, PacsError, PasswordPolicy, RefreshToken,
+    RefreshTokenId, Series, SeriesQuery, SeriesUid, ServerSettings, SopInstanceUid, Study,
+    StudyQuery, StudyUid, User, UserId, UserQuery, UserRole,
 };
 use pacs_store::PgMetadataStore;
 use rstest::rstest;
 use sqlx::PgPool;
 use testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt};
 use testcontainers_modules::postgres::Postgres;
+use uuid::Uuid;
 
 const DEFAULT_POSTGRES_IMAGE_TAG: &str = "16-alpine";
 
@@ -140,6 +142,35 @@ fn make_server_settings() -> ServerSettings {
     }
 }
 
+fn make_user(id_suffix: u128) -> User {
+    User {
+        id: UserId::from(Uuid::from_u128(id_suffix)),
+        username: format!("user{id_suffix}"),
+        display_name: Some("Admin User".into()),
+        email: Some(format!("user{id_suffix}@example.test")),
+        password_hash: "argon2-hash".into(),
+        role: UserRole::Admin,
+        attributes: serde_json::json!({"department": "radiology"}),
+        is_active: true,
+        failed_login_attempts: 0,
+        locked_until: None,
+        password_changed_at: Some(Utc.with_ymd_and_hms(2026, 3, 18, 12, 0, 0).unwrap()),
+        created_at: None,
+        updated_at: None,
+    }
+}
+
+fn make_refresh_token(user_id: UserId, id_suffix: u128) -> RefreshToken {
+    RefreshToken {
+        id: RefreshTokenId(Uuid::from_u128(id_suffix)),
+        user_id,
+        token_hash: format!("refresh-hash-{id_suffix}"),
+        expires_at: Utc.with_ymd_and_hms(2026, 3, 25, 12, 0, 0).unwrap(),
+        created_at: Utc.with_ymd_and_hms(2026, 3, 18, 12, 0, 0).unwrap(),
+        revoked_at: None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Study tests
 // ---------------------------------------------------------------------------
@@ -212,6 +243,74 @@ async fn test_study_counts_are_derived_from_related_rows() {
         .await
         .expect("get series");
     assert_eq!(fetched_series.num_instances, 1);
+}
+
+#[tokio::test]
+async fn test_user_policy_and_refresh_token_round_trip() {
+    let (pool, _c) = setup_pool().await;
+    let store = PgMetadataStore::new(pool);
+    let user = make_user(101);
+    let refresh_token = make_refresh_token(user.id, 201);
+
+    store.store_user(&user).await.expect("store user");
+
+    let fetched = store.get_user(&user.id).await.expect("get user");
+    assert_eq!(fetched.username, user.username);
+    assert_eq!(fetched.role, UserRole::Admin);
+
+    let fetched_by_username = store
+        .get_user_by_username(&user.username)
+        .await
+        .expect("get user by username");
+    assert_eq!(fetched_by_username.id, user.id);
+
+    let users = store
+        .query_users(&UserQuery {
+            search: Some("user101".into()),
+            role: Some(UserRole::Admin),
+            is_active: Some(true),
+            limit: Some(10),
+            offset: Some(0),
+        })
+        .await
+        .expect("query users");
+    assert_eq!(users.len(), 1);
+
+    let mut policy = store.get_password_policy().await.expect("default policy");
+    assert_eq!(policy, PasswordPolicy::default());
+
+    policy.min_length = 16;
+    policy.require_special = true;
+    store
+        .upsert_password_policy(&policy)
+        .await
+        .expect("update policy");
+
+    let reloaded_policy = store.get_password_policy().await.expect("reloaded policy");
+    assert_eq!(reloaded_policy.min_length, 16);
+    assert!(reloaded_policy.require_special);
+
+    store
+        .store_refresh_token(&refresh_token)
+        .await
+        .expect("store refresh token");
+
+    let fetched_token = store
+        .get_refresh_token(&refresh_token.token_hash)
+        .await
+        .expect("get refresh token");
+    assert!(fetched_token.revoked_at.is_none());
+
+    store
+        .revoke_refresh_tokens(&user.id)
+        .await
+        .expect("revoke refresh tokens");
+
+    let revoked_token = store
+        .get_refresh_token(&refresh_token.token_hash)
+        .await
+        .expect("get revoked refresh token");
+    assert!(revoked_token.revoked_at.is_some());
 }
 
 #[tokio::test]

@@ -4,11 +4,13 @@ use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 use pacs_core::{
     AuditLogEntry, AuditLogPage, AuditLogQuery, DicomJson, DicomNode, Instance, InstanceQuery,
-    MetadataStore, NewAuditLogEntry, PacsError, PacsResult, PacsStatistics, Series, SeriesQuery,
-    SeriesUid, ServerSettings, SopInstanceUid, Study, StudyQuery, StudyUid,
+    MetadataStore, NewAuditLogEntry, PacsError, PacsResult, PacsStatistics, PasswordPolicy,
+    RefreshToken, RefreshTokenId, Series, SeriesQuery, SeriesUid, ServerSettings, SopInstanceUid,
+    Study, StudyQuery, StudyUid, User, UserId, UserQuery,
 };
 use sqlx::{types::Json, QueryBuilder, Sqlite, SqlitePool};
 use tracing::instrument;
+use uuid::Uuid;
 
 /// SQLite-backed [`MetadataStore`] for pacsnode.
 ///
@@ -157,6 +159,44 @@ struct ServerSettingsRow {
     dimse_timeout_secs: i64,
 }
 
+#[derive(sqlx::FromRow)]
+struct UserRow {
+    id: String,
+    username: String,
+    display_name: Option<String>,
+    email: Option<String>,
+    password_hash: String,
+    role: String,
+    attributes: Json<serde_json::Value>,
+    is_active: bool,
+    failed_login_attempts: i64,
+    locked_until: Option<DateTime<Utc>>,
+    password_changed_at: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(sqlx::FromRow)]
+struct RefreshTokenRow {
+    id: String,
+    user_id: String,
+    token_hash: String,
+    expires_at: DateTime<Utc>,
+    created_at: DateTime<Utc>,
+    revoked_at: Option<DateTime<Utc>>,
+}
+
+#[derive(sqlx::FromRow)]
+struct PasswordPolicyRow {
+    min_length: i64,
+    require_uppercase: bool,
+    require_digit: bool,
+    require_special: bool,
+    max_failed_attempts: i64,
+    lockout_duration_secs: i64,
+    max_age_days: Option<i64>,
+}
+
 impl TryFrom<ServerSettingsRow> for ServerSettings {
     type Error = PacsError;
 
@@ -198,6 +238,83 @@ impl From<NodeRow> for DicomNode {
             description: row.description,
             tls_enabled: row.tls_enabled,
         }
+    }
+}
+
+impl TryFrom<UserRow> for User {
+    type Error = PacsError;
+
+    fn try_from(row: UserRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: row.id.parse().map_err(|error| {
+                PacsError::Config(format!("invalid persisted user id: {error}"))
+            })?,
+            username: row.username,
+            display_name: row.display_name,
+            email: row.email,
+            password_hash: row.password_hash,
+            role: row.role.parse().map_err(|_| {
+                PacsError::Config(format!("invalid persisted user role: {}", row.role))
+            })?,
+            attributes: row.attributes.0,
+            is_active: row.is_active,
+            failed_login_attempts: row
+                .failed_login_attempts
+                .try_into()
+                .map_err(|_| PacsError::Config("invalid persisted failed_login_attempts".into()))?,
+            locked_until: row.locked_until,
+            password_changed_at: row.password_changed_at,
+            created_at: Some(row.created_at),
+            updated_at: Some(row.updated_at),
+        })
+    }
+}
+
+impl TryFrom<PasswordPolicyRow> for PasswordPolicy {
+    type Error = PacsError;
+
+    fn try_from(row: PasswordPolicyRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            min_length: row
+                .min_length
+                .try_into()
+                .map_err(|_| PacsError::Config("invalid persisted min_length".into()))?,
+            require_uppercase: row.require_uppercase,
+            require_digit: row.require_digit,
+            require_special: row.require_special,
+            max_failed_attempts: row
+                .max_failed_attempts
+                .try_into()
+                .map_err(|_| PacsError::Config("invalid persisted max_failed_attempts".into()))?,
+            lockout_duration_secs: row
+                .lockout_duration_secs
+                .try_into()
+                .map_err(|_| PacsError::Config("invalid persisted lockout_duration_secs".into()))?,
+            max_age_days: row
+                .max_age_days
+                .map(TryInto::try_into)
+                .transpose()
+                .map_err(|_| PacsError::Config("invalid persisted max_age_days".into()))?,
+        })
+    }
+}
+
+impl TryFrom<RefreshTokenRow> for RefreshToken {
+    type Error = PacsError;
+
+    fn try_from(row: RefreshTokenRow) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: RefreshTokenId(Uuid::parse_str(&row.id).map_err(|error| {
+                PacsError::Config(format!("invalid refresh token id: {error}"))
+            })?),
+            user_id: row.user_id.parse().map_err(|error| {
+                PacsError::Config(format!("invalid refresh token user id: {error}"))
+            })?,
+            token_hash: row.token_hash,
+            expires_at: row.expires_at,
+            created_at: row.created_at,
+            revoked_at: row.revoked_at,
+        })
     }
 }
 
@@ -272,6 +389,29 @@ const INSTANCE_SELECT: &str = r#"
 const AUDIT_SELECT: &str = r#"
     SELECT id, occurred_at, user_id, action, resource, resource_uid, source_ip, status, details
     FROM audit_log
+"#;
+
+const USER_SELECT: &str = r#"
+    SELECT
+        id,
+        username,
+        display_name,
+        email,
+        password_hash,
+        role,
+        attributes,
+        is_active,
+        failed_login_attempts,
+        locked_until,
+        password_changed_at,
+        created_at,
+        updated_at
+    FROM users
+"#;
+
+const REFRESH_TOKEN_SELECT: &str = r#"
+    SELECT id, user_id, token_hash, expires_at, created_at, revoked_at
+    FROM refresh_tokens
 "#;
 
 fn map_db_err(error: sqlx::Error, resource: &'static str, uid: &str) -> PacsError {
@@ -651,6 +791,258 @@ impl MetadataStore for SqliteMetadataStore {
         })
     }
 
+    #[instrument(skip(self, user), fields(user_id = %user.id, username = %user.username))]
+    async fn store_user(&self, user: &User) -> PacsResult<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO users (
+                id, username, display_name, email, password_hash, role,
+                attributes, is_active, failed_login_attempts, locked_until,
+                password_changed_at, created_at, updated_at
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')
+            )
+            ON CONFLICT(id) DO UPDATE SET
+                username = excluded.username,
+                display_name = excluded.display_name,
+                email = excluded.email,
+                password_hash = excluded.password_hash,
+                role = excluded.role,
+                attributes = excluded.attributes,
+                is_active = excluded.is_active,
+                failed_login_attempts = excluded.failed_login_attempts,
+                locked_until = excluded.locked_until,
+                password_changed_at = excluded.password_changed_at,
+                updated_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')
+            "#,
+        )
+        .bind(user.id.to_string())
+        .bind(&user.username)
+        .bind(user.display_name.as_deref())
+        .bind(user.email.as_deref())
+        .bind(&user.password_hash)
+        .bind(user.role.as_str())
+        .bind(Json(user.attributes.clone()))
+        .bind(user.is_active)
+        .bind(i64::from(user.failed_login_attempts))
+        .bind(user.locked_until)
+        .bind(user.password_changed_at)
+        .execute(&self.pool)
+        .await
+        .map_err(map_store_err)?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(user_id = %id))]
+    async fn get_user(&self, id: &UserId) -> PacsResult<User> {
+        sqlx::query_as::<_, UserRow>(&format!("{USER_SELECT} WHERE id = ?"))
+            .bind(id.to_string())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|error| map_db_err(error, "user", &id.to_string()))
+            .and_then(User::try_from)
+    }
+
+    #[instrument(skip(self), fields(username = username))]
+    async fn get_user_by_username(&self, username: &str) -> PacsResult<User> {
+        sqlx::query_as::<_, UserRow>(&format!("{USER_SELECT} WHERE username = ?"))
+            .bind(username)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|error| map_db_err(error, "user", username))
+            .and_then(User::try_from)
+    }
+
+    #[instrument(skip(self, q))]
+    async fn query_users(&self, q: &UserQuery) -> PacsResult<Vec<User>> {
+        let mut qb = QueryBuilder::<Sqlite>::new(format!("{USER_SELECT} WHERE 1=1"));
+
+        if let Some(search) = &q.search {
+            let pattern = format!("%{search}%");
+            qb.push(" AND (");
+            qb.push("LOWER(username) LIKE LOWER(");
+            qb.push_bind(pattern.clone());
+            qb.push(") OR LOWER(COALESCE(display_name, '')) LIKE LOWER(");
+            qb.push_bind(pattern.clone());
+            qb.push(") OR LOWER(COALESCE(email, '')) LIKE LOWER(");
+            qb.push_bind(pattern);
+            qb.push("))");
+        }
+
+        if let Some(role) = q.role {
+            qb.push(" AND role = ");
+            qb.push_bind(role.as_str());
+        }
+
+        if let Some(is_active) = q.is_active {
+            qb.push(" AND is_active = ");
+            qb.push_bind(is_active);
+        }
+
+        qb.push(" ORDER BY username ASC LIMIT ");
+        qb.push_bind(i64::from(q.limit.unwrap_or(100)));
+        qb.push(" OFFSET ");
+        qb.push_bind(i64::from(q.offset.unwrap_or(0)));
+
+        qb.build_query_as::<UserRow>()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(map_store_err)?
+            .into_iter()
+            .map(User::try_from)
+            .collect()
+    }
+
+    #[instrument(skip(self), fields(user_id = %id))]
+    async fn delete_user(&self, id: &UserId) -> PacsResult<()> {
+        let result = sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(map_store_err)?;
+
+        if result.rows_affected() == 0 {
+            return Err(PacsError::NotFound {
+                resource: "user",
+                uid: id.to_string(),
+            });
+        }
+
+        Ok(())
+    }
+
+    #[instrument(skip(self, token), fields(user_id = %token.user_id))]
+    async fn store_refresh_token(&self, token: &RefreshToken) -> PacsResult<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO refresh_tokens (
+                id, user_id, token_hash, expires_at, created_at, revoked_at
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?
+            )
+            ON CONFLICT(id) DO UPDATE SET
+                user_id = excluded.user_id,
+                token_hash = excluded.token_hash,
+                expires_at = excluded.expires_at,
+                revoked_at = excluded.revoked_at
+            "#,
+        )
+        .bind(token.id.0.to_string())
+        .bind(token.user_id.to_string())
+        .bind(&token.token_hash)
+        .bind(token.expires_at)
+        .bind(token.created_at)
+        .bind(token.revoked_at)
+        .execute(&self.pool)
+        .await
+        .map_err(map_store_err)?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(token_hash = token_hash))]
+    async fn get_refresh_token(&self, token_hash: &str) -> PacsResult<RefreshToken> {
+        sqlx::query_as::<_, RefreshTokenRow>(&format!(
+            "{REFRESH_TOKEN_SELECT} WHERE token_hash = ?"
+        ))
+        .bind(token_hash)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|error| map_db_err(error, "refresh_token", token_hash))
+        .and_then(RefreshToken::try_from)
+    }
+
+    #[instrument(skip(self), fields(user_id = %user_id))]
+    async fn revoke_refresh_tokens(&self, user_id: &UserId) -> PacsResult<()> {
+        sqlx::query(
+            r#"
+            UPDATE refresh_tokens
+            SET revoked_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')
+            WHERE user_id = ?
+              AND revoked_at IS NULL
+            "#,
+        )
+        .bind(user_id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(map_store_err)?;
+
+        Ok(())
+    }
+
+    #[instrument(skip(self))]
+    async fn get_password_policy(&self) -> PacsResult<PasswordPolicy> {
+        let row = sqlx::query_as::<_, PasswordPolicyRow>(
+            r#"
+            SELECT
+                min_length,
+                require_uppercase,
+                require_digit,
+                require_special,
+                max_failed_attempts,
+                lockout_duration_secs,
+                max_age_days
+            FROM password_policy
+            WHERE policy_key = ?
+            "#,
+        )
+        .bind("default")
+        .fetch_one(&self.pool)
+        .await
+        .map_err(map_store_err)?;
+
+        PasswordPolicy::try_from(row)
+    }
+
+    #[instrument(skip(self, policy))]
+    async fn upsert_password_policy(&self, policy: &PasswordPolicy) -> PacsResult<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO password_policy (
+                policy_key,
+                min_length,
+                require_uppercase,
+                require_digit,
+                require_special,
+                max_failed_attempts,
+                lockout_duration_secs,
+                max_age_days,
+                created_at,
+                updated_at
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?,
+                STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')
+            )
+            ON CONFLICT(policy_key) DO UPDATE SET
+                min_length = excluded.min_length,
+                require_uppercase = excluded.require_uppercase,
+                require_digit = excluded.require_digit,
+                require_special = excluded.require_special,
+                max_failed_attempts = excluded.max_failed_attempts,
+                lockout_duration_secs = excluded.lockout_duration_secs,
+                max_age_days = excluded.max_age_days,
+                updated_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')
+            "#,
+        )
+        .bind("default")
+        .bind(i64::from(policy.min_length))
+        .bind(policy.require_uppercase)
+        .bind(policy.require_digit)
+        .bind(policy.require_special)
+        .bind(i64::from(policy.max_failed_attempts))
+        .bind(i64::from(policy.lockout_duration_secs))
+        .bind(policy.max_age_days.map(i64::from))
+        .execute(&self.pool)
+        .await
+        .map_err(map_store_err)?;
+
+        Ok(())
+    }
+
     #[instrument(skip(self))]
     async fn list_nodes(&self) -> PacsResult<Vec<DicomNode>> {
         sqlx::query_as::<_, NodeRow>(
@@ -916,11 +1308,12 @@ fn push_audit_filters(qb: &mut QueryBuilder<'_, Sqlite>, query: &AuditLogQuery) 
 mod tests {
     use std::str::FromStr;
 
-    use chrono::NaiveDate;
-    use pacs_core::blob_key_for;
+    use chrono::{NaiveDate, TimeZone, Utc};
+    use pacs_core::{blob_key_for, UserRole};
     use serde_json::json;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use tempfile::TempDir;
+    use uuid::Uuid;
 
     use super::*;
 
@@ -990,6 +1383,35 @@ mod tests {
             columns: Some(512),
             metadata: DicomJson::from(json!({"00080018": {"vr": "UI", "Value": ["1.2.3.1.1"]}})),
             created_at: None,
+        }
+    }
+
+    fn sample_user() -> User {
+        User {
+            id: UserId::from(Uuid::from_u128(1)),
+            username: "admin".into(),
+            display_name: Some("Admin User".into()),
+            email: Some("admin@example.test".into()),
+            password_hash: "argon2-hash".into(),
+            role: UserRole::Admin,
+            attributes: json!({"department": "radiology", "modality_access": ["CT", "MR"]}),
+            is_active: true,
+            failed_login_attempts: 0,
+            locked_until: None,
+            password_changed_at: Some(Utc.with_ymd_and_hms(2026, 3, 18, 12, 0, 0).unwrap()),
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    fn sample_refresh_token(user_id: UserId) -> RefreshToken {
+        RefreshToken {
+            id: RefreshTokenId(Uuid::from_u128(2)),
+            user_id,
+            token_hash: "hashed-refresh-token".into(),
+            expires_at: Utc.with_ymd_and_hms(2026, 3, 25, 12, 0, 0).unwrap(),
+            created_at: Utc.with_ymd_and_hms(2026, 3, 18, 12, 0, 0).unwrap(),
+            revoked_at: None,
         }
     }
 
@@ -1180,6 +1602,71 @@ mod tests {
                 .expect("reloaded settings"),
             Some(settings)
         );
+    }
+
+    #[tokio::test]
+    async fn round_trips_users_password_policy_and_refresh_tokens() {
+        let (_tempdir, store) = test_store().await;
+        let user = sample_user();
+        let mut policy = store.get_password_policy().await.expect("default policy");
+        let refresh_token = sample_refresh_token(user.id);
+
+        store.store_user(&user).await.expect("store user");
+
+        let fetched_user = store.get_user(&user.id).await.expect("get user");
+        assert_eq!(fetched_user.username, user.username);
+        assert_eq!(fetched_user.role, UserRole::Admin);
+
+        let fetched_by_username = store
+            .get_user_by_username(&user.username)
+            .await
+            .expect("get user by username");
+        assert_eq!(fetched_by_username.id, user.id);
+
+        let users = store
+            .query_users(&UserQuery {
+                search: Some("admin".into()),
+                role: Some(UserRole::Admin),
+                is_active: Some(true),
+                limit: Some(10),
+                offset: Some(0),
+            })
+            .await
+            .expect("query users");
+        assert_eq!(users.len(), 1);
+
+        policy.min_length = 16;
+        policy.require_special = true;
+        store
+            .upsert_password_policy(&policy)
+            .await
+            .expect("update policy");
+
+        let fetched_policy = store.get_password_policy().await.expect("reloaded policy");
+        assert_eq!(fetched_policy.min_length, 16);
+        assert!(fetched_policy.require_special);
+
+        store
+            .store_refresh_token(&refresh_token)
+            .await
+            .expect("store refresh token");
+
+        let fetched_token = store
+            .get_refresh_token(&refresh_token.token_hash)
+            .await
+            .expect("get refresh token");
+        assert!(fetched_token.revoked_at.is_none());
+
+        store
+            .revoke_refresh_tokens(&user.id)
+            .await
+            .expect("revoke refresh tokens");
+
+        let revoked_token = store
+            .get_refresh_token(&refresh_token.token_hash)
+            .await
+            .expect("get revoked token");
+        assert!(revoked_token.revoked_at.is_some());
     }
 
     #[tokio::test]

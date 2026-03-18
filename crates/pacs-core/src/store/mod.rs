@@ -2,8 +2,8 @@ use async_trait::async_trait;
 
 use crate::domain::{
     AuditLogEntry, AuditLogPage, AuditLogQuery, DicomJson, DicomNode, Instance, InstanceQuery,
-    NewAuditLogEntry, PacsStatistics, Series, SeriesQuery, SeriesUid, ServerSettings,
-    SopInstanceUid, Study, StudyQuery, StudyUid,
+    NewAuditLogEntry, PacsStatistics, PasswordPolicy, RefreshToken, Series, SeriesQuery, SeriesUid,
+    ServerSettings, SopInstanceUid, Study, StudyQuery, StudyUid, User, UserId, UserQuery,
 };
 use crate::error::PacsResult;
 
@@ -75,6 +75,36 @@ pub trait MetadataStore: Send + Sync {
     /// Returns aggregate statistics for the PACS system.
     async fn get_statistics(&self) -> PacsResult<PacsStatistics>;
 
+    /// Stores or updates a user record.
+    async fn store_user(&self, user: &User) -> PacsResult<()>;
+
+    /// Retrieves a user by identifier.
+    async fn get_user(&self, id: &UserId) -> PacsResult<User>;
+
+    /// Retrieves a user by username.
+    async fn get_user_by_username(&self, username: &str) -> PacsResult<User>;
+
+    /// Returns users matching the given query parameters.
+    async fn query_users(&self, q: &UserQuery) -> PacsResult<Vec<User>>;
+
+    /// Deletes a user record.
+    async fn delete_user(&self, id: &UserId) -> PacsResult<()>;
+
+    /// Persists or updates a refresh token record.
+    async fn store_refresh_token(&self, token: &RefreshToken) -> PacsResult<()>;
+
+    /// Retrieves a refresh token by its hashed value.
+    async fn get_refresh_token(&self, token_hash: &str) -> PacsResult<RefreshToken>;
+
+    /// Revokes all active refresh tokens for a user.
+    async fn revoke_refresh_tokens(&self, user_id: &UserId) -> PacsResult<()>;
+
+    /// Returns the active password policy.
+    async fn get_password_policy(&self) -> PacsResult<PasswordPolicy>;
+
+    /// Stores or updates the active password policy.
+    async fn upsert_password_policy(&self, policy: &PasswordPolicy) -> PacsResult<()>;
+
     /// Lists all registered remote DICOM nodes (AE whitelist).
     async fn list_nodes(&self) -> PacsResult<Vec<DicomNode>>;
 
@@ -111,7 +141,7 @@ pub trait MetadataStore: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::{MetadataStore, MockMetadataStore};
-    use crate::domain::{PacsStatistics, ServerSettings, StudyUid};
+    use crate::domain::{PacsStatistics, PasswordPolicy, ServerSettings, StudyUid, UserId};
     use crate::error::PacsError;
 
     #[tokio::test]
@@ -212,5 +242,30 @@ mod tests {
 
         let settings = mock.get_server_settings().await.unwrap();
         assert_eq!(settings, Some(ServerSettings::default()));
+    }
+
+    #[tokio::test]
+    async fn test_mock_get_password_policy() {
+        let mut mock = MockMetadataStore::new();
+        mock.expect_get_password_policy()
+            .once()
+            .returning(|| Ok(PasswordPolicy::default()));
+
+        let policy = mock.get_password_policy().await.unwrap();
+        assert_eq!(policy, PasswordPolicy::default());
+    }
+
+    #[tokio::test]
+    async fn test_mock_delete_user_not_found() {
+        let mut mock = MockMetadataStore::new();
+        mock.expect_delete_user().once().returning(|id| {
+            Err(PacsError::NotFound {
+                resource: "user",
+                uid: id.to_string(),
+            })
+        });
+
+        let result = mock.delete_user(&UserId::new()).await;
+        assert!(matches!(result, Err(PacsError::NotFound { .. })));
     }
 }

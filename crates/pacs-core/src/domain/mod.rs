@@ -1,4 +1,5 @@
 pub mod audit;
+pub mod auth;
 pub mod instance;
 pub mod json;
 pub mod node;
@@ -7,8 +8,10 @@ pub mod series;
 pub mod server_settings;
 pub mod stats;
 pub mod study;
+pub mod user;
 
 pub use audit::{AuditLogEntry, AuditLogPage, AuditLogQuery, NewAuditLogEntry};
+pub use auth::{AuthMode, PasswordPolicy, RefreshToken, RefreshTokenId, TokenPair};
 pub use instance::{blob_key_for, Instance, SopInstanceUid};
 pub use json::DicomJson;
 pub use node::DicomNode;
@@ -17,3 +20,4 @@ pub use series::{Series, SeriesUid};
 pub use server_settings::ServerSettings;
 pub use stats::PacsStatistics;
 pub use study::{Study, StudyUid};
+pub use user::{User, UserId, UserQuery, UserRole};

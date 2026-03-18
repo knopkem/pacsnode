@@ -12,13 +12,16 @@
 use async_trait::async_trait;
 use pacs_core::{
     AuditLogEntry, AuditLogPage, AuditLogQuery, DicomJson, DicomNode, Instance, InstanceQuery,
-    MetadataStore, NewAuditLogEntry, PacsError, PacsResult, PacsStatistics, Series, SeriesQuery,
-    SeriesUid, ServerSettings, SopInstanceUid, Study, StudyQuery, StudyUid,
+    MetadataStore, NewAuditLogEntry, PacsError, PacsResult, PacsStatistics, PasswordPolicy,
+    RefreshToken, Series, SeriesQuery, SeriesUid, ServerSettings, SopInstanceUid, Study,
+    StudyQuery, StudyUid, User, UserId, UserQuery,
 };
 use sqlx::PgPool;
 use tracing::instrument;
 
-use crate::queries::{audit, instance, node, series, server_settings, study};
+use crate::queries::{
+    audit, instance, node, password_policy, refresh_token, series, server_settings, study, user,
+};
 
 /// PostgreSQL-backed [`MetadataStore`] for pacsnode.
 ///
@@ -110,6 +113,56 @@ impl MetadataStore for PgMetadataStore {
     #[instrument(skip(self))]
     async fn get_statistics(&self) -> PacsResult<PacsStatistics> {
         get_stats(&self.pool).await
+    }
+
+    #[instrument(skip(self, user), fields(user_id = %user.id, username = %user.username))]
+    async fn store_user(&self, user: &User) -> PacsResult<()> {
+        user::upsert(&self.pool, user).await
+    }
+
+    #[instrument(skip(self), fields(user_id = %id))]
+    async fn get_user(&self, id: &UserId) -> PacsResult<User> {
+        user::get(&self.pool, id).await
+    }
+
+    #[instrument(skip(self), fields(username = username))]
+    async fn get_user_by_username(&self, username: &str) -> PacsResult<User> {
+        user::get_by_username(&self.pool, username).await
+    }
+
+    #[instrument(skip(self, q))]
+    async fn query_users(&self, q: &UserQuery) -> PacsResult<Vec<User>> {
+        user::query(&self.pool, q).await
+    }
+
+    #[instrument(skip(self), fields(user_id = %id))]
+    async fn delete_user(&self, id: &UserId) -> PacsResult<()> {
+        user::delete(&self.pool, id).await
+    }
+
+    #[instrument(skip(self, token), fields(user_id = %token.user_id))]
+    async fn store_refresh_token(&self, token: &RefreshToken) -> PacsResult<()> {
+        refresh_token::upsert(&self.pool, token).await
+    }
+
+    #[instrument(skip(self), fields(token_hash = token_hash))]
+    async fn get_refresh_token(&self, token_hash: &str) -> PacsResult<RefreshToken> {
+        refresh_token::get(&self.pool, token_hash).await
+    }
+
+    #[instrument(skip(self), fields(user_id = %user_id))]
+    async fn revoke_refresh_tokens(&self, user_id: &UserId) -> PacsResult<()> {
+        refresh_token::revoke_all(&self.pool, user_id).await
+    }
+
+    #[instrument(skip(self))]
+    async fn get_password_policy(&self) -> PacsResult<PasswordPolicy> {
+        password_policy::get(&self.pool).await
+    }
+
+    #[instrument(skip(self, policy))]
+    async fn upsert_password_policy(&self, policy: &PasswordPolicy) -> PacsResult<()> {
+        password_policy::upsert(&self.pool, policy).await
     }
 
     #[instrument(skip(self))]

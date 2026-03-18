@@ -24,6 +24,37 @@ cp -R /path/to/ohif-build/* /opt/pacsnode/viewer/
 
 Make sure the directory contains `index.html` and the rest of the generated assets.
 
+### OHIF subpath build requirement
+
+If you serve OHIF under `/viewer`, build OHIF for that subpath instead of `/`.
+Otherwise the generated `index.html` may point to root URLs such as
+`/app-config.js`, `/manifest.json`, or `/assets/...`, which produces a white page
+and `404 Not Found` errors when pacsnode serves the viewer under `/viewer/`.
+
+For OHIF, set both:
+
+- `PUBLIC_URL=/viewer/` when building the static bundle
+- `routerBasename: '/viewer'` in your OHIF `app-config.js`
+
+Example:
+
+```bash
+PUBLIC_URL=/viewer/ APP_CONFIG=config/default.js yarn build
+```
+
+And in the OHIF config:
+
+```js
+window.config = {
+  routerBasename: '/viewer',
+  // ...other OHIF config...
+};
+```
+
+`pacsnode` also rewrites common root-absolute asset references in the served HTML
+shell to the configured `route_prefix`, which helps with stock OHIF builds, but a
+subpath-aware OHIF build is still the supported deployment configuration.
+
 ## Enable the plugin
 
 Add the plugin ID to `[plugins].enabled` and configure the static asset location:

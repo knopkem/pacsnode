@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use axum::{
     extract::{Path as AxumPath, Request},
     http::{header, HeaderMap, StatusCode},
-    response::{IntoResponse, Redirect, Response},
+    response::{Html, IntoResponse, Redirect, Response},
     routing::get,
     Router,
 };
@@ -293,8 +293,10 @@ async fn serve_viewer_request(
     };
 
     match resolution {
-        AssetResolution::File(path) => serve_file(path, request).await,
-        AssetResolution::Fallback => serve_file(runtime.fallback_path.clone(), request).await,
+        AssetResolution::File(path) => serve_file(runtime.as_ref(), path, request).await,
+        AssetResolution::Fallback => {
+            serve_file(runtime.as_ref(), runtime.fallback_path.clone(), request).await
+        }
         AssetResolution::NotFound => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -320,10 +322,32 @@ async fn resolve_existing_asset(
     }
 }
 
-async fn serve_file(path: PathBuf, request: Request) -> Response {
+async fn serve_file(runtime: &ViewerRuntime, path: PathBuf, request: Request) -> Response {
+    if is_html_file(&path) {
+        return serve_html_file(runtime, &path).await;
+    }
+
     match ServeFile::new(path).oneshot(request).await {
         Ok(response) => response.into_response(),
         Err(error) => match error {},
+    }
+}
+
+async fn serve_html_file(runtime: &ViewerRuntime, path: &Path) -> Response {
+    match fs::read(path).await {
+        Ok(bytes) => {
+            let contents = String::from_utf8_lossy(&bytes);
+            Html(rewrite_html_asset_paths(&contents, &runtime.route_prefix)).into_response()
+        }
+        Err(error) => {
+            error!(
+                plugin_id = OHIF_VIEWER_PLUGIN_ID,
+                path = %path.display(),
+                error = %error,
+                "Failed to read viewer HTML file"
+            );
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
     }
 }
 
@@ -422,6 +446,80 @@ fn accepts_html(headers: &HeaderMap) -> bool {
         return false;
     };
     accept.contains("text/html") || accept.contains("application/xhtml+xml")
+}
+
+fn is_html_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| matches!(extension, "html" | "htm"))
+}
+
+fn rewrite_html_asset_paths(contents: &str, route_prefix: &str) -> String {
+    let mut rewritten = contents.to_string();
+    for (prefix, terminator) in [
+        ("href=\"", '"'),
+        ("href='", '\''),
+        ("src=\"", '"'),
+        ("src='", '\''),
+        ("content=\"", '"'),
+        ("content='", '\''),
+    ] {
+        rewritten = rewrite_attribute_values(&rewritten, prefix, terminator, route_prefix);
+    }
+    rewritten
+}
+
+fn rewrite_attribute_values(
+    input: &str,
+    attribute_prefix: &str,
+    terminator: char,
+    route_prefix: &str,
+) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut remaining = input;
+
+    while let Some(start) = remaining.find(attribute_prefix) {
+        let (before, after_start) = remaining.split_at(start);
+        output.push_str(before);
+        output.push_str(attribute_prefix);
+
+        let value_start = &after_start[attribute_prefix.len()..];
+        let Some(end) = value_start.find(terminator) else {
+            output.push_str(value_start);
+            return output;
+        };
+
+        let (value, after_value) = value_start.split_at(end);
+        output.push_str(&rewrite_root_absolute_url(value, route_prefix));
+        remaining = after_value;
+    }
+
+    output.push_str(remaining);
+    output
+}
+
+fn rewrite_root_absolute_url(value: &str, route_prefix: &str) -> String {
+    if route_prefix == "/"
+        || !value.starts_with('/')
+        || value.starts_with("//")
+        || !looks_like_static_asset_path(value)
+        || value == route_prefix
+        || value == format!("{route_prefix}/")
+        || value.starts_with(&format!("{route_prefix}/"))
+    {
+        return value.to_string();
+    }
+
+    format!("{route_prefix}{value}")
+}
+
+fn looks_like_static_asset_path(value: &str) -> bool {
+    let clean_path = value.split(['?', '#']).next().unwrap_or(value);
+    clean_path.starts_with("/assets/")
+        || clean_path
+            .rsplit('/')
+            .next()
+            .is_some_and(|segment| segment.contains('.'))
 }
 
 register_plugin!(OhifViewerPlugin::default);
@@ -794,5 +892,78 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn viewer_root_rewrites_root_absolute_shell_assets_to_route_prefix() {
+        let dir = TestViewerDir::new();
+        dir.write(
+            "index.html",
+            r#"<html>
+<head>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="/assets/favicon.ico">
+  <link rel="stylesheet" href="/app.bundle.css">
+</head>
+<body>
+  <script src="/app-config.js"></script>
+  <script src="/app.bundle.js"></script>
+</body>
+</html>"#,
+        );
+        let plugin = init_plugin(&dir).await;
+        let app = plugin.routes().with_state(app_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/viewer/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains(r#"href="/viewer/manifest.json""#));
+        assert!(body.contains(r#"href="/viewer/assets/favicon.ico""#));
+        assert!(body.contains(r#"href="/viewer/app.bundle.css""#));
+        assert!(body.contains(r#"src="/viewer/app-config.js""#));
+        assert!(body.contains(r#"src="/viewer/app.bundle.js""#));
+    }
+
+    #[tokio::test]
+    async fn viewer_root_preserves_non_asset_root_paths_and_existing_prefixes() {
+        let dir = TestViewerDir::new();
+        dir.write(
+            "index.html",
+            r#"<html>
+<body>
+  <a href="/dicom-web/studies">api</a>
+  <script src="/viewer/app.bundle.js"></script>
+</body>
+</html>"#,
+        );
+        let plugin = init_plugin(&dir).await;
+        let app = plugin.routes().with_state(app_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/viewer/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains(r#"href="/dicom-web/studies""#));
+        assert!(body.contains(r#"src="/viewer/app.bundle.js""#));
+        assert!(!body.contains(r#"src="/viewer/viewer/app.bundle.js""#));
     }
 }

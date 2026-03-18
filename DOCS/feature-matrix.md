@@ -161,17 +161,17 @@
 |---------|:--------:|:-------:|-------|
 | **HTTP TLS/HTTPS** | ❌ 🔮 | ✅ | Plaintext only; use reverse proxy |
 | **DIMSE TLS** | ❌ | ✅ | Plaintext TCP only |
-| **Authentication** (any) | ⚠️ | ✅ | Optional `basic-auth` plugin provides local login, refresh, and bearer-token protection; no multi-user/OIDC yet |
-| **RBAC / Role-based access** | ❌ 🔮 | ✅ (plugin) | Planned: 5-role model |
+| **Authentication** (any) | ✅ | ✅ | Optional `basic-auth` plugin provides local multi-user login, refresh-token rotation, and external bearer-token validation for secured routes |
+| **RBAC / Role-based access** | ⚠️ | ✅ (plugin) | Five-role model and route-level authorization are implemented; policy scope is still expanding |
 | **JWT token validation** | ✅ | ❌ | `basic-auth` plugin issues and validates JWT bearer tokens |
-| **OIDC / OAuth2** | ❌ 🔮 | ✅ (plugin) | Planned |
+| **OIDC / OAuth2** | ⚠️ | ✅ (plugin) | External bearer-token validation works with issuer discovery, JWKS, or static RSA keys; interactive browser login flow remains external |
 | **API key auth** | ❌ 🔮 | ✅ | Planned as Phase 1 |
 | **Audit logging** | ✅ | ✅ (plugin) | `audit-logger` persists store/query/delete/study-complete/association events to `audit_log` and auto-enables for secured `basic-auth` deployments unless explicitly opted out |
 | **PHI redaction in logs** | ⚠️ | ✅ | Policy stated but no filter enforced |
 | **Encryption at rest** | ❌ | ❌ | Neither implements natively (delegate to infra) |
 | **CORS configuration** | ⚠️ | ✅ | Currently `permissive()`; needs tightening |
 | **Rate limiting** | ❌ 🔮 | ❌ | Planned for login endpoint |
-| **Account lockout** | ❌ 🔮 | ❌ | Planned |
+| **Account lockout** | ✅ | ❌ | Enforced by the persisted password policy for local accounts |
 | **HIPAA compliance** | ❌ | ⚠️ | Requires audit trail + access controls |
 | **DICOM Conformance Statement** | ❌ | ✅ | No formal conformance document |
 

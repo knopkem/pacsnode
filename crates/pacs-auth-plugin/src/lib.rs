@@ -7,7 +7,7 @@
 use std::{
     collections::HashMap,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration as StdDuration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use argon2::{
@@ -24,7 +24,10 @@ use axum::{
     Router,
 };
 use chrono::{Duration, Utc};
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{
+    decode, decode_header, encode, jwk::JwkSet, Algorithm, DecodingKey, EncodingKey, Header,
+    Validation,
+};
 use pacs_core::{MetadataStore, PacsError, RefreshToken, RefreshTokenId, User, UserId, UserRole};
 use pacs_plugin::{
     register_plugin, AppState, AuthenticatedUser, MiddlewarePlugin, Plugin, PluginContext,
@@ -33,6 +36,7 @@ use pacs_plugin::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use tokio::sync::{Mutex, RwLock};
 use tracing::{error, warn};
 use uuid::Uuid;
 
@@ -81,7 +85,12 @@ struct AuthPluginConfig {
 struct OidcConfig {
     issuer: String,
     audience: String,
-    public_key_pem: String,
+    #[serde(default)]
+    public_key_pem: Option<String>,
+    #[serde(default)]
+    jwks_uri: Option<String>,
+    #[serde(default = "default_jwks_refresh_secs")]
+    jwks_refresh_secs: u64,
     #[serde(default = "default_user_id_claim")]
     user_id_claim: String,
     #[serde(default = "default_username_claim")]
@@ -106,13 +115,54 @@ struct LocalTokenConfig {
 struct OidcTokenConfig {
     issuer: String,
     audience: String,
-    public_key: Arc<DecodingKey>,
+    key_source: OidcKeySource,
     user_id_claim: String,
     username_claim: String,
     role_claim: String,
     role_map: HashMap<String, UserRole>,
     default_role: UserRole,
     attributes_claims: Vec<String>,
+}
+
+#[derive(Clone)]
+enum OidcKeySource {
+    Static(Arc<DecodingKey>),
+    Jwks(Arc<JwksKeyStore>),
+    Discovery(Arc<DiscoveryKeyStore>),
+}
+
+struct JwksKeyStore {
+    client: reqwest::Client,
+    uri: reqwest::Url,
+    refresh_interval: StdDuration,
+    cache: RwLock<CachedJwks>,
+    refresh_lock: Mutex<()>,
+}
+
+#[derive(Default)]
+struct CachedJwks {
+    fetched_at: Option<Instant>,
+    keys_by_kid: HashMap<String, Arc<DecodingKey>>,
+}
+
+struct DiscoveryKeyStore {
+    client: reqwest::Client,
+    issuer: reqwest::Url,
+    refresh_interval: StdDuration,
+    cache: RwLock<CachedDiscovery>,
+    refresh_lock: Mutex<()>,
+}
+
+#[derive(Default)]
+struct CachedDiscovery {
+    fetched_at: Option<Instant>,
+    jwks_store: Option<Arc<JwksKeyStore>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OidcDiscoveryDocument {
+    issuer: Option<String>,
+    jwks_uri: String,
 }
 
 #[derive(Clone)]
@@ -182,6 +232,10 @@ enum AuthRuntimeError {
     Jwt(#[from] jsonwebtoken::errors::Error),
     #[error("invalid oidc claims: {0}")]
     InvalidOidcClaims(String),
+    #[error("jwks fetch failed: {0}")]
+    JwksFetch(#[from] reqwest::Error),
+    #[error("invalid jwks response: {0}")]
+    InvalidJwks(String),
     #[error("system clock error: {0}")]
     Clock(#[from] std::time::SystemTimeError),
     #[error("store error: {0}")]
@@ -216,6 +270,10 @@ fn default_access_token_ttl_secs() -> u64 {
 
 fn default_refresh_token_ttl_secs() -> u64 {
     604800
+}
+
+fn default_jwks_refresh_secs() -> u64 {
+    300
 }
 
 fn default_user_id_claim() -> String {
@@ -309,16 +367,65 @@ impl Plugin for BasicAuthPlugin {
                     plugin_id: BASIC_AUTH_PLUGIN_ID.into(),
                     message: "basic-auth oidc mode requires an oidc configuration block".into(),
                 })?;
-                let public_key = DecodingKey::from_rsa_pem(oidc.public_key_pem.as_bytes())
-                    .map_err(|error| PluginError::Config {
+                let public_key_pem = oidc
+                    .public_key_pem
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
+                let jwks_uri = oidc
+                    .jwks_uri
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
+                let key_source = match (public_key_pem, jwks_uri) {
+                    (Some(public_key_pem), None) => {
+                        let public_key = DecodingKey::from_rsa_pem(public_key_pem.as_bytes())
+                            .map_err(|error| PluginError::Config {
+                                plugin_id: BASIC_AUTH_PLUGIN_ID.into(),
+                                message: format!("invalid oidc public_key_pem: {error}"),
+                            })?;
+                        OidcKeySource::Static(Arc::new(public_key))
+                    }
+                    (None, Some(jwks_uri)) => {
+                        let uri = reqwest::Url::parse(&jwks_uri).map_err(|error| {
+                            PluginError::Config {
+                                plugin_id: BASIC_AUTH_PLUGIN_ID.into(),
+                                message: format!("invalid oidc jwks_uri: {error}"),
+                            }
+                        })?;
+                        OidcKeySource::Jwks(Arc::new(JwksKeyStore::new(
+                            reqwest::Client::new(),
+                            uri,
+                            StdDuration::from_secs(oidc.jwks_refresh_secs),
+                        )))
+                    }
+                    (Some(_), Some(_)) => return Err(PluginError::Config {
                         plugin_id: BASIC_AUTH_PLUGIN_ID.into(),
-                        message: format!("invalid oidc public_key_pem: {error}"),
-                    })?;
+                        message:
+                            "oidc configuration must set exactly one of public_key_pem or jwks_uri"
+                                .into(),
+                    }),
+                    (None, None) => {
+                        let issuer = reqwest::Url::parse(&oidc.issuer).map_err(|error| {
+                            PluginError::Config {
+                                plugin_id: BASIC_AUTH_PLUGIN_ID.into(),
+                                message: format!("invalid oidc issuer url: {error}"),
+                            }
+                        })?;
+                        OidcKeySource::Discovery(Arc::new(DiscoveryKeyStore::new(
+                            reqwest::Client::new(),
+                            issuer,
+                            StdDuration::from_secs(oidc.jwks_refresh_secs),
+                        )))
+                    }
+                };
 
                 TokenMode::Oidc(OidcTokenConfig {
                     issuer: oidc.issuer,
                     audience: oidc.audience,
-                    public_key: Arc::new(public_key),
+                    key_source,
                     user_id_claim: oidc.user_id_claim,
                     username_claim: oidc.username_claim,
                     role_claim: oidc.role_claim,
@@ -357,6 +464,196 @@ impl Plugin for BasicAuthPlugin {
 
     fn as_middleware_plugin(&self) -> Option<&dyn MiddlewarePlugin> {
         Some(self)
+    }
+}
+
+impl JwksKeyStore {
+    fn new(client: reqwest::Client, uri: reqwest::Url, refresh_interval: StdDuration) -> Self {
+        Self {
+            client,
+            uri,
+            refresh_interval,
+            cache: RwLock::new(CachedJwks::default()),
+            refresh_lock: Mutex::new(()),
+        }
+    }
+
+    async fn decoding_key_for_kid(&self, kid: &str) -> Result<Arc<DecodingKey>, AuthRuntimeError> {
+        let stale_key = {
+            let cache = self.cache.read().await;
+            if let Some(key) = cache.keys_by_kid.get(kid) {
+                if cache.is_fresh(self.refresh_interval) {
+                    return Ok(Arc::clone(key));
+                }
+                Some(Arc::clone(key))
+            } else {
+                None
+            }
+        };
+
+        if let Err(error) = self.refresh_keys(Some(kid)).await {
+            if let Some(key) = stale_key {
+                warn!(jwks_uri = %self.uri, kid, error = %error, "jwks refresh failed; using stale cached key");
+                return Ok(key);
+            }
+            return Err(error);
+        }
+
+        let cache = self.cache.read().await;
+        cache
+            .keys_by_kid
+            .get(kid)
+            .cloned()
+            .or(stale_key)
+            .ok_or_else(|| {
+                AuthRuntimeError::InvalidOidcClaims(format!(
+                    "no jwks signing key found for kid '{kid}'"
+                ))
+            })
+    }
+
+    async fn refresh_keys(&self, required_kid: Option<&str>) -> Result<(), AuthRuntimeError> {
+        if !self.should_refresh(required_kid).await {
+            return Ok(());
+        }
+
+        let _refresh = self.refresh_lock.lock().await;
+        if !self.should_refresh(required_kid).await {
+            return Ok(());
+        }
+
+        let response = self
+            .client
+            .get(self.uri.clone())
+            .send()
+            .await?
+            .error_for_status()?;
+        let jwks = response.json::<JwkSet>().await?;
+        let keys_by_kid = decode_keys_from_jwks(jwks)?;
+
+        let mut cache = self.cache.write().await;
+        cache.keys_by_kid = keys_by_kid;
+        cache.fetched_at = Some(Instant::now());
+        Ok(())
+    }
+
+    async fn should_refresh(&self, required_kid: Option<&str>) -> bool {
+        let cache = self.cache.read().await;
+        if !cache.is_fresh(self.refresh_interval) {
+            return true;
+        }
+
+        required_kid.is_some_and(|kid| !cache.keys_by_kid.contains_key(kid))
+    }
+}
+
+impl DiscoveryKeyStore {
+    fn new(client: reqwest::Client, issuer: reqwest::Url, refresh_interval: StdDuration) -> Self {
+        Self {
+            client,
+            issuer,
+            refresh_interval,
+            cache: RwLock::new(CachedDiscovery::default()),
+            refresh_lock: Mutex::new(()),
+        }
+    }
+
+    async fn decoding_key_for_kid(&self, kid: &str) -> Result<Arc<DecodingKey>, AuthRuntimeError> {
+        let stale_store = {
+            let cache = self.cache.read().await;
+            if cache.is_fresh(self.refresh_interval) {
+                cache.jwks_store.clone()
+            } else {
+                None
+            }
+        };
+
+        if let Some(store) = stale_store {
+            return store.decoding_key_for_kid(kid).await;
+        }
+
+        if let Err(error) = self.refresh_store().await {
+            let cached_store = {
+                let cache = self.cache.read().await;
+                cache.jwks_store.clone()
+            };
+            if let Some(store) = cached_store {
+                warn!(issuer = %self.issuer, kid, error = %error, "oidc discovery refresh failed; using stale discovered jwks uri");
+                return store.decoding_key_for_kid(kid).await;
+            }
+            return Err(error);
+        }
+
+        let store = {
+            let cache = self.cache.read().await;
+            cache.jwks_store.clone()
+        }
+        .ok_or_else(|| {
+            AuthRuntimeError::InvalidJwks("oidc discovery did not yield a jwks uri".into())
+        })?;
+
+        store.decoding_key_for_kid(kid).await
+    }
+
+    async fn refresh_store(&self) -> Result<(), AuthRuntimeError> {
+        if !self.should_refresh().await {
+            return Ok(());
+        }
+
+        let _refresh = self.refresh_lock.lock().await;
+        if !self.should_refresh().await {
+            return Ok(());
+        }
+
+        let discovery_url = openid_configuration_url(&self.issuer)?;
+        let response = self
+            .client
+            .get(discovery_url)
+            .send()
+            .await?
+            .error_for_status()?;
+        let document = response.json::<OidcDiscoveryDocument>().await?;
+        if let Some(issuer) = document.issuer.as_deref() {
+            if issuer != self.issuer.as_str() {
+                return Err(AuthRuntimeError::InvalidJwks(format!(
+                    "oidc discovery issuer mismatch: expected '{}', got '{issuer}'",
+                    self.issuer
+                )));
+            }
+        }
+
+        let jwks_uri = reqwest::Url::parse(&document.jwks_uri).map_err(|error| {
+            AuthRuntimeError::InvalidJwks(format!("invalid discovered jwks_uri: {error}"))
+        })?;
+        let jwks_store = Arc::new(JwksKeyStore::new(
+            self.client.clone(),
+            jwks_uri,
+            self.refresh_interval,
+        ));
+
+        let mut cache = self.cache.write().await;
+        cache.jwks_store = Some(jwks_store);
+        cache.fetched_at = Some(Instant::now());
+        Ok(())
+    }
+
+    async fn should_refresh(&self) -> bool {
+        let cache = self.cache.read().await;
+        !cache.is_fresh(self.refresh_interval)
+    }
+}
+
+impl CachedJwks {
+    fn is_fresh(&self, refresh_interval: StdDuration) -> bool {
+        self.fetched_at
+            .is_some_and(|fetched_at| fetched_at.elapsed() <= refresh_interval)
+    }
+}
+
+impl CachedDiscovery {
+    fn is_fresh(&self, refresh_interval: StdDuration) -> bool {
+        self.fetched_at
+            .is_some_and(|fetched_at| fetched_at.elapsed() <= refresh_interval)
     }
 }
 
@@ -574,7 +871,7 @@ impl AuthRuntime {
 
                 Ok(to_authenticated_user(&user))
             }
-            TokenMode::Oidc(oidc) => current_oidc_user_from_token(oidc, token),
+            TokenMode::Oidc(oidc) => current_oidc_user_from_token(oidc, token).await,
         }
     }
 
@@ -727,16 +1024,93 @@ fn to_authenticated_user(user: &User) -> AuthenticatedUser {
     )
 }
 
-fn current_oidc_user_from_token(
+async fn current_oidc_user_from_token(
     oidc: &OidcTokenConfig,
     token: &str,
 ) -> Result<AuthenticatedUser, AuthRuntimeError> {
-    let mut validation = Validation::new(Algorithm::RS256);
+    let header = decode_header(token)?;
+    let algorithm = oidc_signing_algorithm(&header)?;
+    let decoding_key = oidc.decoding_key_for_header(&header).await?;
+
+    let mut validation = Validation::new(algorithm);
     validation.set_issuer(&[oidc.issuer.as_str()]);
     validation.set_audience(&[oidc.audience.as_str()]);
 
-    let claims = decode::<Value>(token, &oidc.public_key, &validation)?.claims;
+    let claims = decode::<Value>(token, decoding_key.as_ref(), &validation)?.claims;
     authenticated_user_from_oidc_claims(&claims, oidc)
+}
+
+impl OidcTokenConfig {
+    async fn decoding_key_for_header(
+        &self,
+        header: &Header,
+    ) -> Result<Arc<DecodingKey>, AuthRuntimeError> {
+        match &self.key_source {
+            OidcKeySource::Static(key) => Ok(Arc::clone(key)),
+            OidcKeySource::Jwks(store) => {
+                let kid = header.kid.as_deref().ok_or_else(|| {
+                    AuthRuntimeError::InvalidOidcClaims(
+                        "oidc jwks tokens must include a kid header".into(),
+                    )
+                })?;
+                store.decoding_key_for_kid(kid).await
+            }
+            OidcKeySource::Discovery(store) => {
+                let kid = header.kid.as_deref().ok_or_else(|| {
+                    AuthRuntimeError::InvalidOidcClaims(
+                        "oidc discovery tokens must include a kid header".into(),
+                    )
+                })?;
+                store.decoding_key_for_kid(kid).await
+            }
+        }
+    }
+}
+
+fn openid_configuration_url(issuer: &reqwest::Url) -> Result<reqwest::Url, AuthRuntimeError> {
+    let mut url = issuer.clone();
+    let issuer_path = issuer.path().trim_matches('/');
+    let well_known_path = if issuer_path.is_empty() {
+        "/.well-known/openid-configuration".to_string()
+    } else {
+        format!("/.well-known/openid-configuration/{issuer_path}")
+    };
+    url.set_path(&well_known_path);
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url)
+}
+
+fn oidc_signing_algorithm(header: &Header) -> Result<Algorithm, AuthRuntimeError> {
+    match header.alg {
+        Algorithm::RS256 | Algorithm::RS384 | Algorithm::RS512 => Ok(header.alg),
+        unsupported => Err(AuthRuntimeError::InvalidOidcClaims(format!(
+            "unsupported oidc signing algorithm '{unsupported:?}'"
+        ))),
+    }
+}
+
+fn decode_keys_from_jwks(
+    jwks: JwkSet,
+) -> Result<HashMap<String, Arc<DecodingKey>>, AuthRuntimeError> {
+    let mut keys_by_kid = HashMap::new();
+    for jwk in jwks.keys {
+        let Some(kid) = jwk.common.key_id.clone() else {
+            continue;
+        };
+
+        if let Ok(decoding_key) = DecodingKey::from_jwk(&jwk) {
+            keys_by_kid.insert(kid, Arc::new(decoding_key));
+        }
+    }
+
+    if keys_by_kid.is_empty() {
+        return Err(AuthRuntimeError::InvalidJwks(
+            "jwks response did not contain any usable signing keys".into(),
+        ));
+    }
+
+    Ok(keys_by_kid)
 }
 
 fn authenticated_user_from_oidc_claims(
@@ -900,7 +1274,7 @@ register_plugin!(BasicAuthPlugin::default);
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use axum::{body::to_bytes, body::Body, http::Request, routing::get};
+    use axum::{body::to_bytes, body::Body, extract::State, http::Request, routing::get};
     use bytes::Bytes;
     use chrono::{TimeZone, Utc};
     use jsonwebtoken::{Algorithm, EncodingKey, Header};
@@ -911,11 +1285,15 @@ mod tests {
         StudyQuery, StudyUid, User, UserId, UserQuery, UserRole,
     };
     use std::{collections::HashMap, sync::Mutex};
+    use tokio::{net::TcpListener, sync::RwLock as AsyncRwLock, task::JoinHandle};
     use tower::ServiceExt;
     use uuid::Uuid;
 
     const TEST_OIDC_PRIVATE_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\nMIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQC/BQm/ibuqjbK/\nmapMe8BowlU6p9gDISAi4+KJ/VCG+jcE3VRh5F3G/Q/aiPOLMEBUNVy2AxHLX40/\nbJ1cEsz/QSPnzjhtW5jl2TBYTx9SQ519B2CQ8n6PLJNWTcKyC3TfPnKNDUsvcTB7\n3m5iJM+4VlM3xX0BgtkWYFVDtxrGefW6XT2/cGsa9s45YWstMDgFa7H/pF4WSTK/\nePeuPc+QcuN3c8s+KMfDjj0f7HqTrzLgaGWf+5t1uMh//BD70iLkIt7CVUBDqiQO\nUpPQ46dQvmyT9CPKuB0bqrz1Yf7NHB9HP6RjQkVpUDa6g10nmFlssimtWjLgzG/Q\ngx7AcmBjAgMBAAECggEAUkS3tZP6zNI5PVbPpyAXNqcXsOrv2C0wm4Y9H4QHZhKm\nloRCXuTNVLHR3aNlDLnLwti2pLc+tzHgcgPz498/BeJGtgO1frfX6oo3TZlKGpJ/\nZgVC3DpsMnqWvDFCXI8dlzZcfI5Qps6ffIHIVaGYCsK3FYqLM5boqz/zCPZ35CmM\n6Akq1eZj3fmO02d4XMzfcTLmuxUgk5vVJNWchE36gE/Q+5WkkCGHw40VCgvO9Mns\nnv3/13HKVUCzmfSTFwXv6fYhZ8bnwF4LF6N/nCtgwXN2HMY9xcTdYXgLB7d8p+Pn\nA8aYZasTtHREMD8X1h6L9gXu3NPRZQNYXxe2DseqwQKBgQDojkVxaKQXKsysHh8l\nUxE9LUGs1Sqa8yVM/Y5+Pat3TRJ9u0NDBDtRbiAVDaOIvun17m7+6SIiq9Uvq4pZ\nTGQJW9OvYPJmkgYGVUXv9ZJYM9qVaqcr2F+XMunMkAGagMqRNTKVEKgcb+GbUtFD\nml+3Rrp67XvSAHfq+vlEVrfaQQKBgQDSRtEF6LmQhpVlB0eplfWQnRI55eCczAoC\njE+eJDjWKJvQy8wusO6HZdfxBDk8V+J/g4xURErCpfRCcpH8zQd3X8tHixFz/LIV\nf9mLA1H0I7/VLpXMeG2Zl5oqZSUk9viah+O6JnNY0TwjBEwM0NHROFI8ldw1bvSP\nsh/pb+4powKBgQC/gdGb59EhJuSvZIq/gN10ZJ1tx4kzWsG/2hoKyZw3PWfZ1Gk6\nefSjRS30SGwAQz+Ff9k14CR1Ks3/WKMwkGDc+BqllQ9o+h0t//D8/1yJeAIsA00x\nJRjq+UlhZMF9S0wFMiq6aKIX8OZ3s0aTBkCGPB969bB+qlYWUqEM7uCuQQKBgQDD\nbKVehIfRVgMKPdXQOlpa6F/EB2zUzJyQ+a4VHzzjbCJDzuQYkL9efrxOdspq1pLe\nR3fn6QBCHtH/31LmS/agbxsRhqHV1gf8CzI3DALij0b97amyuknB8S+KLy5ySEWL\n+LcgjhOte+gT8y5qyrf1Zg6n1+8sic4orjcSUMBbWQKBgQCv9oQoX5emyTuGhGjE\nAbRXj7TlNJzQ6oVpqFgwbnPEmBeqGzNsYDv54G/CPTngELqjOnDsCUQoi1PRMFRA\nuuPjlgnb9BHOB5nK4px94RevY2cd+XjIU9FBr5j0FLfQiM2gIPUCtxBBEipLO4Ys\n0dIwTvTzoXY1wF/ToBgX0nt3vQ==\n-----END PRIVATE KEY-----\n";
     const TEST_OIDC_PUBLIC_KEY_PEM: &str = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvwUJv4m7qo2yv5mqTHvA\naMJVOqfYAyEgIuPiif1Qhvo3BN1UYeRdxv0P2ojzizBAVDVctgMRy1+NP2ydXBLM\n/0Ej5844bVuY5dkwWE8fUkOdfQdgkPJ+jyyTVk3Csgt03z5yjQ1LL3Ewe95uYiTP\nuFZTN8V9AYLZFmBVQ7caxnn1ul09v3BrGvbOOWFrLTA4BWux/6ReFkkyv3j3rj3P\nkHLjd3PLPijHw449H+x6k68y4Ghln/ubdbjIf/wQ+9Ii5CLewlVAQ6okDlKT0OOn\nUL5sk/QjyrgdG6q89WH+zRwfRz+kY0JFaVA2uoNdJ5hZbLIprVoy4Mxv0IMewHJg\nYwIDAQAB\n-----END PUBLIC KEY-----\n";
+    const TEST_OIDC_JWK_N: &str = "vwUJv4m7qo2yv5mqTHvAaMJVOqfYAyEgIuPiif1Qhvo3BN1UYeRdxv0P2ojzizBAVDVctgMRy1-NP2ydXBLM_0Ej5844bVuY5dkwWE8fUkOdfQdgkPJ-jyyTVk3Csgt03z5yjQ1LL3Ewe95uYiTPuFZTN8V9AYLZFmBVQ7caxnn1ul09v3BrGvbOOWFrLTA4BWux_6ReFkkyv3j3rj3PkHLjd3PLPijHw449H-x6k68y4Ghln_ubdbjIf_wQ-9Ii5CLewlVAQ6okDlKT0OOnUL5sk_QjyrgdG6q89WH-zRwfRz-kY0JFaVA2uoNdJ5hZbLIprVoy4Mxv0IMewHJgYw";
+    const TEST_OIDC_ROTATED_PRIVATE_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDQa+0vZ9khsk8t\nBQzH5ZdLvoKV7zQ9TEyxFpVFj70Gj+2w7DCD4I6fH5GiZpwZZ4TjnqtUbhH2aMpz\nVGQDKAvFv12D/u6MjMjyFPubOp6L/3KayWNCzP71ikhQTZXwc52HNrp1Xx7BRWa0\nl2PEIkArZ6b+pgubB69+29kfuz9xP6SbmGxGWt2XbYIFpbuTfSso07vcgcppl7nO\n/EofiJ4nLeHTK0Z3t4GfSNZq9viY187v5WZ+kwLpky5Xf96IyOBgdkqhyJ97MiUX\nvtRBX9PVMh47rj0w5Smiuuj+tYjP0VngjKwPAXm7dYubO+gcKvknM2jiBvyhhiVS\noSpHai1PAgMBAAECggEAPY36fXs6tgh++Mlahnkoz26DC7wbXhU4Oz7ztBkpFxSP\n+yYuh+xcwuMkdGXAqYIYzc7xQ9zEQlWdoSUl6oa7v1nuyQqUMn9r449N5gEQjUFS\n/CMJRVPc4vDFva3EYEENH7+KnxqKL0OLez+Q7/67m/YfbGrm15EUBC/y9rurF4tP\nXwVI+aWxfD8OOywx5x+trByCPQzXA+g8J/rG7L41uf6d4q3PJdsvMdmQrImxCcUK\n3+TGRukiwGioO5avv5Wuyg7eKZwcX8O0ZNR8w1OqsIINUlznxRBMu3Qj9TuhIhd8\nUebimf+wJyoLHrJe3yDmqXPj+2mT+HP5jEe6CCwAWQKBgQDrlSKJcv3YjPVKCvHs\n9JNsNXcV+DxMJdR+8X09AqSXEY/xwikSJdHdbtx4xQ0jQcDNxcdNYAnQlu645nbW\n69YEKsyezrhj6yPqKcHHNg+6m7VIAxseD4btqcg8TAZRrFV7tNxZD9v3jeDPBCw0\nPwIsLDNjSF7aeI/pYB2GL7FVBwKBgQDifCv2+7iOe143WsqzYIzmi8xaHH68RBOk\n/VHHdp2XhMP4qNl/EoGJv98TksUuuTUcs8ztNK8zMETI+Z3prAVWwQFnhJoVRkP3\nWY8RL7txOQ36F3QIGOi1dWAQLIy0DqoKr1pfpHhqP0Zrpipx8cg0sGxilviXDYm7\nn4rkNUTbeQKBgAas3iKo6Hp3XAfyEXLWZ0r8pNgxhXve4ouKSjMtXP6O19ZQ2xsR\niUXN+19MrheeqFjsTr5phz2q2S7SEPH8Er9hexTQ5LaoFgdvkXcUmBOAj/1vYRhT\n9k3LrsnOmas8x9tOf6PiaCg2k/UpuBru4h/gTMB2b4GfQuyo9Y000sCHAoGAW9zt\noDIde31Ci8VBrlwdCm3tpycjqI0cQrGU+Ah+hzSMoFEsVsRU0mCGxNOlMvxgNJIh\nLp1N6r9LRxEoId1qFPQX87rvHG3xp2QmCVyI9LWlm6jjoV0pFmDTY/wN3gKMqeTS\nDTUSulWL5KHzWWAuSmC8tYhysCIHmZhup32LvlECgYBK4VqZS7rabPHrMFlDYmkX\nIZKXwGrPQr7UGDVzhMC+TucBOCaEfxxPZNyf2NarHh3gmSDMtpqTauqsJTnwlGBO\nBm2bb1z8P17aXmv/3Am734YFIDEWJ58VzHwLc4iEvulC714VoDhruDrroFrQKJS3\nIax6DFsseM2xq34z1v3uUA==\n-----END PRIVATE KEY-----\n";
+    const TEST_OIDC_ROTATED_JWK_N: &str = "0GvtL2fZIbJPLQUMx-WXS76Cle80PUxMsRaVRY-9Bo_tsOwwg-COnx-RomacGWeE456rVG4R9mjKc1RkAygLxb9dg_7ujIzI8hT7mzqei_9ymsljQsz-9YpIUE2V8HOdhza6dV8ewUVmtJdjxCJAK2em_qYLmwevftvZH7s_cT-km5hsRlrdl22CBaW7k30rKNO73IHKaZe5zvxKH4ieJy3h0ytGd7eBn0jWavb4mNfO7-VmfpMC6ZMuV3_eiMjgYHZKocifezIlF77UQV_T1TIeO649MOUporro_rWIz9FZ4IysDwF5u3WLmzvoHCr5JzNo4gb8oYYlUqEqR2otTw";
 
     struct TestMetadataStore {
         user: Mutex<User>,
@@ -1190,6 +1568,61 @@ mod tests {
         }
     }
 
+    fn jwks_plugin_context(jwks_uri: &str) -> PluginContext {
+        PluginContext {
+            config: serde_json::json!({
+                "mode": "oidc",
+                "oidc": {
+                    "issuer": "https://issuer.example.test/realms/pacs",
+                    "audience": "pacsnode",
+                    "jwks_uri": jwks_uri,
+                    "jwks_refresh_secs": 3600,
+                    "role_claim": "realm_access.roles",
+                    "role_map": {
+                        "pacs_admin": "admin"
+                    },
+                    "attributes_claims": ["department", "modality_access", "email"]
+                }
+            }),
+            metadata_store: Some(Arc::new(TestMetadataStore::default())),
+            blob_store: Some(Arc::new(NoopBlobStore)),
+            server_info: pacs_plugin::ServerInfo {
+                ae_title: "PACSNODE".into(),
+                http_port: 8042,
+                dicom_port: 4242,
+                version: "test",
+            },
+            event_bus: Arc::new(pacs_plugin::EventBus::default()),
+        }
+    }
+
+    fn discovery_plugin_context(issuer: &str) -> PluginContext {
+        PluginContext {
+            config: serde_json::json!({
+                "mode": "oidc",
+                "oidc": {
+                    "issuer": issuer,
+                    "audience": "pacsnode",
+                    "jwks_refresh_secs": 3600,
+                    "role_claim": "realm_access.roles",
+                    "role_map": {
+                        "pacs_admin": "admin"
+                    },
+                    "attributes_claims": ["department", "modality_access", "email"]
+                }
+            }),
+            metadata_store: Some(Arc::new(TestMetadataStore::default())),
+            blob_store: Some(Arc::new(NoopBlobStore)),
+            server_info: pacs_plugin::ServerInfo {
+                ae_title: "PACSNODE".into(),
+                http_port: 8042,
+                dicom_port: 4242,
+                version: "test",
+            },
+            event_bus: Arc::new(pacs_plugin::EventBus::default()),
+        }
+    }
+
     fn app_state() -> AppState {
         AppState {
             server_info: pacs_plugin::ServerInfo {
@@ -1222,13 +1655,97 @@ mod tests {
             .with_state(app_state())
     }
 
-    fn sign_oidc_token(claims: Value) -> String {
+    fn sign_oidc_token_with_key(private_key_pem: &str, kid: Option<&str>, claims: Value) -> String {
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = kid.map(str::to_string);
         encode(
-            &Header::new(Algorithm::RS256),
+            &header,
             &claims,
-            &EncodingKey::from_rsa_pem(TEST_OIDC_PRIVATE_KEY_PEM.as_bytes()).unwrap(),
+            &EncodingKey::from_rsa_pem(private_key_pem.as_bytes()).unwrap(),
         )
         .unwrap()
+    }
+
+    fn sign_oidc_token(claims: Value) -> String {
+        sign_oidc_token_with_key(TEST_OIDC_PRIVATE_KEY_PEM, None, claims)
+    }
+
+    fn sign_oidc_token_with_kid(claims: Value, kid: &str) -> String {
+        sign_oidc_token_with_key(TEST_OIDC_PRIVATE_KEY_PEM, Some(kid), claims)
+    }
+
+    fn sign_rotated_oidc_token_with_kid(claims: Value, kid: &str) -> String {
+        sign_oidc_token_with_key(TEST_OIDC_ROTATED_PRIVATE_KEY_PEM, Some(kid), claims)
+    }
+
+    fn oidc_jwk(kid: &str, modulus: &str) -> Value {
+        serde_json::json!({
+            "kty": "RSA",
+            "kid": kid,
+            "use": "sig",
+            "alg": "RS256",
+            "n": modulus,
+            "e": "AQAB"
+        })
+    }
+
+    async fn jwks_handler(State(jwks): State<Arc<AsyncRwLock<Value>>>) -> Json<Value> {
+        Json(jwks.read().await.clone())
+    }
+
+    async fn spawn_jwks_server(
+        initial_jwks: Value,
+    ) -> (String, Arc<AsyncRwLock<Value>>, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let state = Arc::new(AsyncRwLock::new(initial_jwks));
+        let app = Router::new()
+            .route("/jwks", get(jwks_handler))
+            .with_state(Arc::clone(&state));
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        (format!("http://{address}/jwks"), state, handle)
+    }
+
+    async fn spawn_oidc_discovery_server(
+        issuer_path: &str,
+        initial_jwks: Value,
+    ) -> (String, Arc<AsyncRwLock<Value>>, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let issuer_path = issuer_path.trim_matches('/').to_string();
+        let jwks_path = format!("/{issuer_path}/certs");
+        let config_path = format!("/.well-known/openid-configuration/{issuer_path}");
+        let issuer = format!("http://{address}/{issuer_path}");
+        let jwks_uri = format!("http://{address}{jwks_path}");
+        let state = Arc::new(AsyncRwLock::new(initial_jwks));
+        let app = Router::new()
+            .route(&jwks_path, get(jwks_handler))
+            .route(
+                &config_path,
+                get({
+                    let issuer = issuer.clone();
+                    let jwks_uri = jwks_uri.clone();
+                    move || {
+                        let issuer = issuer.clone();
+                        let jwks_uri = jwks_uri.clone();
+                        async move {
+                            Json(serde_json::json!({
+                                "issuer": issuer,
+                                "jwks_uri": jwks_uri,
+                            }))
+                        }
+                    }
+                }),
+            )
+            .with_state(Arc::clone(&state));
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        (issuer, state, handle)
     }
 
     #[tokio::test]
@@ -1362,6 +1879,158 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn oidc_jwks_mode_fetches_key_and_grants_access() {
+        let now = Utc::now().timestamp() as usize;
+        let jwks = serde_json::json!({
+            "keys": [oidc_jwk("kid-1", TEST_OIDC_JWK_N)]
+        });
+        let (jwks_uri, _state, server) = spawn_jwks_server(jwks).await;
+        let app = build_test_router_with_context(jwks_plugin_context(&jwks_uri)).await;
+        let token = sign_oidc_token_with_kid(
+            serde_json::json!({
+                "sub": "oidc-user-1",
+                "preferred_username": "alice",
+                "realm_access": { "roles": ["pacs_admin"] },
+                "department": "radiology",
+                "email": "alice@example.test",
+                "iss": "https://issuer.example.test/realms/pacs",
+                "aud": "pacsnode",
+                "iat": now,
+                "exp": now + 300,
+            }),
+            "kid-1",
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/protected")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        server.abort();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn oidc_jwks_mode_refreshes_when_kid_rotates() {
+        let initial_jwks = serde_json::json!({
+            "keys": [oidc_jwk("kid-1", TEST_OIDC_JWK_N)]
+        });
+        let (jwks_uri, state, server) = spawn_jwks_server(initial_jwks).await;
+        let app = build_test_router_with_context(jwks_plugin_context(&jwks_uri)).await;
+        let now = Utc::now().timestamp() as usize;
+
+        let first_token = sign_oidc_token_with_kid(
+            serde_json::json!({
+                "sub": "oidc-user-1",
+                "preferred_username": "alice",
+                "realm_access": { "roles": ["pacs_admin"] },
+                "iss": "https://issuer.example.test/realms/pacs",
+                "aud": "pacsnode",
+                "iat": now,
+                "exp": now + 300,
+            }),
+            "kid-1",
+        );
+
+        let first_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/protected")
+                    .header(header::AUTHORIZATION, format!("Bearer {first_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first_response.status(), StatusCode::OK);
+
+        *state.write().await = serde_json::json!({
+            "keys": [oidc_jwk("kid-2", TEST_OIDC_ROTATED_JWK_N)]
+        });
+
+        let second_token = sign_rotated_oidc_token_with_kid(
+            serde_json::json!({
+                "sub": "oidc-user-2",
+                "preferred_username": "bob",
+                "realm_access": { "roles": ["pacs_admin"] },
+                "iss": "https://issuer.example.test/realms/pacs",
+                "aud": "pacsnode",
+                "iat": now,
+                "exp": now + 300,
+            }),
+            "kid-2",
+        );
+
+        let second_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/protected")
+                    .header(header::AUTHORIZATION, format!("Bearer {second_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        server.abort();
+        assert_eq!(second_response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn openid_configuration_url_handles_path_issuers() {
+        let issuer = reqwest::Url::parse("https://issuer.example.test/realms/pacs").unwrap();
+        let discovery_url = openid_configuration_url(&issuer).unwrap();
+        assert_eq!(
+            discovery_url.as_str(),
+            "https://issuer.example.test/.well-known/openid-configuration/realms/pacs"
+        );
+    }
+
+    #[tokio::test]
+    async fn oidc_discovery_mode_resolves_jwks_from_issuer() {
+        let now = Utc::now().timestamp() as usize;
+        let initial_jwks = serde_json::json!({
+            "keys": [oidc_jwk("kid-1", TEST_OIDC_JWK_N)]
+        });
+        let (issuer, _state, server) =
+            spawn_oidc_discovery_server("realms/pacs", initial_jwks).await;
+        let app = build_test_router_with_context(discovery_plugin_context(&issuer)).await;
+        let token = sign_oidc_token_with_kid(
+            serde_json::json!({
+                "sub": "oidc-user-1",
+                "preferred_username": "alice",
+                "realm_access": { "roles": ["pacs_admin"] },
+                "iss": issuer,
+                "aud": "pacsnode",
+                "iat": now,
+                "exp": now + 300,
+            }),
+            "kid-1",
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/protected")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        server.abort();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]

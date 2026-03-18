@@ -347,11 +347,12 @@ render routes. Supports `Accept: image/jpeg|image/png` and `?accept=image/jpeg|i
 | Accept `Authorization: Bearer` on all DICOMweb routes | ✅ Implemented |
 | Return `401 Unauthorized` on missing/expired token | ✅ Via auth plugin |
 | Per-user study access control | ❌ Not implemented |
-| OIDC provider integration (Keycloak, Auth0) | ❌ Not implemented |
+| OIDC provider integration (Keycloak, Auth0) | ⚠️ Issuer discovery plus external bearer-token validation implemented; browser redirect/login flow remains external |
 | User identity surfaced in SR `ObserverContext` | ❌ OHIF does not embed this; server-side tracking only |
 
-For a research/development deployment without multi-user requirements, the
-current JWT plugin is sufficient.  For clinical use, per-user RBAC is required.
+For a research/development deployment, the current auth plugin can either issue
+local JWTs or validate externally issued OIDC bearer tokens. For clinical use,
+per-user authorization policy coverage still needs to be expanded and reviewed.
 
 ---
 

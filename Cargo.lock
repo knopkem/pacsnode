@@ -1487,6 +1487,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
+ "webpki-roots 1.0.6",
 ]
 
 [[package]]
@@ -2203,6 +2204,7 @@ dependencies = [
  "jsonwebtoken",
  "pacs-core",
  "pacs-plugin",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
@@ -2997,6 +2999,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams",
  "web-sys",
+ "webpki-roots 1.0.6",
 ]
 
 [[package]]

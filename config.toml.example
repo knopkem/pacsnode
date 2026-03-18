@@ -119,10 +119,21 @@ enabled = []
 # [plugins.basic-auth.oidc]
 # issuer = "https://keycloak.example.test/realms/pacs"
 # audience = "pacsnode"
+#
+# Standard providers can be configured with just the issuer and audience.
+# pacsnode will resolve `/.well-known/openid-configuration` and discover JWKS.
+#
+# jwks_uri = "https://keycloak.example.test/realms/pacs/protocol/openid-connect/certs"
+# jwks_refresh_secs = 300
+#
+# Or provide a static signing key for offline / tightly controlled deployments:
 # public_key_pem = "${PACS_OIDC_PUBLIC_KEY_PEM}"
 # role_claim = "realm_access.roles"
 # attributes_claims = ["department", "modality_access", "email"]
 # role_map = { pacs_admin = "admin", pacs_viewer = "viewer" }
+#
+# Set at most one of `jwks_uri` or `public_key_pem`.
+# If neither is set, pacsnode uses issuer-based OIDC discovery.
 #
 # Bootstrap the first admin user after enabling this plugin:
 #   pacsnode create-admin --username admin --email admin@example.test

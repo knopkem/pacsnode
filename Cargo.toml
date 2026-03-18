@@ -60,6 +60,7 @@ axum         = { version = "0.8", features = ["multipart", "macros"] }
 tower        = { version = "0.5", features = ["full"] }
 tower-http   = { version = "0.6", features = ["trace", "cors", "timeout", "limit", "request-id", "compression-full", "fs"] }
 http         = "1"
+reqwest      = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 mime         = "0.3"
 multer       = "3"
 

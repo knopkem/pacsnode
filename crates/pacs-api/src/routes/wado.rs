@@ -336,6 +336,13 @@ pub async fn instance_bulkdata(
 }
 
 fn bulkdata_content_type(instance: &Instance, normalized_tag_path: &str) -> String {
+    if normalized_tag_path.eq_ignore_ascii_case("7FE00010") {
+        if let Some(content_type) = video_bulkdata_content_type(instance.transfer_syntax.as_deref())
+        {
+            return content_type.into();
+        }
+    }
+
     if normalized_tag_path.eq_ignore_ascii_case("00420011") {
         if let Some(content_type) = encapsulated_document_content_type(&instance.metadata) {
             return content_type;
@@ -347,6 +354,23 @@ fn bulkdata_content_type(instance: &Instance, normalized_tag_path: &str) -> Stri
     }
 
     "application/octet-stream".into()
+}
+
+fn video_bulkdata_content_type(transfer_syntax_uid: Option<&str>) -> Option<&'static str> {
+    match transfer_syntax_uid {
+        Some("1.2.840.10008.1.2.4.100" | "1.2.840.10008.1.2.4.101") => Some("video/mpeg"),
+        Some(
+            "1.2.840.10008.1.2.4.102"
+            | "1.2.840.10008.1.2.4.103"
+            | "1.2.840.10008.1.2.4.104"
+            | "1.2.840.10008.1.2.4.105"
+            | "1.2.840.10008.1.2.4.106"
+            | "1.2.840.10008.1.2.4.107"
+            | "1.2.840.10008.1.2.4.108"
+            | "1.2.840.10008.1.2.4.109",
+        ) => Some("video/mp4"),
+        _ => None,
+    }
 }
 
 fn encapsulated_document_content_type(metadata: &DicomJson) -> Option<String> {
@@ -367,6 +391,7 @@ fn encapsulated_document_content_type(metadata: &DicomJson) -> Option<String> {
 /// `GET /wado/studies/:study_uid/metadata` — study-level DICOM JSON metadata.
 pub async fn study_metadata(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(study_uid): Path<String>,
 ) -> Result<Response, ApiError> {
     let study_uid = StudyUid::from(study_uid.as_str());
@@ -398,7 +423,8 @@ pub async fn study_metadata(
             })
             .await?;
         for instance in instances {
-            metadata.push(instance_metadata_with_bulk_data_uris(&state, &instance).await?);
+            metadata
+                .push(instance_metadata_with_bulk_data_uris(&state, &headers, &instance).await?);
         }
     }
 
@@ -408,6 +434,7 @@ pub async fn study_metadata(
 /// `GET /wado/studies/:study_uid/series/:series_uid/metadata` — series-level DICOM JSON metadata.
 pub async fn series_metadata(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path((study_uid, series_uid)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
     let study_uid = StudyUid::from(study_uid.as_str());
@@ -431,7 +458,7 @@ pub async fn series_metadata(
 
     let mut metadata = Vec::with_capacity(instances.len());
     for instance in instances {
-        metadata.push(instance_metadata_with_bulk_data_uris(&state, &instance).await?);
+        metadata.push(instance_metadata_with_bulk_data_uris(&state, &headers, &instance).await?);
     }
 
     dicom_json_response_from_owned(&metadata)
@@ -441,6 +468,7 @@ pub async fn series_metadata(
 /// — instance-level DICOM JSON metadata with a `BulkDataURI` for Pixel Data when present.
 pub async fn instance_metadata(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path((study_uid, series_uid, instance_uid)): Path<(String, String, String)>,
 ) -> Result<Response, ApiError> {
     let uid = SopInstanceUid::from(instance_uid.as_str());
@@ -448,7 +476,7 @@ pub async fn instance_metadata(
     if instance.study_uid.as_ref() != study_uid || instance.series_uid.as_ref() != series_uid {
         return Err(not_found("instance", instance_uid));
     }
-    let metadata = instance_metadata_with_bulk_data_uris(&state, &instance).await?;
+    let metadata = instance_metadata_with_bulk_data_uris(&state, &headers, &instance).await?;
     dicom_json_response(&[metadata.as_value()])
 }
 
@@ -590,17 +618,42 @@ fn parse_frame_list(frame_list: &str) -> Result<Vec<u32>, ApiError> {
 
 async fn instance_metadata_with_bulk_data_uris(
     state: &AppState,
+    headers: &HeaderMap,
     instance: &Instance,
 ) -> Result<DicomJson, ApiError> {
     let study_uid = instance.study_uid.as_ref();
     let series_uid = instance.series_uid.as_ref();
     let instance_uid = instance.instance_uid.as_ref();
     let blob = state.blobs.get(&instance.blob_key).await?;
+    let bulkdata_prefix = forwarded_path_prefix(headers);
     metadata_with_bulk_data_uris(&instance.metadata, blob, |path| {
-        format!("/wado/studies/{study_uid}/series/{series_uid}/instances/{instance_uid}/bulkdata/{path}")
+        format!(
+            "{bulkdata_prefix}/wado/studies/{study_uid}/series/{series_uid}/instances/{instance_uid}/bulkdata/{path}"
+        )
     })
     .map_err(PacsError::from)
     .map_err(ApiError)
+}
+
+fn forwarded_path_prefix(headers: &HeaderMap) -> String {
+    headers
+        .get("x-forwarded-prefix")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "/")
+        .map(normalize_forwarded_prefix)
+        .unwrap_or_default()
+}
+
+fn normalize_forwarded_prefix(raw: &str) -> String {
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() || trimmed == "/" {
+        String::new()
+    } else if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    }
 }
 
 fn not_found(resource: &'static str, uid: impl Into<String>) -> ApiError {
@@ -1332,6 +1385,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_instance_metadata_honors_forwarded_prefix_for_bulkdata_uris() {
+        let dicom = make_nested_bulkdata_dicom();
+        let instance = make_instance_from_dicom(&dicom);
+
+        let mut store = MockMetaStore::new();
+        store
+            .expect_get_instance()
+            .once()
+            .returning(move |_| Ok(instance.clone()));
+
+        let mut blobs = MockBlobStr::new();
+        blobs
+            .expect_get()
+            .once()
+            .returning(move |_| Ok(dicom.clone()));
+
+        let app = build_router(make_test_state(store, blobs));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies/1.2.3/series/1.2.3.4/instances/1.2.3.4.5/metadata")
+                    .header("x-forwarded-prefix", "/pacs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            json[0]["00111010"]["BulkDataURI"],
+            json!("/pacs/wado/studies/1.2.3/series/1.2.3.4/instances/1.2.3.4.5/bulkdata/00111010")
+        );
+        assert_eq!(
+            json[0]["00082112"]["Value"][0]["00111011"]["BulkDataURI"],
+            json!("/pacs/wado/studies/1.2.3/series/1.2.3.4/instances/1.2.3.4.5/bulkdata/00082112/0/00111011")
+        );
+    }
+
+    #[tokio::test]
     async fn test_study_metadata_returns_all_instance_metadata() {
         let dicom1 = make_nested_bulkdata_dicom_with_uids("1.2.3", "1.2.3.4", "1.2.3.4.5");
         let dicom2 = make_nested_bulkdata_dicom_with_uids("1.2.3", "1.2.3.4", "1.2.3.4.6");
@@ -1780,6 +1874,76 @@ mod tests {
         );
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         assert!(body.starts_with(b"%PDF-1.7"));
+    }
+
+    #[tokio::test]
+    async fn test_bulkdata_returns_video_mp4_for_mpeg4_transfer_syntax() {
+        let mut store = MockMetaStore::new();
+        let mut instance = make_instance();
+        instance.transfer_syntax = Some("1.2.840.10008.1.2.4.102".into());
+        store
+            .expect_get_instance()
+            .once()
+            .returning(move |_| Ok(instance.clone()));
+
+        let dicom = make_multiframe_dicom();
+        let mut blobs = MockBlobStr::new();
+        blobs
+            .expect_get()
+            .once()
+            .returning(move |_| Ok(dicom.clone()));
+
+        let app = build_router(make_test_state(store, blobs));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies/1.2.3/series/1.2.3.4/instances/1.2.3.4.5/bulkdata/7FE00010")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "video/mp4"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_bulkdata_returns_video_mpeg_for_mpeg2_transfer_syntax() {
+        let mut store = MockMetaStore::new();
+        let mut instance = make_instance();
+        instance.transfer_syntax = Some("1.2.840.10008.1.2.4.100".into());
+        store
+            .expect_get_instance()
+            .once()
+            .returning(move |_| Ok(instance.clone()));
+
+        let dicom = make_multiframe_dicom();
+        let mut blobs = MockBlobStr::new();
+        blobs
+            .expect_get()
+            .once()
+            .returning(move |_| Ok(dicom.clone()));
+
+        let app = build_router(make_test_state(store, blobs));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies/1.2.3/series/1.2.3.4/instances/1.2.3.4.5/bulkdata/7FE00010")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get(header::CONTENT_TYPE).unwrap(),
+            "video/mpeg"
+        );
     }
 
     #[tokio::test]

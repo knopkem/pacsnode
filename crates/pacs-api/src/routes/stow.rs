@@ -218,16 +218,22 @@ mod tests {
         let mut store = MockMetaStore::new();
         store.expect_store_study().times(2).returning(|_| Ok(()));
         store.expect_store_series().times(2).returning(|series| {
-            assert!(matches!(series.modality.as_deref(), Some("SR") | Some("SEG")));
-            Ok(())
-        });
-        store.expect_store_instance().times(2).returning(|instance| {
             assert!(matches!(
-                instance.sop_class_uid.as_deref(),
-                Some("1.2.840.10008.5.1.4.1.1.88.22") | Some("1.2.840.10008.5.1.4.1.1.66.4")
+                series.modality.as_deref(),
+                Some("SR") | Some("SEG")
             ));
             Ok(())
         });
+        store
+            .expect_store_instance()
+            .times(2)
+            .returning(|instance| {
+                assert!(matches!(
+                    instance.sop_class_uid.as_deref(),
+                    Some("1.2.840.10008.5.1.4.1.1.88.22") | Some("1.2.840.10008.5.1.4.1.1.66.4")
+                ));
+                Ok(())
+            });
 
         let mut blobs = MockBlobStr::new();
         blobs.expect_put().times(2).returning(|_, _| Ok(()));

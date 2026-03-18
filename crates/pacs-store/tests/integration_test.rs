@@ -86,8 +86,8 @@ fn make_study(uid: StudyUid) -> Study {
         modalities: vec!["CT".to_string()],
         referring_physician: Some("Dr. Smith".to_string()),
         description: Some("Chest CT".to_string()),
-        num_series: 1,
-        num_instances: 5,
+        num_series: 0,
+        num_instances: 0,
         metadata: DicomJson::empty(),
         created_at: None,
         updated_at: None,
@@ -102,7 +102,7 @@ fn make_series(series_uid: SeriesUid, study: &Study) -> Series {
         series_number: Some(1),
         description: Some("Axial".to_string()),
         body_part: Some("CHEST".to_string()),
-        num_instances: 5,
+        num_instances: 0,
         metadata: DicomJson::empty(),
         created_at: None,
     }
@@ -160,6 +160,7 @@ async fn test_store_and_retrieve_study() {
     assert_eq!(fetched.patient_id, study.patient_id);
     assert_eq!(fetched.modalities, study.modalities);
     assert_eq!(fetched.num_series, study.num_series);
+    assert_eq!(fetched.num_instances, study.num_instances);
     assert!(fetched.created_at.is_some());
     assert!(fetched.updated_at.is_some());
 }
@@ -173,7 +174,6 @@ async fn test_study_upsert_updates_fields() {
 
     // Mutate and re-store
     study.patient_id = Some("PID_UPDATED".to_string());
-    study.num_instances = 99;
     study.modalities = vec!["CT".to_string(), "PT".to_string()];
     store
         .store_study(&study)
@@ -182,8 +182,36 @@ async fn test_study_upsert_updates_fields() {
 
     let fetched = store.get_study(&study.study_uid).await.expect("get failed");
     assert_eq!(fetched.patient_id.as_deref(), Some("PID_UPDATED"));
-    assert_eq!(fetched.num_instances, 99);
     assert_eq!(fetched.modalities, vec!["CT", "PT"]);
+    assert_eq!(fetched.num_series, 0);
+    assert_eq!(fetched.num_instances, 0);
+}
+
+#[tokio::test]
+async fn test_study_counts_are_derived_from_related_rows() {
+    let (pool, _c) = setup_pool().await;
+    let store = PgMetadataStore::new(pool);
+
+    let study = make_study(study_uid(11));
+    let series = make_series(series_uid(11), &study);
+    let instance = make_instance(instance_uid(11), &series, &study);
+
+    store.store_study(&study).await.expect("store study");
+    store.store_series(&series).await.expect("store series");
+    store
+        .store_instance(&instance)
+        .await
+        .expect("store instance");
+
+    let fetched_study = store.get_study(&study.study_uid).await.expect("get study");
+    assert_eq!(fetched_study.num_series, 1);
+    assert_eq!(fetched_study.num_instances, 1);
+
+    let fetched_series = store
+        .get_series(&series.series_uid)
+        .await
+        .expect("get series");
+    assert_eq!(fetched_series.num_instances, 1);
 }
 
 #[tokio::test]

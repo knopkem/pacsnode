@@ -111,7 +111,7 @@ hanging protocols to work correctly.
 | `GET /studies/{uid}/series/{uid}/instances` | `application/dicom+json` | Retrieve all instance metadata for a series | ✅ Implemented |
 | `GET /studies/{uid}/series/{uid}/instances/{uid}` | `multipart/related; type="application/octet-stream"` | Full DICOM P10 instance | ✅ Implemented |
 | `GET /studies/{uid}/series/{uid}/instances/{uid}/frames/{n}` | `image/jpeg`, `image/png`, or multipart | Individual frame retrieval | ✅ Implemented, including comma-separated frame lists and rendered variants |
-| `GET /studies/{uid}/series/{uid}/instances/{uid}/bulkdata/{tag}` | varies | BulkDataURI target | ✅ Implemented; encapsulated documents preserve their declared MIME type, while pixel/video bulk data still defaults to `application/octet-stream` |
+| `GET /studies/{uid}/series/{uid}/instances/{uid}/bulkdata/{tag}` | varies | BulkDataURI target | ✅ Implemented; encapsulated documents preserve their declared MIME type, video pixel data is inferred from transfer syntax, and other pixel data defaults to `application/octet-stream` |
 | `GET /studies/{uid}/series/{uid}/instances/{uid}/metadata` | `application/dicom+json` | Single-instance metadata | ✅ Implemented via wado.rs |
 
 ---
@@ -395,9 +395,10 @@ bulkDataURI: {
 pacsnode must serve pixel data via BulkDataURI and set the correct `Content-Type`
 (`video/mp4` or `application/octet-stream`) for video objects.
 
-**pacsnode status:** ⚠️ BulkDataURI is emitted in WADO-RS JSON responses.
-Pixel-data BulkDataURI responses still default to `application/octet-stream`, so
-video-specific media types remain a follow-up item.
+**pacsnode status:** ✅ BulkDataURI is emitted in WADO-RS JSON responses.
+Video pixel-data responses infer `video/mp4` or `video/mpeg` from the stored
+transfer syntax, while other pixel data still defaults to
+`application/octet-stream`.
 
 ### 9.3 Encapsulated PDF
 
@@ -498,17 +499,18 @@ For encapsulated Pixel Data the response is the raw encapsulated byte stream
 (all fragments concatenated, no DICOM framing).
 
 **pacsnode status:** ✅ BulkDataURI is emitted; endpoint exists.  Encapsulated
-documents preserve their declared MIME type, while pixel data still uses
-`application/octet-stream`.  Validate that absolute URLs or properly relative
-URIs are returned depending on the deployment prefix (`startsWith` /
-`prefixWith` config in OHIF).
+documents preserve their declared MIME type, video pixel data infers
+`video/mp4` or `video/mpeg` from transfer syntax, and other pixel data uses
+`application/octet-stream`.  BulkDataURI generation also honors
+`X-Forwarded-Prefix` so reverse-proxied deployments can emit prefixed relative
+URIs directly.
 
 ### 11.2 Reverse-proxy path correction
 
 If pacsnode sits behind a reverse proxy at `/pacs`, the BulkDataURI must be
 `/pacs/wado/...` not `/wado/...`.  OHIF config supports a `transform` callback
-to correct this.  pacsnode should document the recommended `bulkDataURI` config
-block for common reverse proxy setups.
+to correct this.  pacsnode now also honors `X-Forwarded-Prefix` when generating
+BulkDataURI values, so the server can emit `/pacs/wado/...` directly.
 
 ---
 
@@ -655,7 +657,7 @@ following areas warrant load testing:
 | WADO-RS metadata (`application/dicom+json`) | ✅ | Verify PN format, BulkDataURI presence |
 | WADO-RS full instance retrieval | ✅ | Verify multipart framing |
 | STOW-RS `POST /studies` | ✅ | SR and SEG SOP classes verified |
-| BulkDataURI emission | ✅ | Verify absolute vs relative URL handling |
+| BulkDataURI emission | ✅ | Relative BulkDataURI values verified, including `X-Forwarded-Prefix` handling |
 | Bearer token auth on all DICOMweb routes | ✅ | — |
 
 ### Priority 2 — High value, moderate effort
@@ -675,7 +677,6 @@ following areas warrant load testing:
 | Per-user measurement isolation | High | Multi-user auth with ownership scoping on stored SR/SEG instances |
 | WSI tile performance | High | Benchmark frame endpoint under 100 concurrent requests; add S3 redirect for large objects |
 | OIDC integration | High | Replace JWT-only auth with OIDC provider support (Keycloak, Auth0) |
-| Video BulkDataURI content-type | Low | Infer `video/mp4` or `video/mpeg` from transfer syntax for DICOM video pixel data instead of always returning `application/octet-stream` |
 
 ### Priority 4 — Future / out of scope for now
 
@@ -754,7 +755,7 @@ WADO-RS
   GET .../instances/{uid} (full P10)              ✅
   GET .../instances/{uid}/metadata                ✅
   GET .../instances/{uid}/frames/{n}              ✅ comma-list supported
-  GET .../instances/{uid}/bulkdata/{tag}          ✅ document MIME types; ⚠️ video still octet-stream
+  GET .../instances/{uid}/bulkdata/{tag}          ✅ document MIME types; ✅ video MIME types
   GET .../instances/{uid}/thumbnail               ✅
   GET .../instances/{uid}/rendered                ✅
 

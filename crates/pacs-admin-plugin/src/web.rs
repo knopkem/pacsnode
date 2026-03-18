@@ -4383,7 +4383,7 @@ mod tests {
     fn server_settings_form_defaults_missing_syntax_lists() {
         let input: ServerSettingsFormInput = serde_json::from_value(serde_json::json!({
             "dicom_port": "11112",
-            "ae_title": "PACSUI",
+            "ae_title": "PACSNODE",
             "max_associations": "32",
             "dimse_timeout_secs": "45"
         }))
@@ -4397,7 +4397,7 @@ mod tests {
     fn server_settings_form_accepts_single_syntax_value() {
         let input: ServerSettingsFormInput = serde_json::from_value(serde_json::json!({
             "dicom_port": "11112",
-            "ae_title": "PACSUI",
+            "ae_title": "PACSNODE",
             "accepted_transfer_syntaxes": "1.2.840.10008.1.2.1",
             "preferred_transfer_syntaxes": "1.2.840.10008.1.2.4.50",
             "max_associations": "32",
@@ -4418,11 +4418,11 @@ mod tests {
     #[test]
     fn parse_server_settings_form_collects_repeated_checkbox_keys() {
         let input = parse_server_settings_form(
-            "dicom_port=11113&ae_title=PACSUI&accepted_transfer_syntaxes=1.2.840.10008.1.2.2&accepted_transfer_syntaxes=1.2.840.10008.1.2.1.99&preferred_transfer_syntaxes=1.2.840.10008.1.2.2&preferred_transfer_syntaxes=1.2.840.10008.1.2.1.99&max_associations=33&dimse_timeout_secs=46",
+            "dicom_port=11113&ae_title=PACSNODE&accepted_transfer_syntaxes=1.2.840.10008.1.2.2&accepted_transfer_syntaxes=1.2.840.10008.1.2.1.99&preferred_transfer_syntaxes=1.2.840.10008.1.2.2&preferred_transfer_syntaxes=1.2.840.10008.1.2.1.99&max_associations=33&dimse_timeout_secs=46",
         );
 
         assert_eq!(input.dicom_port, "11113");
-        assert_eq!(input.ae_title, "PACSUI");
+        assert_eq!(input.ae_title, "PACSNODE");
         assert_eq!(
             input.accepted_transfer_syntaxes,
             vec!["1.2.840.10008.1.2.2", "1.2.840.10008.1.2.1.99"]
@@ -4437,7 +4437,7 @@ mod tests {
     fn server_settings_form_forces_required_implicit_transfer_syntax() {
         let settings = ServerSettingsFormInput {
             dicom_port: "11112".into(),
-            ae_title: "PACSUI".into(),
+            ae_title: "PACSNODE".into(),
             ae_whitelist_enabled: None,
             accepted_transfer_syntaxes: vec!["1.2.840.10008.1.2.1".into()],
             preferred_transfer_syntaxes: vec!["1.2.840.10008.1.2.1".into()],
@@ -4459,7 +4459,7 @@ mod tests {
     fn server_settings_form_marks_full_selection_as_accept_all() {
         let settings = ServerSettingsFormInput {
             dicom_port: "11112".into(),
-            ae_title: "PACSUI".into(),
+            ae_title: "PACSNODE".into(),
             ae_whitelist_enabled: None,
             accepted_transfer_syntaxes: all_supported_transfer_syntax_uids(),
             preferred_transfer_syntaxes: vec!["1.2.840.10008.1.2.1".into()],
@@ -4477,7 +4477,7 @@ mod tests {
     fn server_settings_form_uses_preferred_inputs_only_for_order() {
         let settings = ServerSettingsFormInput {
             dicom_port: "11112".into(),
-            ae_title: "PACSUI".into(),
+            ae_title: "PACSNODE".into(),
             ae_whitelist_enabled: None,
             accepted_transfer_syntaxes: vec![
                 "1.2.840.10008.1.2.1".into(),
@@ -4514,7 +4514,7 @@ mod tests {
     fn server_settings_form_accepts_store_as_received() {
         let settings = ServerSettingsFormInput {
             dicom_port: "11112".into(),
-            ae_title: "PACSUI".into(),
+            ae_title: "PACSNODE".into(),
             ae_whitelist_enabled: None,
             accepted_transfer_syntaxes: vec!["1.2.840.10008.1.2.1".into()],
             preferred_transfer_syntaxes: vec!["1.2.840.10008.1.2.1".into()],

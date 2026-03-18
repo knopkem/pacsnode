@@ -5,6 +5,10 @@ use std::{
     time::Duration,
 };
 
+use argon2::{
+    password_hash::{PasswordHasher, SaltString},
+    Argon2,
+};
 use askama::Template;
 use async_stream::stream;
 use axum::{
@@ -17,17 +21,19 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
+use chrono::Utc;
 use pacs_core::{
-    AuditLogEntry, AuditLogQuery, DicomNode, InstanceQuery, PacsError, SeriesQuery, ServerSettings,
-    Study, StudyQuery, StudyUid,
+    AuditLogEntry, AuditLogQuery, DicomNode, InstanceQuery, PacsError, PasswordPolicy, SeriesQuery,
+    ServerSettings, Study, StudyQuery, StudyUid, User, UserId, UserQuery, UserRole,
 };
 use pacs_dicom::supported_retrieve_transfer_syntaxes;
 use pacs_dimse::DicomClient;
-use pacs_plugin::{AppState, PacsEvent, PluginHealth, ResourceLevel};
+use pacs_plugin::{AppState, AuthenticatedUser, PacsEvent, PluginHealth, ResourceLevel};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use tracing::{error, warn};
 use url::form_urlencoded;
+use uuid::Uuid;
 
 use crate::runtime::{ActivityEntry, AdminRuntime};
 
@@ -36,6 +42,8 @@ const DEFAULT_STUDY_PAGE_SIZE: u32 = 20;
 const MAX_STUDY_PAGE_SIZE: u32 = 100;
 const DEFAULT_AUDIT_PAGE_SIZE: u32 = 25;
 const MAX_AUDIT_PAGE_SIZE: u32 = 100;
+const DEFAULT_USER_PAGE_SIZE: u32 = 25;
+const MAX_USER_PAGE_SIZE: u32 = 100;
 const NODE_VERIFY_TIMEOUT_SECS: u64 = 5;
 
 pub(crate) fn routes(runtime: Arc<AdminRuntime>) -> Router<AppState> {
@@ -46,6 +54,9 @@ pub(crate) fn routes(runtime: Arc<AdminRuntime>) -> Router<AppState> {
     let studies_path = format!("{route_prefix}/studies");
     let studies_list_path = format!("{route_prefix}/studies/list");
     let study_delete_path = format!("{route_prefix}/studies/{{study_uid}}");
+    let users_path = format!("{route_prefix}/users");
+    let user_edit_path = format!("{route_prefix}/users/{{user_id}}/edit");
+    let user_delete_path = format!("{route_prefix}/users/{{user_id}}");
     let nodes_path = format!("{route_prefix}/nodes");
     let node_edit_path = format!("{route_prefix}/nodes/{{ae_title}}/edit");
     let node_delete_path = format!("{route_prefix}/nodes/{{ae_title}}");
@@ -62,6 +73,9 @@ pub(crate) fn routes(runtime: Arc<AdminRuntime>) -> Router<AppState> {
         .route(&studies_path, get(studies_page))
         .route(&studies_list_path, get(studies_results_fragment))
         .route(&study_delete_path, delete(delete_study))
+        .route(&users_path, get(users_page).post(save_user))
+        .route(&user_edit_path, get(edit_user))
+        .route(&user_delete_path, delete(delete_user))
         .route(&nodes_path, get(nodes_page).post(save_node))
         .route(&node_edit_path, get(edit_node))
         .route(&node_delete_path, delete(delete_node))
@@ -141,6 +155,15 @@ struct NodesPageTemplate {
 }
 
 #[derive(Template)]
+#[template(path = "users.html")]
+struct UsersPageTemplate {
+    page_title: &'static str,
+    route_prefix: String,
+    active_nav: &'static str,
+    users_markup: String,
+}
+
+#[derive(Template)]
 #[template(path = "audit.html")]
 struct AuditPageTemplate {
     page_title: &'static str,
@@ -160,6 +183,22 @@ struct NodesPanelTemplate {
     flash: Option<FlashView>,
     rows: Vec<NodeRowView>,
     has_nodes: bool,
+}
+
+#[derive(Template)]
+#[template(path = "fragments/users_panel.html")]
+struct UsersPanelTemplate {
+    users_path: String,
+    filters: UserFilterView,
+    form: UserFormView,
+    flash: Option<FlashView>,
+    rows: Vec<UserRowView>,
+    has_users: bool,
+    has_active_filters: bool,
+    result_summary: String,
+    page_summary: String,
+    empty_summary: String,
+    policy_summary: String,
 }
 
 #[derive(Template)]
@@ -412,6 +451,73 @@ struct NodeRowView {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+struct UserFilters {
+    search: Option<String>,
+    role: Option<String>,
+    status: Option<String>,
+    page_size: Option<u32>,
+}
+
+#[derive(Clone)]
+struct UserFilterView {
+    search: String,
+    role: String,
+    status: String,
+    page_size: u32,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct UserFormInput {
+    user_id: Option<String>,
+    username: String,
+    display_name: String,
+    email: String,
+    password: String,
+    role: String,
+    attributes_json: String,
+    is_active: Option<String>,
+    filter_search: Option<String>,
+    filter_role: Option<String>,
+    filter_status: Option<String>,
+    filter_page_size: Option<String>,
+}
+
+#[derive(Clone)]
+struct UserFormView {
+    user_id: String,
+    username: String,
+    display_name: String,
+    email: String,
+    role: String,
+    attributes_json: String,
+    is_active: bool,
+    form_title: String,
+    submit_label: String,
+    password_placeholder: String,
+    password_help: String,
+    password_required: bool,
+    filter_search: String,
+    filter_role: String,
+    filter_status: String,
+    filter_page_size: String,
+}
+
+struct UserRowView {
+    username: String,
+    display_name: String,
+    email: String,
+    role_label: String,
+    status_label: String,
+    status_class: &'static str,
+    locked_until: String,
+    password_changed_at: String,
+    edit_href: String,
+    delete_href: String,
+    delete_disabled: bool,
+    is_current_user: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
 struct AuditFilters {
     user_id: Option<String>,
     action: Option<String>,
@@ -642,6 +748,603 @@ async fn delete_study(
     };
 
     html_markup_response(markup)
+}
+
+async fn users_page(
+    State(state): State<AppState>,
+    Query(filters): Query<UserFilters>,
+    Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
+) -> Response {
+    if let Err(message) = require_admin(user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
+    let users_markup = match render_users_panel_markup(
+        &state,
+        &runtime,
+        &filters,
+        UserFormView::default_with_filters(&filters),
+        None,
+        None,
+    )
+    .await
+    {
+        Ok(markup) => markup,
+        Err(status) => return error_response(status, "admin user management failed to load"),
+    };
+
+    render_html(&UsersPageTemplate {
+        page_title: "Users",
+        route_prefix: runtime.route_prefix().to_string(),
+        active_nav: "users",
+        users_markup,
+    })
+}
+
+async fn edit_user(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(user_id): Path<String>,
+    Query(filters): Query<UserFilters>,
+    Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
+) -> Response {
+    if let Err(message) = require_admin(user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
+    let user_id = match user_id.parse::<UserId>() {
+        Ok(user_id) => user_id,
+        Err(error) => {
+            return render_users_response(
+                &state,
+                &runtime,
+                &headers,
+                &filters,
+                UserFormView::default_with_filters(&filters),
+                Some(FlashView {
+                    title: "User load failed".into(),
+                    detail: format!("Invalid user id: {error}"),
+                    tone_class: "flash-warning",
+                }),
+                None,
+            )
+            .await;
+        }
+    };
+
+    let loaded_user = match state.store.get_user(&user_id).await {
+        Ok(loaded_user) => loaded_user,
+        Err(error) => {
+            return render_users_response(
+                &state,
+                &runtime,
+                &headers,
+                &filters,
+                UserFormView::default_with_filters(&filters),
+                Some(store_error_flash("User load failed", &error)),
+                None,
+            )
+            .await;
+        }
+    };
+
+    render_users_response(
+        &state,
+        &runtime,
+        &headers,
+        &filters,
+        UserFormView::from_user(&loaded_user, &filters),
+        Some(FlashView {
+            title: "User loaded".into(),
+            detail: format!(
+                "Editing {}. Leave the password field blank to keep the current password hash.",
+                loaded_user.username
+            ),
+            tone_class: "flash-info",
+        }),
+        None,
+    )
+    .await
+}
+
+async fn save_user(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
+    Form(input): Form<UserFormInput>,
+) -> Response {
+    let actor = match require_admin(user) {
+        Ok(actor) => actor,
+        Err(message) => return error_response(StatusCode::FORBIDDEN, message),
+    };
+    let filters = input.to_filters();
+    let form = UserFormView::from_input(&input);
+
+    let policy = match state.store.get_password_policy().await {
+        Ok(policy) => policy,
+        Err(error) => {
+            return render_users_response(
+                &state,
+                &runtime,
+                &headers,
+                &filters,
+                form,
+                Some(store_error_flash("Password policy load failed", &error)),
+                None,
+            )
+            .await;
+        }
+    };
+
+    let existing_user = match input.user_id() {
+        Ok(Some(user_id)) => match state.store.get_user(&user_id).await {
+            Ok(user) => Some(user),
+            Err(error) => {
+                return render_users_response(
+                    &state,
+                    &runtime,
+                    &headers,
+                    &filters,
+                    form,
+                    Some(store_error_flash("User load failed", &error)),
+                    None,
+                )
+                .await;
+            }
+        },
+        Ok(None) => None,
+        Err(flash) => {
+            return render_users_response(
+                &state,
+                &runtime,
+                &headers,
+                &filters,
+                form,
+                Some(flash),
+                Some(policy),
+            )
+            .await;
+        }
+    };
+
+    let username = match input.username_value() {
+        Ok(username) => username,
+        Err(flash) => {
+            return render_users_response(
+                &state,
+                &runtime,
+                &headers,
+                &filters,
+                form,
+                Some(flash),
+                Some(policy),
+            )
+            .await;
+        }
+    };
+    let role = match input.role_value() {
+        Ok(role) => role,
+        Err(flash) => {
+            return render_users_response(
+                &state,
+                &runtime,
+                &headers,
+                &filters,
+                form,
+                Some(flash),
+                Some(policy),
+            )
+            .await;
+        }
+    };
+    let attributes = match input.attributes_value() {
+        Ok(attributes) => attributes,
+        Err(flash) => {
+            return render_users_response(
+                &state,
+                &runtime,
+                &headers,
+                &filters,
+                form,
+                Some(flash),
+                Some(policy),
+            )
+            .await;
+        }
+    };
+
+    match state.store.get_user_by_username(&username).await {
+        Ok(other_user) => {
+            if existing_user.as_ref().map(|user| user.id) != Some(other_user.id) {
+                return render_users_response(
+                    &state,
+                    &runtime,
+                    &headers,
+                    &filters,
+                    form,
+                    Some(validation_flash("Username is already in use.")),
+                    Some(policy),
+                )
+                .await;
+            }
+        }
+        Err(PacsError::NotFound { .. }) => {}
+        Err(error) => {
+            return render_users_response(
+                &state,
+                &runtime,
+                &headers,
+                &filters,
+                form,
+                Some(store_error_flash("Username check failed", &error)),
+                Some(policy),
+            )
+            .await;
+        }
+    }
+
+    let is_active = input.is_active.is_some();
+    let password = input.password.trim();
+    let actor_user_id = actor.user_id.clone();
+    if existing_user
+        .as_ref()
+        .is_some_and(|target| target.id.to_string() == actor_user_id)
+        && !is_active
+    {
+        return render_users_response(
+            &state,
+            &runtime,
+            &headers,
+            &filters,
+            form,
+            Some(validation_flash("You cannot deactivate your own account.")),
+            Some(policy),
+        )
+        .await;
+    }
+    if existing_user
+        .as_ref()
+        .is_some_and(|target| target.id.to_string() == actor_user_id)
+        && role != UserRole::Admin
+    {
+        return render_users_response(
+            &state,
+            &runtime,
+            &headers,
+            &filters,
+            form,
+            Some(validation_flash(
+                "You cannot remove the admin role from your own account.",
+            )),
+            Some(policy),
+        )
+        .await;
+    }
+
+    let mut next_user = if let Some(existing_user) = existing_user.clone() {
+        let mut user = existing_user.clone();
+        user.username = username;
+        user.display_name = normalize_string_field(&input.display_name);
+        user.email = normalize_string_field(&input.email);
+        user.role = role;
+        user.attributes = attributes;
+        user.is_active = is_active;
+        user
+    } else {
+        User {
+            id: UserId::new(),
+            username,
+            display_name: normalize_string_field(&input.display_name),
+            email: normalize_string_field(&input.email),
+            password_hash: String::new(),
+            role,
+            attributes,
+            is_active,
+            failed_login_attempts: 0,
+            locked_until: None,
+            password_changed_at: None,
+            created_at: None,
+            updated_at: None,
+        }
+    };
+
+    if let Some(existing_user) = existing_user.as_ref() {
+        if existing_user.role == UserRole::Admin
+            && existing_user.is_active
+            && (next_user.role != UserRole::Admin || !next_user.is_active)
+        {
+            let active_admins = match active_admins(&state).await {
+                Ok(active_admins) => active_admins,
+                Err(error) => {
+                    return render_users_response(
+                        &state,
+                        &runtime,
+                        &headers,
+                        &filters,
+                        form,
+                        Some(store_error_flash("Admin safety check failed", &error)),
+                        Some(policy),
+                    )
+                    .await;
+                }
+            };
+            if active_admins.len() <= 1 {
+                return render_users_response(
+                    &state,
+                    &runtime,
+                    &headers,
+                    &filters,
+                    form,
+                    Some(validation_flash(
+                        "At least one active admin account must remain enabled.",
+                    )),
+                    Some(policy),
+                )
+                .await;
+            }
+        }
+    }
+
+    let mut revoke_refresh_tokens = false;
+    if password.is_empty() {
+        if let Some(existing_user) = existing_user.as_ref() {
+            next_user.password_hash = existing_user.password_hash.clone();
+            next_user.password_changed_at = existing_user.password_changed_at;
+        } else {
+            return render_users_response(
+                &state,
+                &runtime,
+                &headers,
+                &filters,
+                form,
+                Some(validation_flash(
+                    "Password is required for new local users.",
+                )),
+                Some(policy),
+            )
+            .await;
+        }
+    } else {
+        if let Err(flash) = validate_password_against_policy(password, &policy) {
+            return render_users_response(
+                &state,
+                &runtime,
+                &headers,
+                &filters,
+                form,
+                Some(flash),
+                Some(policy),
+            )
+            .await;
+        }
+        let password_hash = match hash_local_password(password) {
+            Ok(password_hash) => password_hash,
+            Err(detail) => {
+                return render_users_response(
+                    &state,
+                    &runtime,
+                    &headers,
+                    &filters,
+                    form,
+                    Some(FlashView {
+                        title: "Password hashing failed".into(),
+                        detail,
+                        tone_class: "flash-danger",
+                    }),
+                    Some(policy),
+                )
+                .await;
+            }
+        };
+        next_user.password_hash = password_hash;
+        next_user.password_changed_at = Some(Utc::now());
+        next_user.failed_login_attempts = 0;
+        next_user.locked_until = None;
+        revoke_refresh_tokens = true;
+    }
+
+    if !next_user.is_active {
+        next_user.failed_login_attempts = 0;
+        next_user.locked_until = None;
+        revoke_refresh_tokens = true;
+    }
+
+    if let Err(error) = state.store.store_user(&next_user).await {
+        return render_users_response(
+            &state,
+            &runtime,
+            &headers,
+            &filters,
+            form,
+            Some(store_error_flash("User save failed", &error)),
+            Some(policy),
+        )
+        .await;
+    }
+
+    if revoke_refresh_tokens {
+        if let Err(error) = state.store.revoke_refresh_tokens(&next_user.id).await {
+            return render_users_response(
+                &state,
+                &runtime,
+                &headers,
+                &filters,
+                UserFormView::default_with_filters(&filters),
+                Some(store_error_flash("Session revocation failed", &error)),
+                Some(policy),
+            )
+            .await;
+        }
+    }
+
+    let flash = FlashView {
+        title: if existing_user.is_some() {
+            "User updated".into()
+        } else {
+            "User created".into()
+        },
+        detail: if revoke_refresh_tokens {
+            format!(
+                "{} was saved and existing refresh sessions were revoked.",
+                next_user.username
+            )
+        } else {
+            format!("{} was saved successfully.", next_user.username)
+        },
+        tone_class: "flash-success",
+    };
+
+    render_users_response(
+        &state,
+        &runtime,
+        &headers,
+        &filters,
+        UserFormView::default_with_filters(&filters),
+        Some(flash),
+        Some(policy),
+    )
+    .await
+}
+
+async fn delete_user(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(user_id): Path<String>,
+    Query(filters): Query<UserFilters>,
+    Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
+) -> Response {
+    let actor = match require_admin(user) {
+        Ok(actor) => actor,
+        Err(message) => return error_response(StatusCode::FORBIDDEN, message),
+    };
+    let user_id = match user_id.parse::<UserId>() {
+        Ok(user_id) => user_id,
+        Err(error) => {
+            return render_users_response(
+                &state,
+                &runtime,
+                &headers,
+                &filters,
+                UserFormView::default_with_filters(&filters),
+                Some(FlashView {
+                    title: "User removal failed".into(),
+                    detail: format!("Invalid user id: {error}"),
+                    tone_class: "flash-warning",
+                }),
+                None,
+            )
+            .await;
+        }
+    };
+
+    let target_user = match state.store.get_user(&user_id).await {
+        Ok(target_user) => target_user,
+        Err(error) => {
+            return render_users_response(
+                &state,
+                &runtime,
+                &headers,
+                &filters,
+                UserFormView::default_with_filters(&filters),
+                Some(store_error_flash("User removal failed", &error)),
+                None,
+            )
+            .await;
+        }
+    };
+
+    if target_user.id.to_string() == actor.user_id {
+        return render_users_response(
+            &state,
+            &runtime,
+            &headers,
+            &filters,
+            UserFormView::default_with_filters(&filters),
+            Some(validation_flash("You cannot delete your own account.")),
+            None,
+        )
+        .await;
+    }
+
+    if target_user.role == UserRole::Admin && target_user.is_active {
+        let active_admins = match active_admins(&state).await {
+            Ok(active_admins) => active_admins,
+            Err(error) => {
+                return render_users_response(
+                    &state,
+                    &runtime,
+                    &headers,
+                    &filters,
+                    UserFormView::default_with_filters(&filters),
+                    Some(store_error_flash("Admin safety check failed", &error)),
+                    None,
+                )
+                .await;
+            }
+        };
+        if active_admins.len() <= 1 {
+            return render_users_response(
+                &state,
+                &runtime,
+                &headers,
+                &filters,
+                UserFormView::default_with_filters(&filters),
+                Some(validation_flash(
+                    "At least one active admin account must remain enabled.",
+                )),
+                None,
+            )
+            .await;
+        }
+    }
+
+    if let Err(error) = state.store.revoke_refresh_tokens(&target_user.id).await {
+        return render_users_response(
+            &state,
+            &runtime,
+            &headers,
+            &filters,
+            UserFormView::default_with_filters(&filters),
+            Some(store_error_flash("Session revocation failed", &error)),
+            None,
+        )
+        .await;
+    }
+
+    if let Err(error) = state.store.delete_user(&target_user.id).await {
+        return render_users_response(
+            &state,
+            &runtime,
+            &headers,
+            &filters,
+            UserFormView::default_with_filters(&filters),
+            Some(store_error_flash("User removal failed", &error)),
+            None,
+        )
+        .await;
+    }
+
+    render_users_response(
+        &state,
+        &runtime,
+        &headers,
+        &filters,
+        UserFormView::default_with_filters(&filters),
+        Some(FlashView {
+            title: "User deleted".into(),
+            detail: format!(
+                "{} was removed and existing refresh sessions were revoked.",
+                target_user.username
+            ),
+            tone_class: "flash-warning",
+        }),
+        None,
+    )
+    .await
 }
 
 async fn nodes_page(
@@ -1147,6 +1850,54 @@ async fn render_nodes_panel_markup(
     .map_err(internal_render_error)
 }
 
+async fn render_users_panel_markup(
+    state: &AppState,
+    runtime: &AdminRuntime,
+    filters: &UserFilters,
+    form: UserFormView,
+    flash: Option<FlashView>,
+    policy_override: Option<PasswordPolicy>,
+) -> Result<String, StatusCode> {
+    let policy = match policy_override {
+        Some(policy) => policy,
+        None => state
+            .store
+            .get_password_policy()
+            .await
+            .map_err(internal_store_error)?,
+    };
+    let users = state
+        .store
+        .query_users(&filters.to_store_query())
+        .await
+        .map_err(internal_store_error)?;
+    let rows = users
+        .into_iter()
+        .map(|user| user_row_view(runtime.route_prefix(), filters, user, &form.user_id))
+        .collect::<Vec<_>>();
+    let row_count = rows.len();
+
+    UsersPanelTemplate {
+        users_path: users_page_path(runtime.route_prefix()),
+        filters: UserFilterView::from_filters(filters),
+        form,
+        flash,
+        has_users: !rows.is_empty(),
+        rows,
+        has_active_filters: filters.has_active_filters(),
+        result_summary: format!("Showing {} local user(s)", row_count),
+        page_summary: format!("Up to {} rows", filters.page_size()),
+        empty_summary: if filters.has_active_filters() {
+            "Adjust the filters and try again.".into()
+        } else {
+            "Create the next local operator account here.".into()
+        },
+        policy_summary: password_policy_summary(&policy),
+    }
+    .render()
+    .map_err(internal_render_error)
+}
+
 async fn render_system_response(
     state: &AppState,
     runtime: &AdminRuntime,
@@ -1312,6 +2063,41 @@ async fn render_nodes_response(
     }
 }
 
+async fn render_users_response(
+    state: &AppState,
+    runtime: &AdminRuntime,
+    headers: &HeaderMap,
+    filters: &UserFilters,
+    form: UserFormView,
+    flash: Option<FlashView>,
+    policy_override: Option<PasswordPolicy>,
+) -> Response {
+    let markup = match render_users_panel_markup(
+        state,
+        runtime,
+        filters,
+        form,
+        flash,
+        policy_override,
+    )
+    .await
+    {
+        Ok(markup) => markup,
+        Err(status) => return error_response(status, "admin user management failed to render"),
+    };
+
+    if is_htmx_request(headers) {
+        html_markup_response(markup)
+    } else {
+        render_html(&UsersPageTemplate {
+            page_title: "Users",
+            route_prefix: runtime.route_prefix().to_string(),
+            active_nav: "users",
+            users_markup: markup,
+        })
+    }
+}
+
 fn activity_view_from_entry(entry: ActivityEntry) -> ActivityView {
     ActivityView {
         timestamp: entry
@@ -1402,6 +2188,47 @@ fn node_row_view(route_prefix: &str, node: DicomNode) -> NodeRowView {
     }
 }
 
+fn user_row_view(
+    route_prefix: &str,
+    filters: &UserFilters,
+    user: User,
+    current_form_user_id: &str,
+) -> UserRowView {
+    let query_string = filters.to_query_string();
+    let is_current_user = current_form_user_id == user.id.to_string();
+    UserRowView {
+        username: user.username,
+        display_name: fallback_string(user.display_name),
+        email: fallback_string(user.email),
+        role_label: display_user_role(user.role).into(),
+        status_label: if user.is_active {
+            "Active".into()
+        } else {
+            "Inactive".into()
+        },
+        status_class: if user.is_active {
+            "status-healthy"
+        } else {
+            "status-unhealthy"
+        },
+        locked_until: user
+            .locked_until
+            .map(|value| value.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+            .unwrap_or_else(|| "-".into()),
+        password_changed_at: user
+            .password_changed_at
+            .map(|value| value.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+            .unwrap_or_else(|| "-".into()),
+        edit_href: path_with_query(
+            &format!("{route_prefix}/users/{}/edit", user.id),
+            &query_string,
+        ),
+        delete_href: path_with_query(&format!("{route_prefix}/users/{}", user.id), &query_string),
+        delete_disabled: is_current_user,
+        is_current_user,
+    }
+}
+
 fn audit_row_view(entry: AuditLogEntry) -> AuditRowView {
     AuditRowView {
         occurred_at: entry
@@ -1429,6 +2256,19 @@ fn audit_status_class(status: &str) -> &'static str {
 
 fn pretty_json(value: &Value) -> String {
     serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+}
+
+async fn active_admins(state: &AppState) -> Result<Vec<User>, PacsError> {
+    state
+        .store
+        .query_users(&UserQuery {
+            search: None,
+            role: Some(UserRole::Admin),
+            is_active: Some(true),
+            limit: Some(MAX_USER_PAGE_SIZE),
+            offset: Some(0),
+        })
+        .await
 }
 
 async fn load_node(state: &AppState, ae_title: &str) -> Result<DicomNode, PacsError> {
@@ -1459,6 +2299,16 @@ fn store_error_flash(title: &str, error: &PacsError) -> FlashView {
     }
 }
 
+fn require_admin(
+    user: Option<Extension<AuthenticatedUser>>,
+) -> Result<AuthenticatedUser, &'static str> {
+    match user {
+        Some(Extension(user)) if user.role == UserRole::Admin.as_str() => Ok(user),
+        Some(_) => Err("admin access requires an account with the admin role"),
+        None => Err("admin access requires authentication"),
+    }
+}
+
 fn is_htmx_request(headers: &HeaderMap) -> bool {
     headers
         .get("HX-Request")
@@ -1470,6 +2320,78 @@ fn fallback_string(value: Option<String>) -> String {
     value
         .filter(|item| !item.trim().is_empty())
         .unwrap_or_else(|| "-".into())
+}
+
+fn normalize_string_field(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn password_policy_summary(policy: &PasswordPolicy) -> String {
+    let mut requirements = vec![format!("minimum {} characters", policy.min_length)];
+    if policy.require_uppercase {
+        requirements.push("one uppercase letter".into());
+    }
+    if policy.require_digit {
+        requirements.push("one numeric digit".into());
+    }
+    if policy.require_special {
+        requirements.push("one special character".into());
+    }
+
+    format!(
+        "Passwords must include {}. Accounts lock after {} failed attempts for {} seconds.",
+        requirements.join(", "),
+        policy.max_failed_attempts,
+        policy.lockout_duration_secs
+    )
+}
+
+fn validate_password_against_policy(
+    password: &str,
+    policy: &PasswordPolicy,
+) -> Result<(), FlashView> {
+    if password.chars().count() < policy.min_length as usize {
+        return Err(validation_flash(&format!(
+            "Password must be at least {} characters long.",
+            policy.min_length
+        )));
+    }
+    if policy.require_uppercase && !password.chars().any(|ch| ch.is_ascii_uppercase()) {
+        return Err(validation_flash(
+            "Password must include at least one uppercase letter.",
+        ));
+    }
+    if policy.require_digit && !password.chars().any(|ch| ch.is_ascii_digit()) {
+        return Err(validation_flash(
+            "Password must include at least one numeric digit.",
+        ));
+    }
+    if policy.require_special && !password.chars().any(|ch| !ch.is_ascii_alphanumeric()) {
+        return Err(validation_flash(
+            "Password must include at least one special character.",
+        ));
+    }
+    Ok(())
+}
+
+fn hash_local_password(password: &str) -> Result<String, String> {
+    let salt =
+        SaltString::encode_b64(Uuid::new_v4().as_bytes()).map_err(|error| error.to_string())?;
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|hash| hash.to_string())
+        .map_err(|error| error.to_string())
+}
+
+fn display_user_role(role: UserRole) -> &'static str {
+    match role {
+        UserRole::Admin => "Admin",
+        UserRole::Radiologist => "Radiologist",
+        UserRole::Technologist => "Technologist",
+        UserRole::Viewer => "Viewer",
+        UserRole::Uploader => "Uploader",
+    }
 }
 
 fn transfer_syntax_option_views(accepted_values: &[String]) -> Vec<TransferSyntaxOptionView> {
@@ -1611,6 +2533,10 @@ fn studies_results_path(route_prefix: &str) -> String {
 
 fn audit_page_path(route_prefix: &str) -> String {
     format!("{route_prefix}/audit")
+}
+
+fn users_page_path(route_prefix: &str) -> String {
+    format!("{route_prefix}/users")
 }
 
 fn audit_results_path(route_prefix: &str) -> String {
@@ -1811,6 +2737,244 @@ impl StudiesFilters {
         serializer.append_pair("page", &self.page().to_string());
         serializer.append_pair("page_size", &self.page_size().to_string());
         serializer.finish()
+    }
+}
+
+impl UserFilters {
+    fn page_size(&self) -> u32 {
+        self.page_size
+            .unwrap_or(DEFAULT_USER_PAGE_SIZE)
+            .clamp(1, MAX_USER_PAGE_SIZE)
+    }
+
+    fn has_active_filters(&self) -> bool {
+        [
+            self.search.as_deref(),
+            self.role.as_deref(),
+            self.status.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|value| !value.trim().is_empty())
+    }
+
+    fn to_store_query(&self) -> UserQuery {
+        UserQuery {
+            search: normalized_filter(&self.search),
+            role: normalized_filter(&self.role)
+                .map(|value| value.parse())
+                .transpose()
+                .unwrap_or(None),
+            is_active: match normalized_filter(&self.status).as_deref() {
+                Some("active") => Some(true),
+                Some("inactive") => Some(false),
+                _ => None,
+            },
+            limit: Some(self.page_size()),
+            offset: Some(0),
+        }
+    }
+
+    fn to_query_string(&self) -> String {
+        let mut serializer = form_urlencoded::Serializer::new(String::new());
+        if let Some(value) = normalized_filter(&self.search) {
+            serializer.append_pair("search", &value);
+        }
+        if let Some(value) = normalized_filter(&self.role) {
+            serializer.append_pair("role", &value);
+        }
+        if let Some(value) = normalized_filter(&self.status) {
+            serializer.append_pair("status", &value);
+        }
+        serializer.append_pair("page_size", &self.page_size().to_string());
+        serializer.finish()
+    }
+}
+
+impl UserFilterView {
+    fn from_filters(filters: &UserFilters) -> Self {
+        Self {
+            search: filters
+                .search
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            role: filters
+                .role
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            status: filters
+                .status
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            page_size: filters.page_size(),
+        }
+    }
+}
+
+impl UserFormInput {
+    fn user_id(&self) -> Result<Option<UserId>, FlashView> {
+        self.user_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                value
+                    .parse::<UserId>()
+                    .map_err(|error| validation_flash(&format!("Invalid user id: {error}")))
+            })
+            .transpose()
+    }
+
+    fn username_value(&self) -> Result<String, FlashView> {
+        let username = self.username.trim();
+        if username.is_empty() {
+            return Err(validation_flash("Username is required."));
+        }
+        if !username
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '@'))
+        {
+            return Err(validation_flash(
+                "Username may contain only ASCII letters, digits, '.', '_', '-', and '@'.",
+            ));
+        }
+        Ok(username.to_string())
+    }
+
+    fn role_value(&self) -> Result<UserRole, FlashView> {
+        self.role
+            .trim()
+            .parse::<UserRole>()
+            .map_err(|_| validation_flash("Role must be one of the supported local user roles."))
+    }
+
+    fn attributes_value(&self) -> Result<Value, FlashView> {
+        let raw = self.attributes_json.trim();
+        if raw.is_empty() {
+            return Ok(Value::Object(Default::default()));
+        }
+        let parsed: Value = serde_json::from_str(raw)
+            .map_err(|error| validation_flash(&format!("Attributes JSON is invalid: {error}")))?;
+        if !parsed.is_object() {
+            return Err(validation_flash("Attributes JSON must be an object."));
+        }
+        Ok(parsed)
+    }
+
+    fn to_filters(&self) -> UserFilters {
+        UserFilters {
+            search: self.filter_search.clone(),
+            role: self.filter_role.clone(),
+            status: self.filter_status.clone(),
+            page_size: self
+                .filter_page_size
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .and_then(|value| value.parse::<u32>().ok()),
+        }
+    }
+}
+
+impl UserFormView {
+    fn default_with_filters(filters: &UserFilters) -> Self {
+        Self {
+            user_id: String::new(),
+            username: String::new(),
+            display_name: String::new(),
+            email: String::new(),
+            role: UserRole::Viewer.as_str().into(),
+            attributes_json: "{}".into(),
+            is_active: true,
+            form_title: "Create a local user".into(),
+            submit_label: "Create user".into(),
+            password_placeholder: "Temporary password".into(),
+            password_help: "New local users receive a freshly hashed password immediately.".into(),
+            password_required: true,
+            filter_search: filters.search.as_deref().unwrap_or_default().to_string(),
+            filter_role: filters.role.as_deref().unwrap_or_default().to_string(),
+            filter_status: filters.status.as_deref().unwrap_or_default().to_string(),
+            filter_page_size: filters.page_size().to_string(),
+        }
+    }
+
+    fn from_input(input: &UserFormInput) -> Self {
+        let filters = input.to_filters();
+        let is_editing = input
+            .user_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+        Self {
+            user_id: input
+                .user_id
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            username: input.username.trim().to_string(),
+            display_name: input.display_name.trim().to_string(),
+            email: input.email.trim().to_string(),
+            role: input.role.trim().to_string(),
+            attributes_json: if input.attributes_json.trim().is_empty() {
+                "{}".into()
+            } else {
+                input.attributes_json.trim().to_string()
+            },
+            is_active: input.is_active.is_some(),
+            form_title: if is_editing {
+                "Update a local user".into()
+            } else {
+                "Create a local user".into()
+            },
+            submit_label: if is_editing {
+                "Save user".into()
+            } else {
+                "Create user".into()
+            },
+            password_placeholder: if is_editing {
+                "Leave blank to keep current password".into()
+            } else {
+                "Temporary password".into()
+            },
+            password_help: if is_editing {
+                "Set a new password only when you want to rotate credentials immediately.".into()
+            } else {
+                "The password must satisfy the active local password policy.".into()
+            },
+            password_required: !is_editing,
+            filter_search: filters.search.as_deref().unwrap_or_default().to_string(),
+            filter_role: filters.role.as_deref().unwrap_or_default().to_string(),
+            filter_status: filters.status.as_deref().unwrap_or_default().to_string(),
+            filter_page_size: filters.page_size().to_string(),
+        }
+    }
+
+    fn from_user(user: &User, filters: &UserFilters) -> Self {
+        Self {
+            user_id: user.id.to_string(),
+            username: user.username.clone(),
+            display_name: user.display_name.clone().unwrap_or_default(),
+            email: user.email.clone().unwrap_or_default(),
+            role: user.role.as_str().into(),
+            attributes_json: serde_json::to_string(&user.attributes)
+                .unwrap_or_else(|_| "{}".into()),
+            is_active: user.is_active,
+            form_title: format!("Update {}", user.username),
+            submit_label: "Save user".into(),
+            password_placeholder: "Leave blank to keep current password".into(),
+            password_help: "Provide a new password only when rotating credentials.".into(),
+            password_required: false,
+            filter_search: filters.search.as_deref().unwrap_or_default().to_string(),
+            filter_role: filters.role.as_deref().unwrap_or_default().to_string(),
+            filter_status: filters.status.as_deref().unwrap_or_default().to_string(),
+            filter_page_size: filters.page_size().to_string(),
+        }
     }
 }
 
@@ -2424,6 +3588,52 @@ mod tests {
         assert_eq!(query.status.as_deref(), Some("ok"));
         assert_eq!(query.limit, Some(50));
         assert_eq!(query.offset, Some(50));
+    }
+
+    #[test]
+    fn user_filters_build_store_query() {
+        let filters = UserFilters {
+            search: Some("alice".into()),
+            role: Some("admin".into()),
+            status: Some("active".into()),
+            page_size: Some(50),
+        };
+
+        let query = filters.to_store_query();
+        assert_eq!(query.search.as_deref(), Some("alice"));
+        assert_eq!(query.role, Some(UserRole::Admin));
+        assert_eq!(query.is_active, Some(true));
+        assert_eq!(query.limit, Some(50));
+    }
+
+    #[test]
+    fn user_form_requires_json_object_attributes() {
+        let input = UserFormInput {
+            attributes_json: "[1,2,3]".into(),
+            ..UserFormInput::default()
+        };
+
+        assert_eq!(
+            input.attributes_value().unwrap_err().title,
+            "Validation failed"
+        );
+    }
+
+    #[test]
+    fn password_policy_validation_enforces_requirements() {
+        let policy = PasswordPolicy {
+            min_length: 12,
+            require_uppercase: true,
+            require_digit: true,
+            require_special: true,
+            max_failed_attempts: 5,
+            lockout_duration_secs: 900,
+            max_age_days: None,
+        };
+
+        assert!(validate_password_against_policy("short", &policy).is_err());
+        assert!(validate_password_against_policy("lowercaseonly1!", &policy).is_err());
+        assert!(validate_password_against_policy("ValidPassword1!", &policy).is_ok());
     }
 
     #[test]

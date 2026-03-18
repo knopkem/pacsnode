@@ -1,0 +1,219 @@
+<section id="users-panel" class="stack-gap">
+  {% match flash %}
+  {% when Some with (item) %}
+  <article class="flash-banner {{ item.tone_class }}">
+    <strong>{{ item.title }}</strong>
+    <p>{{ item.detail }}</p>
+  </article>
+  {% when None %}{% endmatch %}
+
+  <section class="panel stack-gap">
+    <header class="panel-header panel-header-wrap">
+      <div>
+        <p class="eyebrow">Filters</p>
+        <h3>Search local users</h3>
+      </div>
+      {% if has_active_filters %}
+      <span class="status-pill">Filtered</span>
+      {% endif %}
+    </header>
+    <form
+      class="filter-form"
+      action="{{ users_path }}"
+      method="get"
+      hx-get="{{ users_path }}"
+      hx-target="#users-panel"
+      hx-swap="outerHTML"
+    >
+      <div class="filter-grid filter-grid-users">
+        <label class="field">
+          <span>Search</span>
+          <input type="text" name="search" value="{{ filters.search }}" placeholder="Username, display name, or email" />
+        </label>
+        <label class="field">
+          <span>Role</span>
+          <select name="role">
+            <option value="" {% if filters.role.is_empty() %}selected{% endif %}>All roles</option>
+            <option value="admin" {% if filters.role == "admin" %}selected{% endif %}>Admin</option>
+            <option value="radiologist" {% if filters.role == "radiologist" %}selected{% endif %}>Radiologist</option>
+            <option value="technologist" {% if filters.role == "technologist" %}selected{% endif %}>Technologist</option>
+            <option value="viewer" {% if filters.role == "viewer" %}selected{% endif %}>Viewer</option>
+            <option value="uploader" {% if filters.role == "uploader" %}selected{% endif %}>Uploader</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Status</span>
+          <select name="status">
+            <option value="" {% if filters.status.is_empty() %}selected{% endif %}>All users</option>
+            <option value="active" {% if filters.status == "active" %}selected{% endif %}>Active only</option>
+            <option value="inactive" {% if filters.status == "inactive" %}selected{% endif %}>Inactive only</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Page Size</span>
+          <select name="page_size">
+            <option value="10" {% if filters.page_size == 10 %}selected{% endif %}>10</option>
+            <option value="25" {% if filters.page_size == 25 %}selected{% endif %}>25</option>
+            <option value="50" {% if filters.page_size == 50 %}selected{% endif %}>50</option>
+            <option value="100" {% if filters.page_size == 100 %}selected{% endif %}>100</option>
+          </select>
+        </label>
+      </div>
+      <div class="toolbar">
+        <button type="submit" class="button">Apply filters</button>
+        <a href="{{ users_path }}" class="button button-secondary">Reset</a>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel stack-gap">
+    <header class="panel-header panel-header-wrap">
+      <div>
+        <p class="eyebrow">User editor</p>
+        <h3>{{ form.form_title }}</h3>
+      </div>
+    </header>
+    <p class="policy-note">{{ policy_summary }}</p>
+    <form
+      class="filter-form"
+      action="{{ users_path }}"
+      method="post"
+      hx-post="{{ users_path }}"
+      hx-target="#users-panel"
+      hx-swap="outerHTML"
+    >
+      <input type="hidden" name="user_id" value="{{ form.user_id }}" />
+      <input type="hidden" name="filter_search" value="{{ form.filter_search }}" />
+      <input type="hidden" name="filter_role" value="{{ form.filter_role }}" />
+      <input type="hidden" name="filter_status" value="{{ form.filter_status }}" />
+      <input type="hidden" name="filter_page_size" value="{{ form.filter_page_size }}" />
+
+      <div class="filter-grid filter-grid-users">
+        <label class="field">
+          <span>Username</span>
+          <input type="text" name="username" value="{{ form.username }}" maxlength="64" placeholder="jane.doe" required />
+        </label>
+        <label class="field">
+          <span>Display Name</span>
+          <input type="text" name="display_name" value="{{ form.display_name }}" placeholder="Jane Doe" />
+        </label>
+        <label class="field">
+          <span>Email</span>
+          <input type="email" name="email" value="{{ form.email }}" placeholder="jane.doe@example.test" />
+        </label>
+        <label class="field">
+          <span>Role</span>
+          <select name="role">
+            <option value="admin" {% if form.role == "admin" %}selected{% endif %}>Admin</option>
+            <option value="radiologist" {% if form.role == "radiologist" %}selected{% endif %}>Radiologist</option>
+            <option value="technologist" {% if form.role == "technologist" %}selected{% endif %}>Technologist</option>
+            <option value="viewer" {% if form.role == "viewer" %}selected{% endif %}>Viewer</option>
+            <option value="uploader" {% if form.role == "uploader" %}selected{% endif %}>Uploader</option>
+          </select>
+        </label>
+        <label class="field field-wide">
+          <span>Password</span>
+          <input type="password" name="password" value="" placeholder="{{ form.password_placeholder }}" {% if form.password_required %}required{% endif %} />
+          <small>{{ form.password_help }}</small>
+        </label>
+        <label class="field field-wide">
+          <span>Attributes JSON</span>
+          <input type="text" name="attributes_json" value="{{ form.attributes_json }}" placeholder='{"department":"radiology"}' />
+          <small>Stored as a JSON object for future ABAC-style authorization.</small>
+        </label>
+      </div>
+
+      <label class="checkbox-row">
+        <input type="checkbox" name="is_active" {% if form.is_active %}checked{% endif %} />
+        <span>Account is active</span>
+      </label>
+
+      <div class="toolbar">
+        <button type="submit" class="button">{{ form.submit_label }}</button>
+        <a href="{{ users_path }}" class="button button-secondary">Clear form</a>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel stack-gap">
+    <header class="panel-header panel-header-wrap">
+      <div>
+        <p class="eyebrow">Directory</p>
+        <h3>{{ result_summary }}</h3>
+      </div>
+      <div class="results-meta">
+        <span>{{ page_summary }}</span>
+      </div>
+    </header>
+
+    {% if has_users %}
+    <div class="table-shell">
+      <table class="data-table data-table-nodes">
+        <thead>
+          <tr>
+            <th class="col-patient-id">Username</th>
+            <th>Display Name</th>
+            <th>Email</th>
+            <th>Role</th>
+            <th>Status</th>
+            <th>Locked Until</th>
+            <th>Password Changed</th>
+            <th class="actions-cell actions-cell-wide"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr>
+            <td class="mono col-patient-id"><span class="truncate-text" data-full="{{ row.username }}" title="{{ row.username }}">{{ row.username }}</span></td>
+            <td><span class="truncate-text" data-full="{{ row.display_name }}" title="{{ row.display_name }}">{{ row.display_name }}</span></td>
+            <td><span class="truncate-text" data-full="{{ row.email }}" title="{{ row.email }}">{{ row.email }}</span></td>
+            <td>{{ row.role_label }}</td>
+            <td>
+              <div class="inline-pill-row">
+                <span class="status-pill {{ row.status_class }}">{{ row.status_label }}</span>
+                {% if row.is_current_user %}
+                <span class="status-pill">You</span>
+                {% endif %}
+              </div>
+            </td>
+            <td><span class="truncate-text" data-full="{{ row.locked_until }}" title="{{ row.locked_until }}">{{ row.locked_until }}</span></td>
+            <td><span class="truncate-text" data-full="{{ row.password_changed_at }}" title="{{ row.password_changed_at }}">{{ row.password_changed_at }}</span></td>
+            <td class="actions-cell actions-cell-wide">
+              <div class="row-actions">
+                <button
+                  type="button"
+                  class="button button-secondary"
+                  hx-get="{{ row.edit_href }}"
+                  hx-target="#users-panel"
+                  hx-swap="outerHTML"
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  class="button button-danger {% if row.delete_disabled %}is-disabled{% endif %}"
+                  {% if !row.delete_disabled %}
+                  hx-delete="{{ row.delete_href }}"
+                  hx-target="#users-panel"
+                  hx-swap="outerHTML"
+                  hx-confirm="Delete user {{ row.username }}?"
+                  {% endif %}
+                >
+                  Delete
+                </button>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <p class="eyebrow">No matches</p>
+      <h3>No local users match the current filters.</h3>
+      <p>{{ empty_summary }}</p>
+    </div>
+    {% endif %}
+  </section>
+</section>

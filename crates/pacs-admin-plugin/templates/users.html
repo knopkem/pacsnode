@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div id="users-page" class="stack-gap">
+  <section class="hero-panel compact">
+    <div>
+      <p class="eyebrow">Local access</p>
+      <h2>Manage local users, roles, and account state for the built-in auth mode.</h2>
+    </div>
+  </section>
+
+  {{ users_markup|safe }}
+</div>
+{% endblock %}

@@ -1,0 +1,387 @@
+================================================================================
+                    PACSNODE PROJECT — QUICK REFERENCE
+================================================================================
+
+PROJECT STATUS: Modern async Rust PACS (NOT for clinical use)
+
+CRATES (15 total):
+  Core Infrastructure:
+  - pacs-core: Domain types, traits (MetadataStore, BlobStore)
+  - pacs-api: Axum HTTP server (DICOMweb + REST)
+  - pacs-dimse: DIMSE SCP/SCU (C-ECHO, C-STORE, C-FIND, C-MOVE, C-GET)
+  - pacs-dicom: DICOM parsing bridge to dicom-toolkit-rs
+  
+  Storage Implementations:
+  - pacs-store: PostgreSQL MetadataStore (hybrid JSONB + relational)
+  - pacs-sqlite-store: SQLite MetadataStore (standalone mode)
+  - pacs-storage: S3/RustFS BlobStore (object_store abstraction)
+  - pacs-fs-storage: Filesystem BlobStore (standalone mode)
+  
+  Server & Startup:
+  - pacs-server: Binary entry point (config, wiring, graceful shutdown)
+  - pacs-plugin: Plugin framework (trait registry, event bus)
+  
+  Plugins (5 bundled):
+  - pacs-auth-plugin: JWT auth (single hardcoded user, no RBAC)
+  - pacs-audit-plugin: Append-only audit trail (store/query/delete/assoc events)
+  - pacs-admin-plugin: HTML-templated admin dashboard
+  - pacs-metrics-plugin: Prometheus /metrics endpoint
+  - pacs-viewer-plugin: OHIF static viewer hosting
+
+================================================================================
+                              DICOMWEB ENDPOINTS
+================================================================================
+
+QIDO-RS (Query):
+  GET /wado/studies
+  GET /wado/studies/{study_uid}/series
+  GET /wado/studies/{study_uid}/series/{series_uid}/instances
+  
+  Filters: PatientID, PatientName, StudyDate (range), Modality, Accession
+  Pagination: limit, offset
+  Matching: ILIKE fuzzy search (not full-text)
+  Response: application/dicom+json
+
+STOW-RS (Store):
+  POST /wado/studies
+  
+  Content-Type: multipart/related; type=application/dicom; boundary=...
+  Response: PS3.18 compliant JSON with stored UIDs
+  Events: InstanceStored emitted (with source, user_id if authenticated)
+
+WADO-RS (Retrieve):
+  GET /wado/studies/{study_uid}
+  GET /wado/studies/{study_uid}/series/{series_uid}
+  GET /wado/studies/{study_uid}/series/{series_uid}/instances/{instance_uid}
+  GET /wado/studies/{study_uid}/series/{series_uid}/instances/{instance_uid}/frames/{frame_list}
+  
+  Response: multipart/related; type=application/dicom
+  Accept negotiation: Honors Accept header for transfer-syntax
+  Server-side transcode: Any supported target TS on retrieve
+  Frame retrieval: Native bytes for multi-frame (form: /frames/1,3,5)
+
+WADO-RS Rendered (PNG/JPEG):
+  GET /wado/studies/{study_uid}/rendered
+  GET /wado/studies/{study_uid}/series/{series_uid}/rendered
+  GET /wado/studies/{study_uid}/series/{series_uid}/instances/{instance_uid}/rendered
+  GET /wado/studies/{study_uid}/series/{series_uid}/instances/{instance_uid}/frames/{frame_list}/rendered
+  
+  Params: windowCenter, windowWidth, rows, columns, region, annotation
+  Response: multipart/related; type=image/png or image/jpeg
+  Quality: Default 90 (configurable)
+
+WADO-RS Metadata:
+  GET /wado/studies/{study_uid}/metadata
+  GET /wado/studies/{study_uid}/series/{series_uid}/metadata
+  GET /wado/studies/{study_uid}/series/{series_uid}/instances/{instance_uid}/metadata
+  
+  Response: application/dicom+json (full tag set)
+  BulkDataURI: Included for nested binary attributes
+
+WADO-RS Bulk Data:
+  GET /wado/studies/{study_uid}/series/{series_uid}/instances/{instance_uid}/bulkdata/{*tag_path}
+  
+  Usage: Extract nested binary attributes (e.g., overlays, encapsulated data)
+  Response: multipart/related with correct MIME types
+
+WADO-URI (Legacy):
+  GET /wado?requestType=WADO&studyUID=...&seriesUID=...&objectUID=...
+  
+  Params: contentType, transferSyntax, frameNumber, windowCenter, windowWidth, rows, columns, region, annotation
+  Response: application/dicom or image/png or image/jpeg
+  TS rules: WADO-URI transfer-syntax negotiation honored
+
+================================================================================
+                                REST API
+================================================================================
+
+Study Management:
+  GET /api/studies
+  GET /api/studies/{study_uid}
+  DELETE /api/studies/{study_uid}   (cascade: deletes series/instances)
+
+Series Management:
+  GET /api/studies/{study_uid}/series
+  GET /api/series/{series_uid}
+  DELETE /api/series/{series_uid}   (cascade: deletes instances)
+
+Instance Management:
+  GET /api/series/{series_uid}/instances
+  GET /api/instances/{instance_uid}
+  DELETE /api/instances/{instance_uid}
+
+Node Management:
+  GET /api/nodes                     (list registered DICOM nodes)
+  POST /api/nodes                    (register new node)
+  DELETE /api/nodes/{ae_title}       (remove node)
+
+Audit Logging:
+  GET /api/audit/logs                (search audit trail)
+  GET /api/audit/logs/{id}           (get single entry)
+
+System & Health:
+  GET /health                        → {"status": "ok"}
+  GET /statistics                    → {"studies": N, "series": N, "instances": N, "disk_usage_bytes": B}
+  GET /system                        → {"ae_title": "...", "http_port": 8042, "dimse_port": 4242, ...}
+
+================================================================================
+                              DIMSE SERVICES
+================================================================================
+
+SCP (Server):
+  ✅ C-ECHO        - Verification SOP class
+  ✅ C-STORE       - Receive instances from modalities
+  ✅ C-FIND        - Query by Patient/Study/Series/Image level
+  ✅ C-MOVE        - Move instances to destination node (dynamic lookup)
+  ✅ C-GET         - Return instances directly to requester
+  ❌ C-CANCEL      - No in-progress operation cancellation
+  ❌ Storage Commitment - N-EVENT-REPORT not implemented
+  ❌ MWL           - Modality Worklist SCP not implemented
+
+SCU (Client):
+  ✅ C-ECHO        - DicomClient::echo()
+  ✅ C-STORE       - DicomClient::store() (up to 128 SOP classes/assoc)
+  ✅ C-FIND        - DicomClient::find() (Patient Root + Study Root)
+  ✅ C-MOVE        - DicomClient::move_instances()
+  ❓ C-GET         - Toolkit support present; not exposed in public API
+
+Configuration:
+  Port: 4242 (default)
+  AE Title: "PACSNODE" (default)
+  Max associations: 64 (configurable)
+  DIMSE timeout: 30s (configurable)
+  Transfer-syntax negotiation:
+    - accept_all_transfer_syntaxes = true (default: accept all)
+    - OR: accepted_transfer_syntaxes = ["1.2.840.10008.1.2.1", ...] (whitelist)
+    - preferred_transfer_syntaxes = [...] (negotiation preference order)
+  AE title validation: Optional registered-node whitelist (registered_nodes_only)
+  TLS: ❌ NOT SUPPORTED (plaintext TCP only; use network isolation)
+
+================================================================================
+                            TRANSFER SYNTAXES
+================================================================================
+
+Fully Supported (Read + Transcode):
+  ✅ 1.2.840.10008.1.2        Implicit VR Little Endian
+  ✅ 1.2.840.10008.1.2.1      Explicit VR Little Endian
+  ✅ 1.2.840.10008.1.2.2      Explicit VR Big Endian
+  ✅ 1.2.840.10008.1.2.1.99   Deflated Explicit VR LE
+  ✅ 1.2.840.10008.1.2.4.50   JPEG Baseline (Process 1/4)
+  ✅ 1.2.840.10008.1.2.4.57   JPEG Lossless (Process 14)
+  ✅ 1.2.840.10008.1.2.4.70   JPEG Lossless (Process 14, SV1)
+  ✅ 1.2.840.10008.1.2.4.90   JPEG 2000 Lossless
+  ✅ 1.2.840.10008.1.2.4.91   JPEG 2000 Lossy (⚠️ incomplete interop testing)
+  ✅ 1.2.840.10008.1.2.5      RLE Lossless
+
+Not Supported:
+  ❌ 1.2.840.10008.1.2.4.80   JPEG-LS Lossless
+  ❌ 1.2.840.10008.1.2.4.81   JPEG-LS Lossy
+  ❌ MPEG-2, MPEG-4           Not in toolkit
+
+Key Points:
+  - Server-side transcode on WADO-RS/WADO-URI retrieve + DIMSE C-GET/C-MOVE
+  - Accept header negotiation honored for WADO-RS
+  - Identity transcode (source TS == target TS) has no performance cost
+  - Toolkit support is the limiting factor (dicom-toolkit-rs)
+
+================================================================================
+                          STORAGE & DATABASE
+================================================================================
+
+Database: PostgreSQL (sole; no SQLite in production builds)
+  - Hybrid schema: indexed relational + JSONB document
+  - Indexed columns: ~20 common tags (PatientID, StudyDate, Modality, etc.)
+  - Full JSON: Complete tag set in JSONB "metadata" column
+  - GIN index: Fast JSON path queries for less common tags
+  - Count triggers: Auto-maintain series/instance counts
+
+Blob Store: S3-Compatible (RustFS by default, or MinIO/AWS S3)
+  - Default: RustFS (Rust-native, 2.3x faster than MinIO for small objects)
+  - Presigned URLs: Direct S3 access bypasses server for large transfers
+  - Hierarchical keys: study/{study_uid}/series/{series_uid}/instance/{instance_uid}.dcm
+  - Cleanup on DELETE: Removes S3 blobs + deduplication logic
+
+Standalone Mode: SQLite + Filesystem (non-production)
+  - Use case: dev/eval, single machine, quick trials
+  - Limitations: Single-writer SQLite, no GIN indexing, slower at scale
+  - Build: cargo build --release --no-default-features --features standalone
+
+================================================================================
+                         AUTHENTICATION & SECURITY
+================================================================================
+
+Authentication (Optional):
+  Plugin: pacs-auth-plugin (basic JWT auth)
+  
+  Features:
+    - Single hardcoded local username + Argon2 password hash
+    - POST /auth/login → returns JWT access_token + expires_in
+    - POST /auth/refresh → new access_token
+    - Bearer token validation (Authorization: Bearer <JWT>)
+    - JWT claims: {sub, iss, exp, iat}
+    - Public path whitelist: /health, /metrics, /, /viewer (configurable)
+    - No multi-user support, no groups, no RBAC
+  
+  Gaps:
+    ❌ No RBAC (5-role model planned)
+    ❌ No OIDC / OAuth2 (planned)
+    ❌ No API key auth (planned as Phase 1)
+    ❌ No rate limiting on login
+    ❌ No account lockout
+    ❌ No user management UI
+    ❌ No group-based access control
+
+TLS/HTTPS:
+  ❌ NOT SUPPORTED (plaintext HTTP only)
+  Solution: Use reverse proxy (Nginx/Caddy) for TLS termination
+
+CORS:
+  ⚠️ Currently permissive() — unsafe for production
+  Need: Configure allowed origins explicitly
+
+Audit Logging:
+  ✅ pacs-audit-plugin — append-only event trail
+  Events: InstanceStored, Query, Delete, StudyComplete, AssociationEstablished
+  Auto-enabled: When basic-auth plugin active (can be disabled)
+  Endpoints: GET /api/audit/logs, GET /api/audit/logs/{id}
+
+PHI Log Filtering:
+  ⚠️ Policy stated: "No PHI in logs"
+  ❌ Not actually enforced — patient names, MRN still appear
+
+HIPAA Compliance:
+  ⚠️ Partial: audit trail + basic auth exist
+  ❌ Missing: RBAC, TLS, PHI filtering, encryption at rest
+
+================================================================================
+                         PLUGIN CONFIGURATION
+================================================================================
+
+Enabled Plugins (example):
+  [plugins]
+  enabled = ["pacs-audit-plugin", "pacs-auth-plugin", "pacs-metrics-plugin", "pacs-viewer-plugin"]
+
+  [plugins.pacs-auth-plugin]
+  username = "admin"
+  password_hash = "$argon2id$v=19$m=19456,t=2,p=1$..."
+  jwt_secret = "your-secret-key"
+  login_path = "/auth/login"
+  refresh_path = "/auth/refresh"
+  public_paths = ["/health", "/metrics", "/", "/viewer"]
+  token_ttl_secs = 3600
+  issuer = "pacsnode"
+
+  [plugins.pacs-viewer-plugin]
+  static_dir = "./web/viewer"
+  route_prefix = "/viewer"
+  redirect_root = true
+  index_file = "index.html"
+  fallback_file = "index.html"
+  generate_app_config = true
+  provision_embedded_bundle = true
+
+================================================================================
+                    FEATURES NOT IMPLEMENTED (GAPS)
+================================================================================
+
+🔴 CRITICAL (blocks clinical use):
+  ❌ Authentication & RBAC (no patient data without login)
+  ❌ TLS termination (plaintext HTTP only)
+  ❌ CORS tightening (permissive CORS unsafe)
+  ❌ PHI log filtering (not enforced)
+
+🟡 HIGH PRIORITY (interoperability):
+  ❌ Structured Reports (SR) storage/retrieval
+  ❌ Segmentations (SEG) storage/retrieval
+  ❌ Modality Worklist (MWL SCP) — blocks RIS integration
+  ❌ Anonymization API (needed for research/compliance)
+  ❌ Bundled UI shell (viewer plugin exists; no worklist)
+  ❌ DICOM Conformance Statement (required for hospital procurement)
+
+🟢 MEDIUM PRIORITY (enterprise):
+  ❌ ZIP/DICOMDIR export (download studies for CD)
+  ❌ Async job queue (long-running ops block)
+  ❌ Deeper metrics/dashboards (Prometheus wired; no Grafana)
+  ❌ HL7/FHIR integration
+  ❌ Prior study prefetch
+  ❌ Full-text search (PostgreSQL tsvector)
+  ❌ Server-side thumbnails
+  ❌ Study sharing URLs (secure links for referrers)
+
+🔵 LOW PRIORITY (nice to have):
+  ❌ Storage commitment (N-EVENT-REPORT)
+  ❌ Multi-site federation / peer sync
+  ❌ AI/ML integration pipeline
+  ❌ Teaching file management
+  ❌ Patient merge / reconciliation
+  ❌ Tiled/Pyramid images (WSI)
+  ❌ Hanging protocols
+  ❌ Annotations persistence (Key Image Notes)
+  ❌ UPS-RS (neither pacsnode nor Orthanc has this)
+
+================================================================================
+                         DEPLOYMENT CHECKLIST
+================================================================================
+
+Pre-Production:
+  [ ] Enable pacs-auth-plugin with strong JWT secret
+  [ ] Configure PostgreSQL (replicas, backups, SSL)
+  [ ] Configure S3 (bucket, IAM, versioning)
+  [ ] Enable pacs-audit-plugin for audit trail
+  [ ] Tighten CORS (replace permissive() with origins)
+  [ ] Use reverse proxy (Nginx/Caddy) for TLS
+  [ ] Configure PHI log filtering (custom plugin)
+  [ ] Implement RBAC policy (custom plugin)
+  [ ] Write DICOM Conformance Statement
+  [ ] Set up Prometheus monitoring + Grafana
+  [ ] Document admin procedures
+  [ ] Plan PostgreSQL + S3 backup/restore strategy
+
+Docker Compose (quick local test):
+  cd docker
+  cp .env.example .env
+  docker compose up -d
+  curl http://localhost:8042/health
+
+Services:
+  - pacsnode HTTP/DICOMweb: 8042
+  - pacsnode DIMSE: 4242
+  - MinIO S3: 9000
+  - MinIO console: 9001
+  - PostgreSQL: 5432
+
+================================================================================
+                              QUICK FACTS
+================================================================================
+
+✅ DICOMweb Coverage: 95% (QIDO-RS, WADO-RS, WADO-URI, STOW-RS all present)
+✅ DIMSE Services: 88% (C-ECHO, C-STORE, C-FIND, C-MOVE, C-GET; missing C-CANCEL, MWL)
+✅ Transfer Syntaxes: 80% (11 major; missing lossy J2K hardening, MPEG)
+✅ REST API: 65% (studies/series/instances/nodes/audit; missing anonymize/export/jobs)
+✅ Security: 45% (basic auth exists; missing RBAC, OIDC, TLS, PHI filtering)
+✅ Database: 95% (PostgreSQL JSONB + GIN superior to Orthanc)
+✅ Viewer Integration: 45% (OHIF hosting done; no bundled worklist)
+✅ System/Ops: 95% (graceful shutdown, health checks, metrics, config)
+
+Strengths vs Orthanc:
+  - Modern async Rust (Tokio, type-safe)
+  - Compile-time SQL verification (sqlx::query!)
+  - S3 blob store first-class (not plugin)
+  - PostgreSQL JSONB + GIN indexing
+  - Presigned URLs for direct S3 access
+  - Structured JSON logging
+
+Not Suitable For:
+  ❌ Clinical use (not validated)
+  ❌ Production without auth + RBAC (not implemented)
+  ❌ TLS-requiring networks (not supported)
+  ❌ Research without anonymization API
+
+Perfect For:
+  ✅ Modern radiology workflows
+  ✅ Cloud/K8s deployments (S3, PostgreSQL)
+  ✅ Fast DICOMweb queries (JSONB + GIN)
+  ✅ Rust-friendly environments
+  ✅ Development / evaluation
+
+================================================================================

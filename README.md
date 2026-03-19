@@ -52,9 +52,6 @@ cargo build --release
 ```bash
 # Standalone profile (SQLite + filesystem, viewer enabled)
 ./target/release/pacsnode generate-config standalone --output config.toml
-
-# Production profile (PostgreSQL + S3 placeholders, viewer enabled)
-./target/release/pacsnode generate-config production --output config.toml
 ```
 
 If you omit `--output`, pacsnode prints the generated `config.toml` to stdout.
@@ -65,28 +62,10 @@ extracts that viewer into `./web/viewer/` automatically on first start.
 ### Running in standalone mode
 
 ```bash
-# Configure via environment variables
-export PACS_DATABASE__URL="sqlite://./data/pacsnode.db"
-export PACS_FILESYSTEM_STORAGE__ROOT="./data/blobs"
 ./target/release/pacsnode
 ```
 
-Or via `config.toml` — place it either **next to the binary** or in your working directory:
-
-```toml
-[server]
-http_port = 8042
-
-[database]
-url = "sqlite://./data/pacsnode.db"
-
-[filesystem_storage]
-root = "./data/blobs"
-```
-
-> **Tip:** If you copy the binary to a deployment folder, drop `config.toml` in the same folder. pacsnode will find it automatically regardless of which directory you run it from.
-
-Standalone mode runs embedded SQLite migrations on first start — no `sqlx-cli` or manual schema setup needed. The `./data` tree, SQLite database file, blob directory, and default `./web/viewer` directory are created automatically when needed.
+Open the admin dashboard at **http://localhost:8042/admin** and the OHIF viewer at **http://localhost:8042/viewer**.
 
 ---
 

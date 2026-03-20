@@ -846,7 +846,7 @@ fn generated_app_config(runtime: &ViewerRuntime) -> String {
                     "supportsWildcard": true,
                     "imageRendering": "wadors",
                     "thumbnailRendering": "thumbnail",
-                    "enableStudyLazyLoad": true,
+                    "enableStudyLazyLoad": false,
                     "acceptHeader": [
                         "multipart/related; type=\"image/dicom-rle\"; transfer-syntax=\"*\"",
                         "multipart/related; type=\"image/jpeg\"; transfer-syntax=\"*\"",
@@ -1434,6 +1434,7 @@ mod tests {
         assert!(body.contains(r#""wadoRoot": "/wado""#));
         assert!(body.contains(r#""qidoSupportsIncludeField": true"#));
         assert!(body.contains(r#""thumbnailRendering": "thumbnail""#));
+        assert!(body.contains(r#""enableStudyLazyLoad": false"#));
         assert!(body.contains(r#""acceptHeader": ["#));
         assert!(
             body.contains(r#"multipart/related; type=\"image/dicom-rle\"; transfer-syntax=\"*\""#,)

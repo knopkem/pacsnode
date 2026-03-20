@@ -1648,6 +1648,39 @@ mod tests {
         Bytes::from(buf)
     }
 
+    fn make_volume_metadata_dicom_with_uids(
+        study_uid: &str,
+        series_uid: &str,
+        instance_uid: &str,
+        image_position_patient: [&str; 3],
+    ) -> Bytes {
+        let mut ds = DataSet::new();
+        ds.set_string(tags::STUDY_INSTANCE_UID, Vr::UI, study_uid);
+        ds.set_string(tags::SERIES_INSTANCE_UID, Vr::UI, series_uid);
+        ds.set_string(tags::SOP_INSTANCE_UID, Vr::UI, instance_uid);
+        ds.set_string(tags::SOP_CLASS_UID, Vr::UI, "1.2.840.10008.5.1.4.1.1.2");
+        ds.set_string(tags::FRAME_OF_REFERENCE_UID, Vr::UI, "9.8.7.6.5");
+        ds.set_u16(tags::ROWS, 512);
+        ds.set_u16(tags::COLUMNS, 512);
+        ds.set_u16(tags::SAMPLES_PER_PIXEL, 1);
+        ds.set_string(
+            tags::IMAGE_POSITION_PATIENT,
+            Vr::DS,
+            &image_position_patient.join("\\"),
+        );
+        ds.set_string(tags::IMAGE_ORIENTATION_PATIENT, Vr::DS, "1\\0\\0\\0\\1\\0");
+        ds.set_string(Tag::new(0x0028, 0x0030), Vr::DS, "0.5\\0.5");
+        ds.set_string(Tag::new(0x0018, 0x0050), Vr::DS, "1.0");
+        ds.set_string(Tag::new(0x0018, 0x0088), Vr::DS, "1.0");
+
+        let ff = FileFormat::from_dataset("1.2.840.10008.5.1.4.1.1.2", instance_uid, ds);
+        let mut buf = Vec::new();
+        DicomWriter::new(std::io::Cursor::new(&mut buf))
+            .write_file(&ff)
+            .unwrap();
+        Bytes::from(buf)
+    }
+
     fn make_encapsulated_pdf_dicom() -> Bytes {
         let mut ds = DataSet::new();
         ds.set_string(tags::STUDY_INSTANCE_UID, Vr::UI, "1.2.3");
@@ -1962,6 +1995,69 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0]["00080018"]["Value"][0], json!("1.2.3.4.5"));
         assert_eq!(entries[1]["00080018"]["Value"][0], json!("1.2.3.4.6"));
+    }
+
+    #[tokio::test]
+    async fn test_series_metadata_preserves_volume_spatial_tags() {
+        let dicom1 =
+            make_volume_metadata_dicom_with_uids("1.2.3", "1.2.3.4", "1.2.3.4.5", ["0", "0", "0"]);
+        let dicom2 =
+            make_volume_metadata_dicom_with_uids("1.2.3", "1.2.3.4", "1.2.3.4.6", ["0", "0", "1"]);
+        let instance1 = make_instance_from_dicom(&dicom1);
+        let instance2 = make_instance_from_dicom(&dicom2);
+
+        let mut store = MockMetaStore::new();
+        store.expect_get_series().once().returning(|_| {
+            Ok(Series {
+                series_uid: SeriesUid::from("1.2.3.4"),
+                study_uid: StudyUid::from("1.2.3"),
+                modality: Some("CT".into()),
+                series_number: Some(1),
+                description: None,
+                body_part: None,
+                num_instances: 2,
+                metadata: DicomJson::empty(),
+                created_at: None,
+            })
+        });
+        store
+            .expect_query_instances()
+            .once()
+            .returning(move |_| Ok(vec![instance1.clone(), instance2.clone()]));
+
+        let mut blobs = MockBlobStr::new();
+        blobs.expect_get().times(2).returning(move |key| match key {
+            "1.2.3/1.2.3.4/1.2.3.4.5" => Ok(dicom1.clone()),
+            "1.2.3/1.2.3.4/1.2.3.4.6" => Ok(dicom2.clone()),
+            other => panic!("unexpected blob key: {other}"),
+        });
+
+        let app = build_router(make_test_state(store, blobs));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies/1.2.3/series/1.2.3.4/metadata")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let entries = json.as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["00200032"]["Value"], json!([0.0, 0.0, 0.0]));
+        assert_eq!(
+            entries[0]["00200037"]["Value"],
+            json!([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+        );
+        assert_eq!(entries[0]["00200052"]["Value"][0], json!("9.8.7.6.5"));
+        assert_eq!(entries[0]["00280030"]["Value"], json!([0.5, 0.5]));
+        assert_eq!(entries[0]["00180050"]["Value"][0], json!(1.0));
+        assert_eq!(entries[0]["00180088"]["Value"][0], json!(1.0));
+        assert_eq!(entries[1]["00200032"]["Value"], json!([0.0, 0.0, 1.0]));
     }
 
     #[tokio::test]

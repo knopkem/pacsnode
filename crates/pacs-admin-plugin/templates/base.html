@@ -306,13 +306,60 @@
           }
         }
 
+        // Toast system: HTMX fires "showToast" via HX-Trigger header
+        function showToast(title, detail) {
+          const stack = document.getElementById('toast-stack');
+          if (!stack) return;
+
+          const toast = document.createElement('article');
+          toast.className = 'toast tone-success';
+          toast.innerHTML =
+            '<div class="activity-meta"><span class="activity-badge">SYSTEM</span></div>' +
+            '<strong>' + title + '</strong>' +
+            '<p>' + detail + '</p>';
+          stack.prepend(toast);
+
+          setTimeout(() => {
+            if (!toast.isConnected) return;
+            toast.style.transition = 'opacity 200ms ease, transform 200ms ease';
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateY(4px)';
+            setTimeout(() => toast.remove(), 250);
+          }, 5000);
+        }
+
+        // Also auto-dismiss SSE-delivered toasts on the dashboard
+        function scheduleToastDismissal(el) {
+          if (!(el instanceof HTMLElement) || el.dataset.toastScheduled === 'true') return;
+          el.dataset.toastScheduled = 'true';
+          const ms = Number.parseInt(el.dataset.autoDismiss || '5000', 10);
+          setTimeout(() => {
+            if (!el.isConnected) return;
+            el.style.transition = 'opacity 200ms ease, transform 200ms ease';
+            el.style.opacity = '0';
+            el.style.transform = 'translateY(4px)';
+            setTimeout(() => el.remove(), 250);
+          }, Number.isFinite(ms) ? ms : 5000);
+        }
+
         document.addEventListener('DOMContentLoaded', () => initTransferSyntaxEditor(document));
         document.addEventListener('DOMContentLoaded', () => initImportBrowser(document));
         document.addEventListener('DOMContentLoaded', () => initImportCompletionRefresh(document));
+
+        // HX-Trigger event for toasts from system settings save
+        document.body.addEventListener('showToast', (event) => {
+          const d = event.detail || {};
+          showToast(d.title || 'Done', d.detail || '');
+        });
+
         document.addEventListener('htmx:load', (event) => {
           initTransferSyntaxEditor(event.target);
           initImportBrowser(event.target);
           initImportCompletionRefresh(event.target);
+          // Auto-dismiss SSE-delivered toasts
+          if (event.target instanceof HTMLElement) {
+            event.target.querySelectorAll('.toast[data-auto-dismiss]').forEach(scheduleToastDismissal);
+          }
         });
       })();
     </script>

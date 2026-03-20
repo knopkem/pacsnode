@@ -1,4 +1,4 @@
-<article class="toast {{ item.tone_class }}">
+<article id="{{ toast_id }}" class="toast {{ item.tone_class }}" data-auto-dismiss="5000"{% match oob_swap %}{% when Some with (swap) %} hx-swap-oob="{{ swap }}"{% when None %}{% endmatch %}>
   <div class="activity-meta">
     <span class="activity-badge">{{ item.badge }}</span>
     <time>{{ item.timestamp }}</time>

@@ -43,13 +43,13 @@ pacs-metrics-plugin = { path = "crates/pacs-metrics-plugin" }
 pacs-viewer-plugin = { path = "crates/pacs-viewer-plugin" }
 pacs-api     = { path = "crates/pacs-api" }
 
-# ── dicom-toolkit-rs (git dep — not yet published to crates.io) ───────────────
-dicom-toolkit-core  = { git = "https://github.com/knopkem/dicom-toolkit-rs", branch = "main" }
-dicom-toolkit-dict  = { git = "https://github.com/knopkem/dicom-toolkit-rs", branch = "main" }
-dicom-toolkit-data  = { git = "https://github.com/knopkem/dicom-toolkit-rs", branch = "main" }
-dicom-toolkit-net   = { git = "https://github.com/knopkem/dicom-toolkit-rs", branch = "main" }
-dicom-toolkit-image = { git = "https://github.com/knopkem/dicom-toolkit-rs", branch = "main" }
-dicom-toolkit-codec = { git = "https://github.com/knopkem/dicom-toolkit-rs", branch = "main" }
+# ── dicom-toolkit-rs (published crates.io release) ─────────────────────────────
+dicom-toolkit-core  = "0.5.0"
+dicom-toolkit-dict  = "0.5.0"
+dicom-toolkit-data  = "0.5.0"
+dicom-toolkit-net   = "0.5.0"
+dicom-toolkit-image = "0.5.0"
+dicom-toolkit-codec = "0.5.0"
 
 # ── Async runtime ─────────────────────────────────────────────────────────────
 tokio        = { version = "1", features = ["full"] }

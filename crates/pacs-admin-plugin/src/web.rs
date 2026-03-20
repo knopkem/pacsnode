@@ -13,7 +13,7 @@ use askama::Template;
 use async_stream::stream;
 use axum::{
     extract::{Extension, Form, Path, Query, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Redirect, Response,
@@ -330,6 +330,8 @@ struct RecentActivityItemsTemplate {
 #[template(path = "fragments/toast.html")]
 struct ToastTemplate {
     item: ActivityView,
+    oob_swap: Option<String>,
+    toast_id: String,
 }
 
 #[derive(Clone)]
@@ -808,12 +810,18 @@ async fn save_system_settings(
         .await;
     }
 
-    let flash = FlashView {
-        title: "Settings saved".into(),
-        detail: "DIMSE listener settings were persisted. Restart pacsnode to apply them to the active listener.".into(),
-        tone_class: "flash-success",
-    };
-    render_system_response(&state, &runtime, &headers, None, Some(flash)).await
+    if is_htmx_request(&headers) {
+        return render_system_response_with_toast(&state, &runtime, &headers, None, None).await;
+    }
+
+    render_system_response(
+        &state,
+        &runtime,
+        &headers,
+        None,
+        Some(system_settings_saved_flash()),
+    )
+    .await
 }
 
 async fn studies_page(
@@ -2236,7 +2244,13 @@ async fn events_stream(
                         }
                     }
 
-                    match (ToastTemplate { item: activity_item }).render() {
+                    match (ToastTemplate {
+                        item: activity_item,
+                        oob_swap: None,
+                        toast_id: format!("toast-{}", Uuid::new_v4()),
+                    })
+                    .render()
+                    {
                         Ok(markup) => {
                             yield Ok::<Event, Infallible>(Event::default().event("toast").data(markup));
                         }
@@ -3060,6 +3074,40 @@ async fn render_system_response(
     }
 }
 
+/// Like `render_system_response` but adds an `HX-Trigger` header so the client
+/// shows a success toast entirely via JS (no OOB swap needed).
+async fn render_system_response_with_toast(
+    state: &AppState,
+    runtime: &AdminRuntime,
+    _headers: &HeaderMap,
+    form_override: Option<ServerSettingsFormView>,
+    flash: Option<FlashView>,
+) -> Response {
+    let settings_markup =
+        match render_system_settings_markup(state, runtime, form_override, flash).await {
+            Ok(markup) => markup,
+            Err(status) => return error_response(status, "admin system settings failed to render"),
+        };
+
+    let trigger_json = r#"{"showToast":{"title":"Settings saved","detail":"DIMSE listener settings were persisted. Restart pacsnode to apply them to the active listener."}}"#;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        "text/html; charset=utf-8".parse().unwrap(),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        "no-store, max-age=0".parse().unwrap(),
+    );
+    headers.insert(
+        HeaderName::from_static("hx-trigger"),
+        HeaderValue::from_static(trigger_json),
+    );
+
+    (StatusCode::OK, headers, settings_markup).into_response()
+}
+
 async fn render_audit_results_markup(
     state: &AppState,
     runtime: &AdminRuntime,
@@ -3492,6 +3540,14 @@ fn store_error_flash(title: &str, error: &PacsError) -> FlashView {
         title: title.into(),
         detail: error.to_string(),
         tone_class: "flash-danger",
+    }
+}
+
+fn system_settings_saved_flash() -> FlashView {
+    FlashView {
+        title: "Settings saved".into(),
+        detail: "DIMSE listener settings were persisted. Restart pacsnode to apply them to the active listener.".into(),
+        tone_class: "flash-success",
     }
 }
 
@@ -5113,6 +5169,52 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("id=\"toast-stack\""));
+        assert!(html.contains(&format!(
+            "value=\"{}\" selected",
+            pacs_core::DEFAULT_STORAGE_TRANSFER_SYNTAX_UID
+        )));
+    }
+
+    #[tokio::test]
+    async fn saving_system_settings_over_htmx_returns_success_toast() {
+        let resp = test_admin_app(Some(admin_user(UserRole::Admin)), true)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/system")
+                    .header("HX-Request", "true")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(
+                        format!(
+                            "dicom_port=4242&ae_title=PACSNODE&accepted_transfer_syntaxes=1.2.840.10008.1.2&preferred_transfer_syntaxes=1.2.840.10008.1.2&storage_transfer_syntax={}&max_associations=64&dimse_timeout_secs=30",
+                            pacs_core::DEFAULT_STORAGE_TRANSFER_SYNTAX_UID
+                        ),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Check HX-Trigger header carries the toast payload
+        let trigger = resp
+            .headers()
+            .get("hx-trigger")
+            .expect("HX-Trigger header should be present")
+            .to_str()
+            .unwrap();
+        assert!(trigger.contains("showToast"));
+        assert!(trigger.contains("Settings saved"));
+
+        // Body should NOT contain OOB swap markup or flash banner
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!html.contains("hx-swap-oob"));
+        assert!(!html.contains("flash-banner flash-success"));
     }
 
     #[tokio::test]

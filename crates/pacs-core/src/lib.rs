@@ -18,6 +18,7 @@ pub use domain::{
     Instance, InstanceQuery, NewAuditLogEntry, PacsStatistics, PasswordPolicy, RefreshToken,
     RefreshTokenId, Series, SeriesQuery, SeriesUid, ServerSettings, SopInstanceUid, Study,
     StudyQuery, StudyUid, TokenPair, User, UserId, UserQuery, UserRole,
+    DEFAULT_STORAGE_TRANSFER_SYNTAX_UID,
 };
 pub use error::{PacsError, PacsResult};
 pub use policy::{PolicyAction, PolicyEngine, PolicyResource, PolicyUser};

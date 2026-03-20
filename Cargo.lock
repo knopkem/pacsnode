@@ -778,8 +778,9 @@ dependencies = [
 
 [[package]]
 name = "dicom-toolkit-codec"
-version = "0.2.0"
-source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#d79eb2fe6a1d1c4e15f40e22898079cda442afa5"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "58bc2ef7cdf0673cdee294ded22a3d80b1a319d1cf6f16e353552307f3831c7c"
 dependencies = [
  "dicom-toolkit-core",
  "dicom-toolkit-data",
@@ -794,8 +795,9 @@ dependencies = [
 
 [[package]]
 name = "dicom-toolkit-core"
-version = "0.2.0"
-source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#d79eb2fe6a1d1c4e15f40e22898079cda442afa5"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9baeb0b81293aaa22273f498c4a6c92aff5f90a0ea96f250dfefd550a4694d0b"
 dependencies = [
  "crc32fast",
  "encoding_rs",
@@ -808,8 +810,9 @@ dependencies = [
 
 [[package]]
 name = "dicom-toolkit-data"
-version = "0.2.0"
-source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#d79eb2fe6a1d1c4e15f40e22898079cda442afa5"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fcb28b933233bc169305c32f66cc720ccdd714eed5427fa5b324b1d811921f2a"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -825,16 +828,18 @@ dependencies = [
 
 [[package]]
 name = "dicom-toolkit-dict"
-version = "0.2.0"
-source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#d79eb2fe6a1d1c4e15f40e22898079cda442afa5"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f68fa58594a6f88e8dc3afdc8d708ec628b3775cf18bff04eb8f74603017c4c3"
 dependencies = [
  "dicom-toolkit-core",
 ]
 
 [[package]]
 name = "dicom-toolkit-image"
-version = "0.2.0"
-source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#d79eb2fe6a1d1c4e15f40e22898079cda442afa5"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b8bdefd64a4675c535632295113c4a6e01c49ce1cea2f45ff0ff92f5d21564b"
 dependencies = [
  "dicom-toolkit-core",
  "dicom-toolkit-data",
@@ -847,8 +852,9 @@ dependencies = [
 
 [[package]]
 name = "dicom-toolkit-jpeg2000"
-version = "0.4.0"
-source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#d79eb2fe6a1d1c4e15f40e22898079cda442afa5"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f51888e27b226aeb853c5d1a839504c5f9afa995fad3c5ac9d55f15b19a972d"
 dependencies = [
  "fearless_simd",
  "openjph-core",
@@ -856,8 +862,9 @@ dependencies = [
 
 [[package]]
 name = "dicom-toolkit-net"
-version = "0.2.0"
-source = "git+https://github.com/knopkem/dicom-toolkit-rs?branch=main#d79eb2fe6a1d1c4e15f40e22898079cda442afa5"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd04fddf772ce6961773880885cd5e9e847890f49de283e52af033ebb69f4a90"
 dependencies = [
  "bytes",
  "dicom-toolkit-core",
@@ -1726,9 +1733,9 @@ dependencies = [
 
 [[package]]
 name = "itoa"
-version = "1.0.17"
+version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
+checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jobserver"
@@ -4670,7 +4677,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

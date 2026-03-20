@@ -1,5 +1,7 @@
 //! DIMSE server and client configuration.
 
+const DEFAULT_STORAGE_TRANSFER_SYNTAX_UID: &str = "1.2.840.10008.1.2.4.201";
+
 /// Configuration for the DICOM SCP listener and SCU operations.
 #[derive(Debug, Clone)]
 pub struct DimseConfig {
@@ -32,7 +34,7 @@ impl Default for DimseConfig {
             accept_all_transfer_syntaxes: true,
             accepted_transfer_syntaxes: Vec::new(),
             preferred_transfer_syntaxes: Vec::new(),
-            storage_transfer_syntax: None,
+            storage_transfer_syntax: Some(DEFAULT_STORAGE_TRANSFER_SYNTAX_UID.into()),
             max_associations: 64,
             timeout_secs: 30,
         }
@@ -74,6 +76,14 @@ mod tests {
     #[test]
     fn default_timeout() {
         assert_eq!(DimseConfig::default().timeout_secs, 30);
+    }
+
+    #[test]
+    fn default_storage_transfer_syntax_is_htj2k_lossless() {
+        assert_eq!(
+            DimseConfig::default().storage_transfer_syntax.as_deref(),
+            Some(DEFAULT_STORAGE_TRANSFER_SYNTAX_UID)
+        );
     }
 
     #[test]

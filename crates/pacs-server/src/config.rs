@@ -35,7 +35,7 @@ use std::collections::HashMap;
 
 use config::{Config, ConfigError, Environment, File};
 use pacs_admin_plugin::ADMIN_DASHBOARD_PLUGIN_ID;
-use pacs_core::{DicomNode, ServerSettings};
+use pacs_core::{DicomNode, ServerSettings, DEFAULT_STORAGE_TRANSFER_SYNTAX_UID};
 use pacs_viewer_plugin::OHIF_VIEWER_PLUGIN_ID;
 use serde::{Deserialize, Serialize};
 
@@ -91,7 +91,7 @@ pub struct ServerConfig {
     #[serde(default)]
     pub preferred_transfer_syntaxes: Vec<String>,
     /// Optional transfer syntax to use when archiving newly ingested DICOM objects.
-    #[serde(default)]
+    #[serde(default = "default_storage_transfer_syntax")]
     pub storage_transfer_syntax: Option<String>,
     /// Maximum number of concurrent DIMSE associations.
     #[serde(default = "default_max_associations")]
@@ -408,6 +408,9 @@ fn default_log_level() -> String {
 fn default_log_format() -> LogFormat {
     LogFormat::Json
 }
+fn default_storage_transfer_syntax() -> Option<String> {
+    Some(DEFAULT_STORAGE_TRANSFER_SYNTAX_UID.to_string())
+}
 
 impl Default for ServerConfig {
     fn default() -> Self {
@@ -419,7 +422,7 @@ impl Default for ServerConfig {
             accept_all_transfer_syntaxes: default_true(),
             accepted_transfer_syntaxes: Vec::new(),
             preferred_transfer_syntaxes: Vec::new(),
-            storage_transfer_syntax: None,
+            storage_transfer_syntax: default_storage_transfer_syntax(),
             max_associations: default_max_associations(),
             dimse_timeout_secs: default_dimse_timeout_secs(),
         }
@@ -463,7 +466,10 @@ mod tests {
         assert!(cfg.server.accept_all_transfer_syntaxes);
         assert!(cfg.server.accepted_transfer_syntaxes.is_empty());
         assert!(cfg.server.preferred_transfer_syntaxes.is_empty());
-        assert!(cfg.server.storage_transfer_syntax.is_none());
+        assert_eq!(
+            cfg.server.storage_transfer_syntax.as_deref(),
+            Some(DEFAULT_STORAGE_TRANSFER_SYNTAX_UID)
+        );
         assert_eq!(cfg.server.max_associations, 64);
         assert!(cfg.nodes.is_empty());
         assert!(

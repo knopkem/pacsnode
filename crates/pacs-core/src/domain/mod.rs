@@ -17,7 +17,7 @@ pub use json::DicomJson;
 pub use node::DicomNode;
 pub use query::{InstanceQuery, SeriesQuery, StudyQuery};
 pub use series::{Series, SeriesUid};
-pub use server_settings::ServerSettings;
+pub use server_settings::{ServerSettings, DEFAULT_STORAGE_TRANSFER_SYNTAX_UID};
 pub use stats::PacsStatistics;
 pub use study::{Study, StudyUid};
 pub use user::{User, UserId, UserQuery, UserRole};

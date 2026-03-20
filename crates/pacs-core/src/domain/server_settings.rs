@@ -2,6 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Default archival transfer syntax for newly ingested instances.
+pub const DEFAULT_STORAGE_TRANSFER_SYNTAX_UID: &str = "1.2.840.10008.1.2.4.201";
+
 /// DIMSE listener settings that pacsnode persists in the metadata store.
 ///
 /// These values drive the DICOM SCP listener and are applied on process start.
@@ -16,6 +19,10 @@ use serde::{Deserialize, Serialize};
 /// let settings = ServerSettings::default();
 /// assert_eq!(settings.dicom_port, 4242);
 /// assert_eq!(settings.ae_title, "PACSNODE");
+/// assert_eq!(
+///     settings.storage_transfer_syntax.as_deref(),
+///     Some(pacs_core::DEFAULT_STORAGE_TRANSFER_SYNTAX_UID)
+/// );
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerSettings {
@@ -51,9 +58,22 @@ impl Default for ServerSettings {
             accept_all_transfer_syntaxes: true,
             accepted_transfer_syntaxes: Vec::new(),
             preferred_transfer_syntaxes: Vec::new(),
-            storage_transfer_syntax: None,
+            storage_transfer_syntax: Some(DEFAULT_STORAGE_TRANSFER_SYNTAX_UID.to_string()),
             max_associations: 64,
             dimse_timeout_secs: 30,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ServerSettings, DEFAULT_STORAGE_TRANSFER_SYNTAX_UID};
+
+    #[test]
+    fn default_storage_transfer_syntax_is_htj2k_lossless() {
+        assert_eq!(
+            ServerSettings::default().storage_transfer_syntax.as_deref(),
+            Some(DEFAULT_STORAGE_TRANSFER_SYNTAX_UID)
+        );
     }
 }

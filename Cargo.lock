@@ -2142,7 +2142,7 @@ dependencies = [
 
 [[package]]
 name = "pacs-admin-plugin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "askama",
@@ -2175,7 +2175,7 @@ dependencies = [
 
 [[package]]
 name = "pacs-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -2205,7 +2205,7 @@ dependencies = [
 
 [[package]]
 name = "pacs-audit-plugin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "pacs-core",
@@ -2217,7 +2217,7 @@ dependencies = [
 
 [[package]]
 name = "pacs-auth-plugin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "askama",
@@ -2244,7 +2244,7 @@ dependencies = [
 
 [[package]]
 name = "pacs-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2260,7 +2260,7 @@ dependencies = [
 
 [[package]]
 name = "pacs-dicom"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "chrono",
@@ -2281,7 +2281,7 @@ dependencies = [
 
 [[package]]
 name = "pacs-dimse"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2303,7 +2303,7 @@ dependencies = [
 
 [[package]]
 name = "pacs-fs-storage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2320,7 +2320,7 @@ dependencies = [
 
 [[package]]
 name = "pacs-metrics-plugin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -2336,7 +2336,7 @@ dependencies = [
 
 [[package]]
 name = "pacs-plugin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -2355,7 +2355,7 @@ dependencies = [
 
 [[package]]
 name = "pacs-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2388,7 +2388,7 @@ dependencies = [
 
 [[package]]
 name = "pacs-sqlite-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2405,7 +2405,7 @@ dependencies = [
 
 [[package]]
 name = "pacs-storage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2425,7 +2425,7 @@ dependencies = [
 
 [[package]]
 name = "pacs-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2446,7 +2446,7 @@ dependencies = [
 
 [[package]]
 name = "pacs-viewer-plugin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",

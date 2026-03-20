@@ -42,7 +42,7 @@ use crate::import::{
     canonicalize_directory, list_directory_entries, push_error, scan_directory, ImportPhase,
     ImportProgress, ImportResult, ImportScanSummary, ScannedStudySummary,
 };
-use crate::logs::{global_log_entries_filtered, clear_global_log_buffer, LogFilter};
+use crate::logs::{clear_global_log_buffer, global_log_entries_filtered, LogFilter};
 use crate::runtime::{ActivityEntry, AdminRuntime};
 
 const ADMIN_CSS: &str = include_str!("../templates/static/admin.css");
@@ -2449,8 +2449,8 @@ async fn logs_clear(
 
     let mut headers = HeaderMap::new();
     headers.insert(
-        HeaderName::from_static("hx-trigger"), 
-        HeaderValue::from_static("logsCleared")
+        HeaderName::from_static("hx-trigger"),
+        HeaderValue::from_static("logsCleared"),
     );
     headers.into_response()
 }
@@ -3407,7 +3407,7 @@ async fn build_logs_results_view(
 ) -> Result<LogsResultsView, StatusCode> {
     let page_size = filters.page_size() as usize;
     let page = (filters.page() - 1) as usize; // Convert to 0-based
-    
+
     let filter = LogFilter {
         level: filters.level.clone(),
         target: filters.target.clone(),
@@ -3418,7 +3418,7 @@ async fn build_logs_results_view(
 
     let all_entries = global_log_entries_filtered(&filter);
     let total_count = all_entries.len();
-    
+
     // Apply pagination
     let start = page * page_size;
     let end = (start + page_size).min(total_count);

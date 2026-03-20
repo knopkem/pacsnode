@@ -36,7 +36,9 @@ fn prepare_part_for_storage(
         match transcode_part10(part.encoded_bytes.clone(), target_ts_uid) {
             Err(error) => {
                 let error_msg = error.to_string();
-                if error_msg.contains("without PixelData") || error_msg.contains("without pixel data") {
+                if error_msg.contains("without PixelData")
+                    || error_msg.contains("without pixel data")
+                {
                     // This instance doesn't have pixel data, so skip image compression
                     return Ok(part.clone());
                 }
@@ -54,11 +56,10 @@ fn prepare_part_for_storage(
     ParsedDicom::from_bytes(transcoded).map_err(ApiError::from)
 }
 
-
-
 /// Check if a transfer syntax UID represents image compression
 fn is_image_compression_transfer_syntax(ts_uid: &str) -> bool {
-    matches!(ts_uid,
+    matches!(
+        ts_uid,
         // JPEG 2000 variants
         "1.2.840.10008.1.2.4.90" |  // JPEG 2000 Lossless
         "1.2.840.10008.1.2.4.91" |  // JPEG 2000
@@ -101,7 +102,7 @@ fn is_image_compression_transfer_syntax(ts_uid: &str) -> bool {
         "1.2.840.10008.1.2.4.105" | // MPEG-4 AVC/H.264 High Profile For 3D Video
         "1.2.840.10008.1.2.4.106" | // MPEG-4 AVC/H.264 Stereo High Profile
         "1.2.840.10008.1.2.4.107" | // HEVC/H.265 Main Profile
-        "1.2.840.10008.1.2.4.108"   // HEVC/H.265 Main 10 Profile
+        "1.2.840.10008.1.2.4.108" // HEVC/H.265 Main 10 Profile
     )
 }
 

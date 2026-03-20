@@ -12,7 +12,7 @@ compile_error!("Enable at least one blob backend feature (`s3` or `filesystem`).
 use std::{
     collections::{BTreeSet, HashMap},
     fs,
-    path::{Path, PathBuf},
+    path::Path,
     sync::Arc,
 };
 
@@ -60,7 +60,6 @@ enum Command {
     RunServer,
     GenerateConfig {
         profile: GeneratedConfigProfile,
-        output: Option<PathBuf>,
         force: bool,
     },
     CreateAdmin {
@@ -75,12 +74,8 @@ enum Command {
 async fn main() -> Result<()> {
     match parse_command(std::env::args().skip(1).collect())? {
         Command::RunServer => {}
-        Command::GenerateConfig {
-            profile,
-            output,
-            force,
-        } => {
-            write_generated_config(profile, output.as_deref(), force)?;
+        Command::GenerateConfig { profile, force } => {
+            write_generated_config(profile, force)?;
             return Ok(());
         }
         Command::CreateAdmin {
@@ -88,7 +83,9 @@ async fn main() -> Result<()> {
             display_name,
             email,
         } => {
-            let cfg = AppConfig::load().context("failed to load configuration")?;
+            let cfg = AppConfig::load()
+                .map_err(anyhow::Error::from)
+                .context("failed to load configuration")?;
             init_tracing(&cfg.logging);
             create_bootstrap_admin(&cfg, username, display_name, email).await?;
             return Ok(());
@@ -100,14 +97,32 @@ async fn main() -> Result<()> {
     }
 
     // ── Config ────────────────────────────────────────────────────────────────
-    let cfg = AppConfig::load().context("failed to load configuration")?;
-    let backend_selection = select_backend_plugins(&cfg)?;
+    let cfg = match AppConfig::load() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            // If config loading fails for the RunServer command, show help
+            eprintln!("Error: {}", e);
+            eprintln!();
+            eprintln!("{}", usage_text());
+            return Err(anyhow::Error::from(e));
+        }
+    };
+    let backend_selection = match select_backend_plugins(&cfg) {
+        Ok(selection) => selection,
+        Err(e) => {
+            // If backend selection fails (typically missing database config), show help
+            eprintln!("Error: {}", e);
+            eprintln!();
+            eprintln!("{}", usage_text());
+            return Err(e);
+        }
+    };
 
     // ── Tracing ───────────────────────────────────────────────────────────────
     init_tracing(&cfg.logging);
 
     let (enabled_plugins, _audit_auto_enabled) = effective_enabled_plugins(&cfg, backend_selection);
-    
+
     // Print clean startup message instead of verbose logging
     print_startup_message(&cfg, &enabled_plugins);
 
@@ -225,7 +240,7 @@ async fn main() -> Result<()> {
 }
 
 fn usage_text() -> &'static str {
-    "Usage:\n  pacsnode\n  pacsnode generate-config <standalone|production> [--output <path>] [--force]\n  pacsnode create-admin [--username <name>] [--display-name <name>] [--email <email>]\n  pacsnode -h|--help\n"
+    "Usage:\n  pacsnode\n  pacsnode generate-config <standalone|production> [--force]\n  pacsnode create-admin [--username <name>] [--display-name <name>] [--email <email>]\n  pacsnode -h|--help\n"
 }
 
 fn parse_command(args: Vec<String>) -> Result<Command> {
@@ -237,19 +252,11 @@ fn parse_command(args: Vec<String>) -> Result<Command> {
         "-h" | "--help" => Ok(Command::PrintHelp),
         "generate-config" => {
             let mut profile = None;
-            let mut output = None;
             let mut force = false;
             let mut idx = 1;
 
             while idx < args.len() {
                 match args[idx].as_str() {
-                    "--output" => {
-                        idx += 1;
-                        if idx >= args.len() {
-                            return Err(anyhow!("--output requires a file path"));
-                        }
-                        output = Some(PathBuf::from(&args[idx]));
-                    }
                     "--force" => force = true,
                     value if value.starts_with('-') => {
                         return Err(anyhow!("unknown option: {value}\n\n{}", usage_text()));
@@ -274,11 +281,7 @@ fn parse_command(args: Vec<String>) -> Result<Command> {
 
             let profile =
                 profile.ok_or_else(|| anyhow!("missing config profile\n\n{}", usage_text()))?;
-            Ok(Command::GenerateConfig {
-                profile,
-                output,
-                force,
-            })
+            Ok(Command::GenerateConfig { profile, force })
         }
         "create-admin" => {
             let mut username = String::from("admin");
@@ -332,32 +335,32 @@ fn parse_command(args: Vec<String>) -> Result<Command> {
     }
 }
 
-fn write_generated_config(
-    profile: GeneratedConfigProfile,
-    output: Option<&Path>,
-    force: bool,
-) -> Result<()> {
+fn write_generated_config(profile: GeneratedConfigProfile, force: bool) -> Result<()> {
     let rendered = profile.render();
+    let output_path = Path::new("config.toml");
 
-    if let Some(path) = output {
-        if path.exists() && !force {
-            return Err(anyhow!(
-                "refusing to overwrite existing file {} (use --force)",
-                path.display()
-            ));
-        }
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent).with_context(|| {
-                    format!("failed to create parent directory {}", parent.display())
-                })?;
-            }
-        }
-        fs::write(path, rendered).with_context(|| format!("failed to write {}", path.display()))?;
-        println!("Wrote {} config to {}", profile.as_str(), path.display());
-    } else {
-        print!("{rendered}");
+    if output_path.exists() && !force {
+        return Err(anyhow!(
+            "refusing to overwrite existing file {} (use --force)",
+            output_path.display()
+        ));
     }
+
+    if let Some(parent) = output_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create parent directory {}", parent.display())
+            })?;
+        }
+    }
+
+    fs::write(output_path, rendered)
+        .with_context(|| format!("failed to write {}", output_path.display()))?;
+    println!(
+        "Wrote {} config to {}",
+        profile.as_str(),
+        output_path.display()
+    );
 
     Ok(())
 }
@@ -922,9 +925,10 @@ fn validate_configured_nodes(nodes: &[DicomNode]) -> Result<()> {
 
 /// Initialise the global [`tracing`] subscriber.
 fn init_tracing(logging: &LoggingConfig) {
-    use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&logging.level));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&logging.level));
 
     // Initialize the global log buffer if enabled
     pacs_admin_plugin::init_global_log_buffer(logging.web_buffer.clone().into());
@@ -958,24 +962,27 @@ fn detect_runtime_mode(cfg: &AppConfig) -> &'static str {
 
 fn print_startup_message(cfg: &AppConfig, enabled_plugins: &[String]) {
     let mode = detect_runtime_mode(cfg);
-    
+
     println!("🚀 pacsnode starting");
     println!("   Mode: {}", mode);
     println!("   HTTP: http://0.0.0.0:{}", cfg.server.http_port);
-    println!("   DIMSE: {}@{}", cfg.server.ae_title, cfg.server.dicom_port);
+    println!(
+        "   DIMSE: {}@{}",
+        cfg.server.ae_title, cfg.server.dicom_port
+    );
     println!();
     println!("📍 Available routes:");
-    
+
     // Check for viewer plugin
     if enabled_plugins.contains(&"ohif-viewer".to_string()) {
         println!("   Viewer: http://localhost:{}/", cfg.server.http_port);
     }
-    
-    // Check for admin plugin  
+
+    // Check for admin plugin
     if enabled_plugins.contains(&"admin-dashboard".to_string()) {
         println!("   Admin:  http://localhost:{}/admin", cfg.server.http_port);
     }
-    
+
     println!();
 }
 
@@ -1017,8 +1024,8 @@ fn audit_auto_enable_in_secure_deployments(cfg: &AppConfig) -> bool {
 mod tests {
     use super::*;
     use crate::config::{
-        DatabaseConfig, FilesystemStorageConfig, LogFormat, LoggingConfig, PluginsConfig, ServerConfig,
-        StorageConfig,
+        DatabaseConfig, FilesystemStorageConfig, LogFormat, LoggingConfig, PluginsConfig,
+        ServerConfig, StorageConfig,
     };
 
     #[cfg(feature = "postgres")]
@@ -1186,12 +1193,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_generate_config_command_supports_output_and_force() {
+    fn parse_generate_config_command_supports_force() {
         let command = parse_command(vec![
             "generate-config".into(),
             "standalone".into(),
-            "--output".into(),
-            "config.toml".into(),
             "--force".into(),
         ])
         .expect("command should parse");
@@ -1200,7 +1205,6 @@ mod tests {
             command,
             Command::GenerateConfig {
                 profile: GeneratedConfigProfile::Standalone,
-                output: Some(PathBuf::from("config.toml")),
                 force: true,
             }
         );

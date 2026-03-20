@@ -22,7 +22,7 @@ use tracing::warn;
 pub const ADMIN_DASHBOARD_PLUGIN_ID: &str = "admin-dashboard";
 
 // Re-export logging functionality for use by the server
-pub use logs::{init_global_log_buffer, global_log_buffer_layer, LogBufferConfig};
+pub use logs::{global_log_buffer_layer, init_global_log_buffer, LogBufferConfig};
 pub use runtime::LogBufferConfigToml;
 
 #[derive(Default)]

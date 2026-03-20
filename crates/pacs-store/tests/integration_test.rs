@@ -8,9 +8,12 @@
 //!
 //! ```bash
 //! cargo test -p pacs-store
+//! cargo test --workspace --all-targets
 //! ```
 //!
-//! Docker (or a compatible container runtime) must be available and running.
+//! These integration tests use Docker (or a compatible container runtime). If no
+//! Docker daemon is reachable, they log a skip message and return early so a
+//! normal workspace test run can still succeed.
 
 use chrono::{NaiveDate, TimeZone, Utc};
 use pacs_core::{
@@ -21,6 +24,11 @@ use pacs_core::{
 use pacs_store::PgMetadataStore;
 use rstest::rstest;
 use sqlx::PgPool;
+use std::{
+    net::{TcpStream, ToSocketAddrs},
+    path::Path,
+    time::Duration,
+};
 use testcontainers::{runners::AsyncRunner, ContainerAsync, ImageExt};
 use testcontainers_modules::postgres::Postgres;
 use uuid::Uuid;
@@ -36,16 +44,50 @@ fn postgres_image_tag() -> String {
         .unwrap_or_else(|_| DEFAULT_POSTGRES_IMAGE_TAG.to_string())
 }
 
+fn docker_host_is_reachable(host: &str) -> bool {
+    if let Some(path) = host.strip_prefix("unix://") {
+        return Path::new(path).exists();
+    }
+
+    if let Some(address) = host.strip_prefix("tcp://") {
+        return address
+            .to_socket_addrs()
+            .map(|mut addrs| {
+                addrs.any(|addr| {
+                    TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
+                })
+            })
+            .unwrap_or(false);
+    }
+
+    if host.starts_with("npipe://") {
+        return true;
+    }
+
+    true
+}
+
+fn docker_is_available() -> bool {
+    std::env::var("DOCKER_HOST")
+        .map(|host| docker_host_is_reachable(&host))
+        .unwrap_or_else(|_| Path::new("/var/run/docker.sock").exists())
+}
+
 /// Starts a PostgreSQL container, connects a pool, and runs migrations.
 ///
 /// The returned `ContainerAsync` must be kept alive for the duration of the
 /// test (dropping it stops the container).
-async fn setup_pool() -> (PgPool, ContainerAsync<Postgres>) {
+async fn setup_pool() -> Option<(PgPool, ContainerAsync<Postgres>)> {
+    if !docker_is_available() {
+        eprintln!("skipping pacs-store integration test: Docker daemon is unavailable");
+        return None;
+    }
+
     let container = Postgres::default()
         .with_tag(postgres_image_tag())
         .start()
         .await
-        .expect("failed to start Postgres container");
+        .expect("failed to start Postgres container after Docker availability check");
 
     let port = container
         .get_host_port_ipv4(5432)
@@ -62,7 +104,7 @@ async fn setup_pool() -> (PgPool, ContainerAsync<Postgres>) {
         .await
         .expect("failed to run migrations");
 
-    (pool, container)
+    Some((pool, container))
 }
 
 fn study_uid(n: u32) -> StudyUid {
@@ -178,7 +220,9 @@ fn make_refresh_token(user_id: UserId, id_suffix: u128) -> RefreshToken {
 
 #[tokio::test]
 async fn test_store_and_retrieve_study() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
     let study = make_study(study_uid(1));
 
@@ -199,7 +243,9 @@ async fn test_store_and_retrieve_study() {
 
 #[tokio::test]
 async fn test_study_upsert_updates_fields() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
     let mut study = make_study(study_uid(10));
     store.store_study(&study).await.expect("first store failed");
@@ -221,7 +267,9 @@ async fn test_study_upsert_updates_fields() {
 
 #[tokio::test]
 async fn test_study_counts_are_derived_from_related_rows() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
 
     let study = make_study(study_uid(11));
@@ -248,7 +296,9 @@ async fn test_study_counts_are_derived_from_related_rows() {
 
 #[tokio::test]
 async fn test_user_policy_and_refresh_token_round_trip() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
     let user = make_user(101);
     let refresh_token = make_refresh_token(user.id, 201);
@@ -316,7 +366,9 @@ async fn test_user_policy_and_refresh_token_round_trip() {
 
 #[tokio::test]
 async fn test_get_nonexistent_study_returns_not_found() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
 
     let err = store
@@ -335,7 +387,9 @@ async fn test_get_nonexistent_study_returns_not_found() {
 
 #[tokio::test]
 async fn test_delete_study_removes_row() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
     let study = make_study(study_uid(20));
     store.store_study(&study).await.expect("store failed");
@@ -354,7 +408,9 @@ async fn test_delete_study_removes_row() {
 
 #[tokio::test]
 async fn test_delete_study_cascades_to_series_and_instances() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
 
     let study = make_study(study_uid(30));
@@ -398,7 +454,9 @@ async fn test_delete_study_cascades_to_series_and_instances() {
 
 #[tokio::test]
 async fn test_delete_nonexistent_study_returns_not_found() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
 
     let err = store
@@ -410,7 +468,9 @@ async fn test_delete_nonexistent_study_returns_not_found() {
 
 #[tokio::test]
 async fn test_server_settings_round_trip() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
 
     assert_eq!(
@@ -436,7 +496,9 @@ async fn test_server_settings_round_trip() {
 
 #[tokio::test]
 async fn test_query_studies_by_patient_id() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
 
     let mut s1 = make_study(study_uid(40));
@@ -461,7 +523,9 @@ async fn test_query_studies_by_patient_id() {
 
 #[tokio::test]
 async fn test_query_studies_by_date_range() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
 
     let mut s1 = make_study(study_uid(50));
@@ -492,7 +556,9 @@ async fn test_query_studies_by_date_range() {
 
 #[tokio::test]
 async fn test_query_studies_fuzzy_patient_name() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
 
     let mut s1 = make_study(study_uid(60));
@@ -519,7 +585,9 @@ async fn test_query_studies_fuzzy_patient_name() {
 
 #[tokio::test]
 async fn test_query_studies_by_modality() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
 
     let mut ct_study = make_study(study_uid(70));
@@ -549,7 +617,9 @@ async fn test_query_studies_by_modality() {
 #[case(None, 3)]
 #[tokio::test]
 async fn test_query_studies_limit(#[case] limit: Option<u32>, #[case] expected_len: usize) {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
 
     for n in [80u32, 81, 82] {
@@ -576,7 +646,9 @@ async fn test_query_studies_limit(#[case] limit: Option<u32>, #[case] expected_l
 
 #[tokio::test]
 async fn test_store_and_retrieve_series() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
 
     let study = make_study(study_uid(100));
@@ -597,7 +669,9 @@ async fn test_store_and_retrieve_series() {
 
 #[tokio::test]
 async fn test_query_series_by_study_uid() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
 
     let study = make_study(study_uid(110));
@@ -626,7 +700,9 @@ async fn test_query_series_by_study_uid() {
 
 #[tokio::test]
 async fn test_get_nonexistent_series_returns_not_found() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
 
     let err = store
@@ -648,7 +724,9 @@ async fn test_get_nonexistent_series_returns_not_found() {
 
 #[tokio::test]
 async fn test_store_and_retrieve_instance() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
 
     let study = make_study(study_uid(200));
@@ -674,7 +752,9 @@ async fn test_store_and_retrieve_instance() {
 
 #[tokio::test]
 async fn test_get_instance_metadata() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
 
     let study = make_study(study_uid(210));
@@ -697,7 +777,9 @@ async fn test_get_instance_metadata() {
 
 #[tokio::test]
 async fn test_instance_upsert_updates_fields() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
 
     let study = make_study(study_uid(220));
@@ -719,7 +801,9 @@ async fn test_instance_upsert_updates_fields() {
 
 #[tokio::test]
 async fn test_query_instances_by_series_uid() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
 
     let study = make_study(study_uid(230));
@@ -750,7 +834,9 @@ async fn test_query_instances_by_series_uid() {
 
 #[tokio::test]
 async fn test_get_nonexistent_instance_returns_not_found() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
 
     let err = store
@@ -768,7 +854,9 @@ async fn test_get_nonexistent_instance_returns_not_found() {
 
 #[tokio::test]
 async fn test_delete_series_cascades_to_instances() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
 
     let study = make_study(study_uid(240));
@@ -797,7 +885,9 @@ async fn test_delete_series_cascades_to_instances() {
 
 #[tokio::test]
 async fn test_statistics_counts_correctly() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
 
     let initial = store.get_statistics().await.expect("initial stats");
@@ -821,7 +911,9 @@ async fn test_statistics_counts_correctly() {
 
 #[tokio::test]
 async fn test_statistics_decrements_after_delete() {
-    let (pool, _c) = setup_pool().await;
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
     let store = PgMetadataStore::new(pool);
 
     let study = make_study(study_uid(310));

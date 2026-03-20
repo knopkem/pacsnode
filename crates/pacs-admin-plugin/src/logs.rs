@@ -7,18 +7,14 @@ use std::{
     collections::{HashMap, VecDeque},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, RwLock, OnceLock,
+        Arc, OnceLock, RwLock,
     },
 };
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{Level, Subscriber};
-use tracing_subscriber::{
-    layer::Context,
-    registry::LookupSpan,
-    Layer,
-};
+use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
 /// Default buffer capacity (number of log entries to keep in memory).
 const DEFAULT_BUFFER_SIZE: usize = 10_000;
@@ -98,11 +94,11 @@ impl LogBuffer {
     /// Adds a log entry to the buffer, removing oldest if at capacity.
     pub fn push(&self, entry: LogEntry) {
         let mut entries = self.entries.write().unwrap();
-        
+
         if entries.len() >= self.capacity {
             entries.pop_front();
         }
-        
+
         entries.push_back(entry);
     }
 
@@ -216,7 +212,7 @@ where
         let metadata = event.metadata();
         let level = metadata.level();
         let target = metadata.target();
-        
+
         // Skip debug/trace logs by default to avoid buffer spam
         if matches!(level, &Level::DEBUG | &Level::TRACE) {
             return;
@@ -224,18 +220,18 @@ where
 
         let mut message = String::new();
         let mut fields = HashMap::new();
-        
+
         // Visitor to extract message and structured fields
         struct FieldVisitor<'a> {
             message: &'a mut String,
             fields: &'a mut HashMap<String, serde_json::Value>,
         }
-        
+
         impl tracing::field::Visit for FieldVisitor<'_> {
             fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
                 let field_name = field.name();
                 let field_value = format!("{:?}", value);
-                
+
                 if field_name == "message" {
                     *self.message = field_value;
                 } else {
@@ -246,7 +242,7 @@ where
                 }
             }
         }
-        
+
         let mut visitor = FieldVisitor {
             message: &mut message,
             fields: &mut fields,
@@ -308,12 +304,12 @@ impl LogBufferService {
     /// Gets filtered log entries.
     pub fn entries_filtered(&self, filter: &LogFilter) -> Vec<LogEntry> {
         let mut entries = self.buffer.entries_filtered(filter);
-        
+
         // Apply limit after filtering
         if let Some(limit) = filter.limit {
             entries.truncate(limit);
         }
-        
+
         entries
     }
 
@@ -417,7 +413,7 @@ mod tests {
     #[test]
     fn log_buffer_respects_capacity() {
         let buffer = LogBuffer::new(3);
-        
+
         // Add entries up to capacity
         for i in 0..5 {
             buffer.push(LogEntry {
@@ -430,7 +426,7 @@ mod tests {
                 span_name: None,
             });
         }
-        
+
         // Should only keep the last 3 entries
         assert_eq!(buffer.len(), 3);
         let entries = buffer.entries();

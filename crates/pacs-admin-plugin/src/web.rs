@@ -16,7 +16,7 @@ use axum::{
     http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
-        IntoResponse, Redirect, Response,
+        Html, IntoResponse, Redirect, Response,
     },
     routing::{delete, get, post},
     Json, Router,
@@ -42,6 +42,7 @@ use crate::import::{
     canonicalize_directory, list_directory_entries, push_error, scan_directory, ImportPhase,
     ImportProgress, ImportResult, ImportScanSummary, ScannedStudySummary,
 };
+use crate::logs::{global_log_entries_filtered, clear_global_log_buffer, LogFilter};
 use crate::runtime::{ActivityEntry, AdminRuntime};
 
 const ADMIN_CSS: &str = include_str!("../templates/static/admin.css");
@@ -80,6 +81,10 @@ pub(crate) fn routes(runtime: Arc<AdminRuntime>) -> Router<AppState> {
     let node_verify_path = format!("{route_prefix}/nodes/{{ae_title}}/verify");
     let audit_path = format!("{route_prefix}/audit");
     let audit_list_path = format!("{route_prefix}/audit/list");
+    let logs_path = format!("{route_prefix}/logs");
+    let logs_data_path = format!("{route_prefix}/logs/data");
+    let logs_stream_path = format!("{route_prefix}/logs/stream");
+    let logs_clear_path = format!("{route_prefix}/logs/clear");
     let stats_path = format!("{route_prefix}/stats");
     let events_path = format!("{route_prefix}/events");
     let css_path = format!("{route_prefix}/static/admin.css");
@@ -108,6 +113,10 @@ pub(crate) fn routes(runtime: Arc<AdminRuntime>) -> Router<AppState> {
         .route(&node_verify_path, post(verify_node))
         .route(&audit_path, get(audit_page))
         .route(&audit_list_path, get(audit_results_fragment))
+        .route(&logs_path, get(logs_page))
+        .route(&logs_data_path, get(logs_data))
+        .route(&logs_stream_path, get(logs_stream))
+        .route(&logs_clear_path, post(logs_clear))
         .route(&events_path, get(events_stream))
         .route(&css_path, get(admin_css));
 
@@ -332,6 +341,56 @@ struct ToastTemplate {
     item: ActivityView,
     oob_swap: Option<String>,
     toast_id: String,
+}
+
+#[derive(Template)]
+#[template(path = "logs.html")]
+struct LogsPageTemplate {
+    page_title: &'static str,
+    route_prefix: String,
+    active_nav: &'static str,
+    logout_path: Option<String>,
+    logs_path: String,
+    logs_data_path: String,
+    logs_stream_path: String,
+    logs_clear_path: String,
+    filters: LogsFilterView,
+    results_markup: String,
+}
+
+#[derive(Template)]
+#[template(path = "fragments/logs_results.html")]
+struct LogsResultsTemplate {
+    entries: Vec<LogEntryView>,
+    #[allow(dead_code)]
+    filters: LogsFilterView,
+    logs_data_path: String,
+    current_page: u32,
+    total_entries: usize,
+    has_more: bool,
+}
+
+#[derive(Clone)]
+struct LogEntryView {
+    #[allow(dead_code)]
+    id: u64,
+    timestamp: String,
+    level: String,
+    level_class: String,
+    target: String,
+    message: String,
+    fields_json: String,
+    span_name: Option<String>,
+}
+
+#[derive(Clone, Default)]
+struct LogsFilterView {
+    level: String,
+    target: String,
+    search: String,
+    #[allow(dead_code)]
+    page: u32,
+    page_size: u32,
 }
 
 #[derive(Clone)]
@@ -672,6 +731,15 @@ struct AuditFilters {
     resource: Option<String>,
     resource_uid: Option<String>,
     status: Option<String>,
+    page: Option<u32>,
+    page_size: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct LogsFilters {
+    level: Option<String>,
+    target: Option<String>,
+    search: Option<String>,
     page: Option<u32>,
     page_size: Option<u32>,
 }
@@ -2287,6 +2355,106 @@ fn should_emit_stats(event: &PacsEvent) -> bool {
     )
 }
 
+// Logs handler functions
+async fn logs_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(filters): Query<LogsFilters>,
+    Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
+) -> Response {
+    if let Err(message) = require_admin(&state, user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
+    let results_markup = match render_logs_results_markup(&state, &runtime, &filters).await {
+        Ok(markup) => markup,
+        Err(status) => return error_response(status, "logs page failed to render"),
+    };
+
+    render_html(&LogsPageTemplate {
+        page_title: "Application Logs",
+        route_prefix: runtime.route_prefix().to_string(),
+        active_nav: "logs",
+        logout_path: shell_logout_path(&state, runtime.route_prefix(), &headers),
+        logs_path: logs_page_path(runtime.route_prefix()),
+        logs_data_path: logs_data_path(runtime.route_prefix()),
+        logs_stream_path: logs_stream_path(runtime.route_prefix()),
+        logs_clear_path: logs_clear_path(runtime.route_prefix()),
+        filters: LogsFilterView::from_filters(&filters),
+        results_markup,
+    })
+}
+
+async fn logs_data(
+    State(state): State<AppState>,
+    Query(filters): Query<LogsFilters>,
+    Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
+) -> Response {
+    if let Err(message) = require_admin(&state, user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
+    match render_logs_results_markup(&state, &runtime, &filters).await {
+        Ok(markup) => Html(markup).into_response(),
+        Err(status) => error_response(status, "logs data failed to render"),
+    }
+}
+
+async fn logs_stream(
+    State(state): State<AppState>,
+    Extension(runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
+) -> Response {
+    if let Err(message) = require_admin(&state, user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
+    let stream = stream! {
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            let filters = LogsFilters::default();
+            match render_logs_results_markup(&state, &runtime, &filters).await {
+                Ok(markup) => {
+                    yield Ok::<Event, Infallible>(Event::default().event("logs").data(markup));
+                }
+                Err(status) => {
+                    error!(?status, "failed to render logs stream event");
+                    break;
+                }
+            }
+        }
+    };
+
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+async fn logs_clear(
+    State(state): State<AppState>,
+    Extension(_runtime): Extension<Arc<AdminRuntime>>,
+    user: Option<Extension<AuthenticatedUser>>,
+) -> Response {
+    if let Err(message) = require_admin(&state, user) {
+        return error_response(StatusCode::FORBIDDEN, message);
+    }
+
+    if let Err(err) = std::panic::catch_unwind(clear_global_log_buffer) {
+        error!(?err, "failed to clear log buffer");
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to clear logs");
+    }
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        HeaderName::from_static("hx-trigger"), 
+        HeaderValue::from_static("logsCleared")
+    );
+    headers.into_response()
+}
+
 fn render_loading_stats_markup() -> Result<String, StatusCode> {
     StatsCardsTemplate {
         cards: vec![
@@ -3214,6 +3382,98 @@ async fn build_audit_results_view(
     })
 }
 
+async fn render_logs_results_markup(
+    state: &AppState,
+    runtime: &AdminRuntime,
+    filters: &LogsFilters,
+) -> Result<String, StatusCode> {
+    let view = build_logs_results_view(state, runtime.route_prefix(), filters).await?;
+    LogsResultsTemplate {
+        entries: view.entries,
+        filters: LogsFilterView::from_filters(filters),
+        logs_data_path: logs_data_path(runtime.route_prefix()),
+        current_page: view.current_page,
+        total_entries: view.total_entries,
+        has_more: view.has_more,
+    }
+    .render()
+    .map_err(internal_render_error)
+}
+
+async fn build_logs_results_view(
+    _state: &AppState,
+    _route_prefix: &str,
+    filters: &LogsFilters,
+) -> Result<LogsResultsView, StatusCode> {
+    let page_size = filters.page_size() as usize;
+    let page = (filters.page() - 1) as usize; // Convert to 0-based
+    
+    let filter = LogFilter {
+        level: filters.level.clone(),
+        target: filters.target.clone(),
+        search: filters.search.clone(),
+        since: None,
+        limit: None,
+    };
+
+    let all_entries = global_log_entries_filtered(&filter);
+    let total_count = all_entries.len();
+    
+    // Apply pagination
+    let start = page * page_size;
+    let end = (start + page_size).min(total_count);
+    let entries: Vec<_> = if start < total_count {
+        all_entries[start..end].to_vec()
+    } else {
+        Vec::new()
+    };
+
+    let entry_views: Vec<LogEntryView> = entries
+        .into_iter()
+        .map(|entry| LogEntryView {
+            id: entry.id,
+            timestamp: entry.timestamp.format("%Y-%m-%d %H:%M:%S%.3f").to_string(),
+            level: entry.level.to_string(),
+            level_class: level_to_css_class(&entry.level.to_string()),
+            target: entry.target,
+            message: entry.message,
+            fields_json: if entry.fields.is_empty() {
+                "{}".to_string()
+            } else {
+                serde_json::to_string_pretty(&entry.fields).unwrap_or_else(|_| "{}".to_string())
+            },
+            span_name: entry.span_name,
+        })
+        .collect();
+
+    let has_more = end < total_count;
+
+    Ok(LogsResultsView {
+        entries: entry_views,
+        current_page: filters.page(),
+        total_entries: total_count,
+        has_more,
+    })
+}
+
+struct LogsResultsView {
+    entries: Vec<LogEntryView>,
+    current_page: u32,
+    total_entries: usize,
+    has_more: bool,
+}
+
+fn level_to_css_class(level: &str) -> String {
+    match level.to_uppercase().as_str() {
+        "ERROR" => "level-error".to_string(),
+        "WARN" => "level-warn".to_string(),
+        "INFO" => "level-info".to_string(),
+        "DEBUG" => "level-debug".to_string(),
+        "TRACE" => "level-trace".to_string(),
+        _ => "level-unknown".to_string(),
+    }
+}
+
 async fn render_nodes_response(
     state: &AppState,
     runtime: &AdminRuntime,
@@ -3894,6 +4154,22 @@ fn users_policy_path(route_prefix: &str) -> String {
 
 fn audit_results_path(route_prefix: &str) -> String {
     format!("{route_prefix}/audit/list")
+}
+
+fn logs_page_path(route_prefix: &str) -> String {
+    format!("{route_prefix}/logs")
+}
+
+fn logs_data_path(route_prefix: &str) -> String {
+    format!("{route_prefix}/logs/data")
+}
+
+fn logs_stream_path(route_prefix: &str) -> String {
+    format!("{route_prefix}/logs/stream")
+}
+
+fn logs_clear_path(route_prefix: &str) -> String {
+    format!("{route_prefix}/logs/clear")
 }
 
 fn path_with_query(path: &str, query_string: &str) -> String {
@@ -4782,6 +5058,58 @@ impl AuditFilterView {
                 .unwrap_or_default()
                 .trim()
                 .to_string(),
+            page_size: filters.page_size(),
+        }
+    }
+}
+
+impl LogsFilters {
+    fn page(&self) -> u32 {
+        self.page.unwrap_or(1).max(1)
+    }
+
+    fn page_size(&self) -> u32 {
+        const DEFAULT_LOGS_PAGE_SIZE: u32 = 50;
+        const MAX_LOGS_PAGE_SIZE: u32 = 500;
+        self.page_size
+            .unwrap_or(DEFAULT_LOGS_PAGE_SIZE)
+            .clamp(1, MAX_LOGS_PAGE_SIZE)
+    }
+
+    #[allow(dead_code)]
+    fn has_active_filters(&self) -> bool {
+        [
+            self.level.as_deref(),
+            self.target.as_deref(),
+            self.search.as_deref(),
+        ]
+        .iter()
+        .any(|filter| !filter.unwrap_or("").trim().is_empty())
+    }
+}
+
+impl LogsFilterView {
+    fn from_filters(filters: &LogsFilters) -> Self {
+        Self {
+            level: filters
+                .level
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            target: filters
+                .target
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            search: filters
+                .search
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            page: filters.page(),
             page_size: filters.page_size(),
         }
     }

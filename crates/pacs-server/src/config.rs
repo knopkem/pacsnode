@@ -168,6 +168,9 @@ pub struct LoggingConfig {
     /// Log output format: `"json"` for structured JSON, `"pretty"` for human-readable.
     #[serde(default = "default_log_format")]
     pub format: LogFormat,
+    /// In-memory log buffer configuration for web viewing.
+    #[serde(default)]
+    pub web_buffer: pacs_admin_plugin::LogBufferConfigToml,
 }
 
 impl Default for LoggingConfig {
@@ -175,6 +178,7 @@ impl Default for LoggingConfig {
         Self {
             level: default_log_level(),
             format: default_log_format(),
+            web_buffer: Default::default(),
         }
     }
 }

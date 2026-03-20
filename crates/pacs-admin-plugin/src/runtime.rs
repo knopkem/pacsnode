@@ -9,10 +9,10 @@ use std::{
 use chrono::{DateTime, Utc};
 use pacs_core::MetadataStore;
 use pacs_plugin::{PluginError, QuerySource, ResourceLevel, ServerInfo};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock};
 
-use crate::import::ImportRuntime;
+use crate::{import::ImportRuntime, logs::{LogBufferConfig, LogFilter, LogEntry, LogBufferStats, global_log_entries, global_log_entries_filtered, global_log_buffer_stats, clear_global_log_buffer}};
 
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 const DEFAULT_ACTIVITY_LIMIT: usize = 24;
@@ -25,6 +25,36 @@ pub(crate) struct AdminPluginConfig {
     redirect_root: bool,
     #[serde(default = "default_activity_limit")]
     activity_limit: usize,
+    /// Log buffer configuration for web log viewing.
+    #[serde(default)]
+    #[allow(dead_code)]
+    logs: LogBufferConfigToml,
+}
+
+/// Configuration for the log buffer from TOML config.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LogBufferConfigToml {
+    /// Whether to enable web log capture.
+    #[serde(default = "default_true")]
+    enabled: bool,
+    /// Maximum number of log entries to retain in memory.
+    #[serde(default = "default_buffer_size")]
+    buffer_size: usize,
+}
+
+impl Default for LogBufferConfigToml {
+    fn default() -> Self {
+        Self {
+            enabled: default_true(),
+            buffer_size: default_buffer_size(),
+        }
+    }
+}
+
+impl From<LogBufferConfigToml> for LogBufferConfig {
+    fn from(config: LogBufferConfigToml) -> Self {
+        LogBufferConfig::new(config.buffer_size, config.enabled)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +120,30 @@ impl AdminRuntime {
         &self.import_runtime
     }
 
+    /// Gets log entries from the global log buffer.
+    #[allow(dead_code)]
+    pub(crate) fn log_entries(&self) -> Vec<LogEntry> {
+        global_log_entries()
+    }
+
+    /// Gets filtered log entries from the global log buffer.
+    #[allow(dead_code)]
+    pub(crate) fn log_entries_filtered(&self, filter: &LogFilter) -> Vec<LogEntry> {
+        global_log_entries_filtered(filter)
+    }
+
+    /// Gets log buffer statistics.
+    #[allow(dead_code)]
+    pub(crate) fn log_buffer_stats(&self) -> Option<LogBufferStats> {
+        global_log_buffer_stats()
+    }
+
+    /// Clears the global log buffer.
+    #[allow(dead_code)]
+    pub(crate) fn clear_log_buffer(&self) {
+        clear_global_log_buffer()
+    }
+
     pub(crate) fn active_associations(&self) -> u64 {
         self.active_associations.load(Ordering::Relaxed)
     }
@@ -136,6 +190,14 @@ fn default_route_prefix() -> String {
 
 fn default_activity_limit() -> usize {
     DEFAULT_ACTIVITY_LIMIT
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_buffer_size() -> usize {
+    10_000
 }
 
 fn normalize_route_prefix(raw: &str) -> Result<String, String> {
@@ -450,6 +512,7 @@ mod tests {
                 route_prefix: "/admin".into(),
                 redirect_root: false,
                 activity_limit: 2,
+                logs: Default::default(),
             },
             ServerInfo {
                 ae_title: "PACSNODE".into(),

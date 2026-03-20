@@ -89,6 +89,16 @@ level = "info"
 # Log output format: "json" for structured logging, "pretty" for human-readable
 format = "json"
 
+# In-memory log buffer for web admin interface viewing
+[logging.web_buffer]
+# Enable log capture for admin panel viewing (true/false)
+enabled = true
+
+# Maximum number of log entries to retain in memory
+# Higher values use more RAM but retain more history
+# Recommended: 5000-20000 for production, 1000-5000 for development
+buffer_size = 10000
+
 # ── Optional Plugins [both] ─────────────────────────────────────────────────────
 #
 # Built-in storage and DIMSE plugins are enabled automatically for the selected

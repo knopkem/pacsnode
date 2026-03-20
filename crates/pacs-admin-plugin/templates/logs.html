@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero-panel compact">
+  <div>
+    <p class="eyebrow">Application logs</p>
+    <h2>View recent application logs with filtering and real-time updates.</h2>
+  </div>
+</section>
+
+<section class="panel stack-gap">
+  <header class="panel-header">
+    <div>
+      <p class="eyebrow">Filters</p>
+      <h3>Filter log entries</h3>
+    </div>
+    <div class="panel-actions">
+      <button
+        type="button"
+        hx-post="{{ logs_clear_path }}"
+        hx-trigger="click"
+        hx-confirm="Are you sure you want to clear all log entries from the buffer?"
+        class="action-button secondary"
+      >
+        Clear logs
+      </button>
+    </div>
+  </header>
+  <form
+    class="filter-form"
+    action="{{ logs_path }}"
+    method="get"
+    hx-get="{{ logs_data_path }}"
+    hx-target="#logs-results"
+    hx-swap="outerHTML"
+  >
+    <input type="hidden" name="page" value="1" />
+    <div class="filter-grid filter-grid-logs">
+      <label class="field">
+        <span>Log Level</span>
+        <select name="level">
+          <option value="">All levels</option>
+          <option value="ERROR" {% if filters.level == "ERROR" %}selected{% endif %}>ERROR</option>
+          <option value="WARN" {% if filters.level == "WARN" %}selected{% endif %}>WARN</option>
+          <option value="INFO" {% if filters.level == "INFO" %}selected{% endif %}>INFO</option>
+          <option value="DEBUG" {% if filters.level == "DEBUG" %}selected{% endif %}>DEBUG</option>
+          <option value="TRACE" {% if filters.level == "TRACE" %}selected{% endif %}>TRACE</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Target/Module</span>
+        <input type="text" name="target" value="{{ filters.target }}" placeholder="pacsnode, pacs_core" />
+      </label>
+      <label class="field">
+        <span>Search Message</span>
+        <input type="text" name="search" value="{{ filters.search }}" placeholder="Enter search text" />
+      </label>
+      <label class="field">
+        <span>Page Size</span>
+        <select name="page_size">
+          <option value="25" {% if filters.page_size == 25 %}selected{% endif %}>25</option>
+          <option value="50" {% if filters.page_size == 50 %}selected{% endif %}>50</option>
+          <option value="100" {% if filters.page_size == 100 %}selected{% endif %}>100</option>
+          <option value="250" {% if filters.page_size == 250 %}selected{% endif %}>250</option>
+        </select>
+      </label>
+    </div>
+    <div class="filter-actions">
+      <button type="submit" class="action-button">Search</button>
+      <a href="{{ logs_path }}" class="action-button secondary">Clear filters</a>
+    </div>
+  </form>
+</section>
+
+<div
+  id="logs-results"
+  hx-ext="sse"
+  hx-sse="connect:{{ logs_stream_path }}"
+  hx-sse="message:logs"
+  hx-sse="swap:logs"
+  hx-target="#logs-results"
+  hx-swap="outerHTML"
+>
+  {{ results_markup|safe }}
+</div>
+{% endblock %}

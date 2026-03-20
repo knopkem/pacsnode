@@ -42,7 +42,7 @@ use tracing::{info, warn};
 
 mod config;
 
-use config::{AppConfig, GeneratedConfigProfile, LogFormat};
+use config::{AppConfig, GeneratedConfigProfile, LoggingConfig};
 use pacs_admin_plugin as _;
 use pacs_audit_plugin as _;
 use pacs_auth_plugin as _;
@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
             email,
         } => {
             let cfg = AppConfig::load().context("failed to load configuration")?;
-            init_tracing(&cfg.logging.level, &cfg.logging.format);
+            init_tracing(&cfg.logging);
             create_bootstrap_admin(&cfg, username, display_name, email).await?;
             return Ok(());
         }
@@ -104,22 +104,13 @@ async fn main() -> Result<()> {
     let backend_selection = select_backend_plugins(&cfg)?;
 
     // ── Tracing ───────────────────────────────────────────────────────────────
-    init_tracing(&cfg.logging.level, &cfg.logging.format);
+    init_tracing(&cfg.logging);
 
-    info!(
-        http_port  = cfg.server.http_port,
-        dicom_port = cfg.server.dicom_port,
-        ae_title   = %cfg.server.ae_title,
-        "pacsnode starting"
-    );
-    let (enabled_plugins, audit_auto_enabled) = effective_enabled_plugins(&cfg, backend_selection);
-    if audit_auto_enabled {
-        info!(
-            plugin_id = AUDIT_LOGGER_PLUGIN_ID,
-            secured_by = BASIC_AUTH_PLUGIN_ID,
-            "Auto-enabling audit logging for secured deployment"
-        );
-    }
+    let (enabled_plugins, _audit_auto_enabled) = effective_enabled_plugins(&cfg, backend_selection);
+    
+    // Print clean startup message instead of verbose logging
+    print_startup_message(&cfg, &enabled_plugins);
+
     let mut registry = PluginRegistry::new();
     registry.set_enabled(enabled_plugins);
     registry
@@ -930,27 +921,62 @@ fn validate_configured_nodes(nodes: &[DicomNode]) -> Result<()> {
 }
 
 /// Initialise the global [`tracing`] subscriber.
-fn init_tracing(level: &str, format: &LogFormat) {
-    use tracing_subscriber::{fmt, EnvFilter};
+fn init_tracing(logging: &LoggingConfig) {
+    use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&logging.level));
 
-    match format {
-        LogFormat::Json => {
-            fmt()
-                .json()
-                .with_env_filter(filter)
-                .with_target(true)
-                .init();
-        }
-        LogFormat::Pretty => {
-            fmt()
-                .pretty()
-                .with_env_filter(filter)
-                .with_target(true)
-                .init();
-        }
+    // Initialize the global log buffer if enabled
+    pacs_admin_plugin::init_global_log_buffer(logging.web_buffer.clone().into());
+
+    // Create subscriber with only the log buffer layer (no console output)
+    let subscriber = tracing_subscriber::registry().with(filter);
+
+    // Only add log buffer layer if available, otherwise use minimal subscriber
+    if let Some(log_buffer_layer) = pacs_admin_plugin::global_log_buffer_layer() {
+        subscriber.with(log_buffer_layer).init();
+    } else {
+        // If log buffer is disabled, still need to initialize tracing but with no output
+        subscriber.init();
     }
+}
+
+fn detect_runtime_mode(cfg: &AppConfig) -> &'static str {
+    if let Some(database) = &cfg.database {
+        let url = database.url.trim();
+        if url.starts_with("sqlite://") {
+            "standalone"
+        } else if url.starts_with("postgres://") || url.starts_with("postgresql://") {
+            "production"
+        } else {
+            "unknown"
+        }
+    } else {
+        "unknown"
+    }
+}
+
+fn print_startup_message(cfg: &AppConfig, enabled_plugins: &[String]) {
+    let mode = detect_runtime_mode(cfg);
+    
+    println!("🚀 pacsnode starting");
+    println!("   Mode: {}", mode);
+    println!("   HTTP: http://0.0.0.0:{}", cfg.server.http_port);
+    println!("   DIMSE: {}@{}", cfg.server.ae_title, cfg.server.dicom_port);
+    println!();
+    println!("📍 Available routes:");
+    
+    // Check for viewer plugin
+    if enabled_plugins.contains(&"ohif-viewer".to_string()) {
+        println!("   Viewer: http://localhost:{}/", cfg.server.http_port);
+    }
+    
+    // Check for admin plugin  
+    if enabled_plugins.contains(&"admin-dashboard".to_string()) {
+        println!("   Admin:  http://localhost:{}/admin", cfg.server.http_port);
+    }
+    
+    println!();
 }
 
 /// Resolves when SIGINT / Ctrl+C is received.
@@ -991,7 +1017,7 @@ fn audit_auto_enable_in_secure_deployments(cfg: &AppConfig) -> bool {
 mod tests {
     use super::*;
     use crate::config::{
-        DatabaseConfig, FilesystemStorageConfig, LoggingConfig, PluginsConfig, ServerConfig,
+        DatabaseConfig, FilesystemStorageConfig, LogFormat, LoggingConfig, PluginsConfig, ServerConfig,
         StorageConfig,
     };
 
@@ -1047,6 +1073,7 @@ mod tests {
             logging: LoggingConfig {
                 level: "info".into(),
                 format: LogFormat::Json,
+                web_buffer: Default::default(),
             },
             plugins: PluginsConfig {
                 enabled: enabled.iter().map(|id| (*id).to_string()).collect(),

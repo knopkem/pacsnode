@@ -26,6 +26,7 @@
           <a href="{{ route_prefix }}/studies" class="{% if active_nav == "studies" %}active{% endif %}">Studies</a>
           <a href="{{ route_prefix }}/nodes" class="{% if active_nav == "nodes" %}active{% endif %}">Nodes</a>
           <a href="{{ route_prefix }}/audit" class="{% if active_nav == "audit" %}active{% endif %}">Audit</a>
+          <a href="{{ route_prefix }}/logs" class="{% if active_nav == "logs" %}active{% endif %}">Logs</a>
         </nav>
         {% match logout_path %}
         {% when Some with (path) %}

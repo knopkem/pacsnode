@@ -1,0 +1,61 @@
+<section class="panel" id="logs-results">
+  <header class="panel-header">
+    <div>
+      <p class="eyebrow">Results</p>
+      <h3>
+        {% if total_entries > 0 %}
+          Showing {{ entries.len() }} of {{ total_entries }} log entries
+        {% else %}
+          No log entries found
+        {% endif %}
+      </h3>
+    </div>
+  </header>
+  
+  {% if entries.len() > 0 %}
+  <div class="logs-container">
+    {% for entry in entries %}
+    <div class="log-entry">
+      <div class="log-header">
+        <span class="log-timestamp">{{ entry.timestamp }}</span>
+        <span class="log-level {{ entry.level_class }}">{{ entry.level }}</span>
+        <span class="log-target">{{ entry.target }}</span>
+        {% match entry.span_name %}
+        {% when Some with (span) %}
+        <span class="log-span">{{ span }}</span>
+        {% when None %}
+        {% endmatch %}
+      </div>
+      <div class="log-message">{{ entry.message }}</div>
+      {% if entry.fields_json != "{}" %}
+      <details class="log-fields">
+        <summary>Structured fields</summary>
+        <pre><code>{{ entry.fields_json }}</code></pre>
+      </details>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+
+  {% if has_more %}
+  <div class="panel-actions">
+    <button
+      type="button"
+      hx-get="{{ logs_data_path }}"
+      hx-vals="{'page': {{ current_page + 1 }}}"
+      hx-target="#logs-results"
+      hx-swap="outerHTML"
+      class="action-button secondary"
+    >
+      Load more entries
+    </button>
+  </div>
+  {% endif %}
+  
+  {% else %}
+  <div class="empty-state">
+    <p>No log entries match your current filter criteria.</p>
+    <p>Try adjusting your filters or clearing the search to see more results.</p>
+  </div>
+  {% endif %}
+</section>

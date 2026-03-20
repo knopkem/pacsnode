@@ -29,9 +29,80 @@ fn prepare_part_for_storage(
         return Ok(part.clone());
     }
 
+    // For image compression transfer syntaxes, attempt transcoding and handle the special case
+    // where there's no pixel data to compress. This is more robust than trying to detect
+    // pixel data presence upfront, as the transcoding library knows exactly what it needs.
+    if is_image_compression_transfer_syntax(target_ts_uid) {
+        match transcode_part10(part.encoded_bytes.clone(), target_ts_uid) {
+            Err(error) => {
+                let error_msg = error.to_string();
+                if error_msg.contains("without PixelData") || error_msg.contains("without pixel data") {
+                    // This instance doesn't have pixel data, so skip image compression
+                    return Ok(part.clone());
+                }
+                // For other transcoding errors, propagate them as before
+                return Err(ApiError::from(PacsError::DicomParse(error_msg)));
+            }
+            Ok(transcoded) => {
+                return ParsedDicom::from_bytes(transcoded).map_err(ApiError::from);
+            }
+        }
+    }
+
     let transcoded = transcode_part10(part.encoded_bytes.clone(), target_ts_uid)
         .map_err(|error| ApiError::from(PacsError::DicomParse(error.to_string())))?;
     ParsedDicom::from_bytes(transcoded).map_err(ApiError::from)
+}
+
+
+
+/// Check if a transfer syntax UID represents image compression
+fn is_image_compression_transfer_syntax(ts_uid: &str) -> bool {
+    matches!(ts_uid,
+        // JPEG 2000 variants
+        "1.2.840.10008.1.2.4.90" |  // JPEG 2000 Lossless
+        "1.2.840.10008.1.2.4.91" |  // JPEG 2000
+        "1.2.840.10008.1.2.4.92" |  // JPEG 2000 Part 2 Multi-component Lossless
+        "1.2.840.10008.1.2.4.93" |  // JPEG 2000 Part 2 Multi-component
+        // HTJ2K variants  
+        "1.2.840.10008.1.2.4.201" | // HTJ2K Lossless
+        "1.2.840.10008.1.2.4.202" | // HTJ2K Lossless RPT
+        "1.2.840.10008.1.2.4.203" | // HTJ2K
+        // JPEG variants
+        "1.2.840.10008.1.2.4.50" |  // JPEG Baseline
+        "1.2.840.10008.1.2.4.51" |  // JPEG Extended
+        "1.2.840.10008.1.2.4.52" |  // JPEG Extended (3,5)
+        "1.2.840.10008.1.2.4.53" |  // JPEG Spectral Selection Non-Hierarchical (6,8)
+        "1.2.840.10008.1.2.4.54" |  // JPEG Spectral Selection Non-Hierarchical (7,9)
+        "1.2.840.10008.1.2.4.55" |  // JPEG Full Progression Non-Hierarchical (10,12)
+        "1.2.840.10008.1.2.4.56" |  // JPEG Full Progression Non-Hierarchical (11,13)
+        "1.2.840.10008.1.2.4.57" |  // JPEG Lossless Non-Hierarchical (14)
+        "1.2.840.10008.1.2.4.58" |  // JPEG Lossless Non-Hierarchical (15)
+        "1.2.840.10008.1.2.4.59" |  // JPEG Extended Hierarchical (16,18)
+        "1.2.840.10008.1.2.4.60" |  // JPEG Extended Hierarchical (17,19)
+        "1.2.840.10008.1.2.4.61" |  // JPEG Spectral Selection Hierarchical (20,22)
+        "1.2.840.10008.1.2.4.62" |  // JPEG Spectral Selection Hierarchical (21,23)
+        "1.2.840.10008.1.2.4.63" |  // JPEG Full Progression Hierarchical (24,26)
+        "1.2.840.10008.1.2.4.64" |  // JPEG Full Progression Hierarchical (25,27)
+        "1.2.840.10008.1.2.4.65" |  // JPEG Lossless Hierarchical (28)
+        "1.2.840.10008.1.2.4.66" |  // JPEG Lossless Hierarchical (29)
+        "1.2.840.10008.1.2.4.70" |  // JPEG Lossless Non-Hierarchical First-Order Prediction
+        // JPEG-LS variants
+        "1.2.840.10008.1.2.4.80" |  // JPEG-LS Lossless
+        "1.2.840.10008.1.2.4.81" |  // JPEG-LS Lossy Near-Lossless
+        // RLE
+        "1.2.840.10008.1.2.5" |     // RLE Lossless
+        // MPEG variants
+        "1.2.840.10008.1.2.4.100" | // MPEG2 Main Profile @ Main Level
+        "1.2.840.10008.1.2.4.101" | // MPEG2 Main Profile @ High Level
+        "1.2.840.10008.1.2.4.102" | // MPEG-4 AVC/H.264 High Profile
+        "1.2.840.10008.1.2.4.103" | // MPEG-4 AVC/H.264 BD-compatible High Profile
+        "1.2.840.10008.1.2.4.104" | // MPEG-4 AVC/H.264 High Profile For 2D Video
+        "1.2.840.10008.1.2.4.105" | // MPEG-4 AVC/H.264 High Profile For 3D Video
+        "1.2.840.10008.1.2.4.106" | // MPEG-4 AVC/H.264 Stereo High Profile
+        "1.2.840.10008.1.2.4.107" | // HEVC/H.265 Main Profile
+        "1.2.840.10008.1.2.4.108"   // HEVC/H.265 Main 10 Profile
+    )
 }
 
 /// `POST /wado/studies` — STOW-RS store endpoint (PS3.18 §10.5).

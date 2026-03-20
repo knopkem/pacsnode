@@ -277,14 +277,14 @@ fn display_directory_path(path: &Path) -> String {
     path.to_string_lossy().to_string()
 }
 
-fn include_browser_directory(entry_name: &str, path: &Path) -> bool {
+fn include_browser_directory(entry_name: &str, _path: &Path) -> bool {
     if entry_name.is_empty() {
         return false;
     }
 
     #[cfg(target_os = "macos")]
     {
-        if path.parent() == Some(Path::new("/")) && entry_name.starts_with('.') {
+        if _path.parent() == Some(Path::new("/")) && entry_name.starts_with('.') {
             return false;
         }
     }

@@ -127,7 +127,7 @@ pub(crate) async fn get(pool: &PgPool, uid: &StudyUid) -> PacsResult<Study> {
 ///
 /// Applies filters in order: patient_id, patient_name (with optional fuzzy
 /// matching), date range, accession_number, study_uid, modality.
-/// Always appends `ORDER BY created_at DESC LIMIT … OFFSET …`.
+/// Applies ordering and optional pagination.
 pub(crate) async fn query(pool: &PgPool, q: &StudyQuery) -> PacsResult<Vec<Study>> {
     let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(format!("{SELECT_COLS} WHERE 1=1"));
 
@@ -177,12 +177,15 @@ pub(crate) async fn query(pool: &PgPool, q: &StudyQuery) -> PacsResult<Vec<Study
         qb.push(" = ANY(modalities)");
     }
 
-    let limit = i64::from(q.limit.unwrap_or(100));
-    let offset = i64::from(q.offset.unwrap_or(0));
-    qb.push(" ORDER BY created_at DESC LIMIT ");
-    qb.push_bind(limit);
-    qb.push(" OFFSET ");
-    qb.push_bind(offset);
+    qb.push(" ORDER BY created_at DESC");
+    if let Some(limit) = q.limit {
+        qb.push(" LIMIT ");
+        qb.push_bind(i64::from(limit));
+    }
+    if let Some(offset) = q.offset {
+        qb.push(" OFFSET ");
+        qb.push_bind(i64::from(offset));
+    }
 
     qb.build_query_as::<StudyRow>()
         .fetch_all(pool)

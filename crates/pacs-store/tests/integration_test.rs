@@ -833,6 +833,46 @@ async fn test_query_instances_by_series_uid() {
 }
 
 #[tokio::test]
+async fn test_query_instances_without_limit_returns_all_matches() {
+    let Some((pool, _c)) = setup_pool().await else {
+        return;
+    };
+    let store = PgMetadataStore::new(pool);
+
+    let study = make_study(study_uid(235));
+    let series = make_series(series_uid(235), &study);
+    store.store_study(&study).await.expect("store study");
+    store.store_series(&series).await.expect("store series");
+
+    for n in 1..=105 {
+        let mut instance = make_instance(instance_uid(2350 + n), &series, &study);
+        instance.instance_number = Some(n as i32);
+        instance.blob_key = format!(
+            "{}/{}/{}",
+            study.study_uid, series.series_uid, instance.instance_uid
+        );
+        store
+            .store_instance(&instance)
+            .await
+            .expect("store instance");
+    }
+
+    let results = store
+        .query_instances(&InstanceQuery {
+            series_uid: series.series_uid.clone(),
+            instance_uid: None,
+            sop_class_uid: None,
+            instance_number: None,
+            limit: None,
+            offset: None,
+        })
+        .await
+        .expect("query_instances failed");
+
+    assert_eq!(results.len(), 105);
+}
+
+#[tokio::test]
 async fn test_get_nonexistent_instance_returns_not_found() {
     let Some((pool, _c)) = setup_pool().await else {
         return;

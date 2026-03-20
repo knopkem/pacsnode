@@ -32,6 +32,30 @@ impl SqliteMetadataStore {
     }
 }
 
+fn push_optional_limit_offset(
+    qb: &mut QueryBuilder<Sqlite>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) {
+    match (limit, offset) {
+        (Some(limit), Some(offset)) => {
+            qb.push(" LIMIT ");
+            qb.push_bind(i64::from(limit));
+            qb.push(" OFFSET ");
+            qb.push_bind(i64::from(offset));
+        }
+        (Some(limit), None) => {
+            qb.push(" LIMIT ");
+            qb.push_bind(i64::from(limit));
+        }
+        (None, Some(offset)) => {
+            qb.push(" LIMIT -1 OFFSET ");
+            qb.push_bind(i64::from(offset));
+        }
+        (None, None) => {}
+    }
+}
+
 #[derive(sqlx::FromRow)]
 struct StudyRow {
     study_uid: String,
@@ -600,10 +624,8 @@ impl MetadataStore for SqliteMetadataStore {
             qb.push(")");
         }
 
-        qb.push(" ORDER BY created_at DESC LIMIT ");
-        qb.push_bind(i64::from(query.limit.unwrap_or(100)));
-        qb.push(" OFFSET ");
-        qb.push_bind(i64::from(query.offset.unwrap_or(0)));
+        qb.push(" ORDER BY created_at DESC");
+        push_optional_limit_offset(&mut qb, query.limit, query.offset);
 
         qb.build_query_as::<StudyRow>()
             .fetch_all(&self.pool)
@@ -632,10 +654,8 @@ impl MetadataStore for SqliteMetadataStore {
             qb.push_bind(series_number);
         }
 
-        qb.push(" ORDER BY series_number IS NULL, series_number ASC LIMIT ");
-        qb.push_bind(i64::from(query.limit.unwrap_or(100)));
-        qb.push(" OFFSET ");
-        qb.push_bind(i64::from(query.offset.unwrap_or(0)));
+        qb.push(" ORDER BY series_number IS NULL, series_number ASC");
+        push_optional_limit_offset(&mut qb, query.limit, query.offset);
 
         qb.build_query_as::<SeriesRow>()
             .fetch_all(&self.pool)
@@ -664,10 +684,8 @@ impl MetadataStore for SqliteMetadataStore {
             qb.push_bind(instance_number);
         }
 
-        qb.push(" ORDER BY instance_number IS NULL, instance_number ASC LIMIT ");
-        qb.push_bind(i64::from(query.limit.unwrap_or(100)));
-        qb.push(" OFFSET ");
-        qb.push_bind(i64::from(query.offset.unwrap_or(0)));
+        qb.push(" ORDER BY instance_number IS NULL, instance_number ASC");
+        push_optional_limit_offset(&mut qb, query.limit, query.offset);
 
         qb.build_query_as::<InstanceRow>()
             .fetch_all(&self.pool)
@@ -1546,6 +1564,94 @@ mod tests {
                 .await
                 .expect("fetch series count");
         assert_eq!(series_count.0, 1);
+    }
+
+    #[tokio::test]
+    async fn query_studies_without_limit_returns_all_matches() {
+        let (_tempdir, store) = test_store().await;
+
+        for index in 0..105 {
+            let mut study = sample_study();
+            study.study_uid = StudyUid::from(format!("1.2.840.10008.{}", index + 1));
+            study.patient_id = Some(format!("PID{:03}", index + 1));
+            store.store_study(&study).await.expect("store study");
+        }
+
+        let results = store
+            .query_studies(&StudyQuery {
+                limit: None,
+                offset: None,
+                ..StudyQuery::default()
+            })
+            .await
+            .expect("query studies");
+
+        assert_eq!(results.len(), 105);
+    }
+
+    #[tokio::test]
+    async fn query_series_without_limit_returns_all_matches() {
+        let (_tempdir, store) = test_store().await;
+        let study = sample_study();
+        store.store_study(&study).await.expect("store study");
+
+        for index in 0..105 {
+            let mut series = sample_series(&study.study_uid);
+            series.series_uid = SeriesUid::from(format!("2.25.{}", index + 1));
+            series.series_number = Some(index + 1);
+            store.store_series(&series).await.expect("store series");
+        }
+
+        let results = store
+            .query_series(&SeriesQuery {
+                study_uid: study.study_uid.clone(),
+                series_uid: None,
+                modality: None,
+                series_number: None,
+                limit: None,
+                offset: None,
+            })
+            .await
+            .expect("query series");
+
+        assert_eq!(results.len(), 105);
+    }
+
+    #[tokio::test]
+    async fn query_instances_without_limit_returns_all_matches() {
+        let (_tempdir, store) = test_store().await;
+        let study = sample_study();
+        let series = sample_series(&study.study_uid);
+        store.store_study(&study).await.expect("store study");
+        store.store_series(&series).await.expect("store series");
+
+        for index in 0..105 {
+            let mut instance = sample_instance(&study.study_uid, &series.series_uid);
+            instance.instance_uid = SopInstanceUid::from(format!("9.9.{}", index + 1));
+            instance.instance_number = Some(index + 1);
+            instance.blob_key = format!(
+                "{}/{}/{}",
+                study.study_uid, series.series_uid, instance.instance_uid
+            );
+            store
+                .store_instance(&instance)
+                .await
+                .expect("store instance");
+        }
+
+        let results = store
+            .query_instances(&InstanceQuery {
+                series_uid: series.series_uid.clone(),
+                instance_uid: None,
+                sop_class_uid: None,
+                instance_number: None,
+                limit: None,
+                offset: None,
+            })
+            .await
+            .expect("query instances");
+
+        assert_eq!(results.len(), 105);
     }
 
     #[tokio::test]

@@ -125,12 +125,15 @@ pub(crate) async fn query(pool: &PgPool, q: &SeriesQuery) -> PacsResult<Vec<Seri
         qb.push_bind(num);
     }
 
-    let limit = i64::from(q.limit.unwrap_or(100));
-    let offset = i64::from(q.offset.unwrap_or(0));
-    qb.push(" ORDER BY series_number ASC NULLS LAST LIMIT ");
-    qb.push_bind(limit);
-    qb.push(" OFFSET ");
-    qb.push_bind(offset);
+    qb.push(" ORDER BY series_number ASC NULLS LAST");
+    if let Some(limit) = q.limit {
+        qb.push(" LIMIT ");
+        qb.push_bind(i64::from(limit));
+    }
+    if let Some(offset) = q.offset {
+        qb.push(" OFFSET ");
+        qb.push_bind(i64::from(offset));
+    }
 
     qb.build_query_as::<SeriesRow>()
         .fetch_all(pool)

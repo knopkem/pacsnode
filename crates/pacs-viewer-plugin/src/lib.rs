@@ -846,7 +846,16 @@ fn generated_app_config(runtime: &ViewerRuntime) -> String {
                     "supportsWildcard": true,
                     "imageRendering": "wadors",
                     "thumbnailRendering": "thumbnail",
-                    "enableStudyLazyLoad": true
+                    "enableStudyLazyLoad": true,
+                    "acceptHeader": [
+                        "multipart/related; type=\"image/dicom-rle\"; transfer-syntax=\"*\"",
+                        "multipart/related; type=\"image/jpeg\"; transfer-syntax=\"*\"",
+                        "multipart/related; type=\"image/dicom+jpeg\"; transfer-syntax=\"*\"",
+                        "multipart/related; type=\"image/jls\"; transfer-syntax=\"*\"",
+                        "multipart/related; type=\"image/jp2\"; transfer-syntax=\"*\"",
+                        "multipart/related; type=\"image/jphc\"; transfer-syntax=\"*\"",
+                        "multipart/related; type=\"application/octet-stream\"; transfer-syntax=\"*\""
+                    ]
                 }
             }
         ],
@@ -1425,6 +1434,19 @@ mod tests {
         assert!(body.contains(r#""wadoRoot": "/wado""#));
         assert!(body.contains(r#""qidoSupportsIncludeField": true"#));
         assert!(body.contains(r#""thumbnailRendering": "thumbnail""#));
+        assert!(body.contains(r#""acceptHeader": ["#));
+        assert!(
+            body.contains(r#"multipart/related; type=\"image/dicom-rle\"; transfer-syntax=\"*\""#,)
+        );
+        assert!(body.contains(r#"multipart/related; type=\"image/jpeg\"; transfer-syntax=\"*\""#));
+        assert!(body
+            .contains(r#"multipart/related; type=\"image/dicom+jpeg\"; transfer-syntax=\"*\""#,));
+        assert!(body.contains(r#"multipart/related; type=\"image/jls\"; transfer-syntax=\"*\""#));
+        assert!(body.contains(r#"multipart/related; type=\"image/jp2\"; transfer-syntax=\"*\""#));
+        assert!(body.contains(r#"multipart/related; type=\"image/jphc\"; transfer-syntax=\"*\""#));
+        assert!(body.contains(
+            r#"multipart/related; type=\"application/octet-stream\"; transfer-syntax=\"*\""#,
+        ));
         assert!(body.contains(r#""defaultDataSourceName": "dicomweb""#));
         assert!(!body.contains("example.com"));
     }

@@ -131,6 +131,10 @@ impl BlobStore for FsBlobStore {
             .map_err(|error| Self::map_io_error(error, key))?;
         Self::file_url(&canonical)
     }
+
+    fn local_filesystem_root(&self) -> Option<PathBuf> {
+        Some(self.root.clone())
+    }
 }
 
 #[cfg(test)]
@@ -204,5 +208,18 @@ mod tests {
             .await
             .expect_err("unsafe key should fail");
         assert!(matches!(error, PacsError::InvalidRequest(_)));
+    }
+
+    #[test]
+    fn local_filesystem_root_returns_store_root() {
+        let (dir, store) = test_store();
+        let expected = dir
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| dir.path().to_path_buf());
+        assert_eq!(
+            store.local_filesystem_root().as_deref(),
+            Some(expected.as_path())
+        );
     }
 }

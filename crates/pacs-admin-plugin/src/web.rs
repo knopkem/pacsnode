@@ -722,9 +722,9 @@ async fn dashboard_page(
         return error_response(StatusCode::FORBIDDEN, message);
     }
 
-    let stats_markup = match render_stats_markup(&runtime).await {
+    let stats_markup = match render_loading_stats_markup() {
         Ok(markup) => markup,
-        Err(status) => return error_response(status, "admin dashboard failed to query PACS state"),
+        Err(status) => return error_response(status, "admin dashboard failed to render"),
     };
     let recent_activity_markup =
         match render_recent_activity_markup(runtime.recent_activity().await) {
@@ -874,7 +874,7 @@ async fn stats_fragment(
         return error_response(StatusCode::FORBIDDEN, message);
     }
 
-    match render_stats_markup(&runtime).await {
+    match render_stats_markup(&state, &runtime).await {
         Ok(markup) => html_markup_response(markup),
         Err(status) => error_response(status, "admin stats cards failed to render"),
     }
@@ -1027,15 +1027,17 @@ async fn start_local_import(
 
     tokio::spawn(async move {
         run_local_import_job(
-            runtime_for_job,
-            store,
-            blobs,
-            plugins,
+            LocalImportJobContext {
+                runtime: runtime_for_job,
+                store,
+                blobs,
+                plugins,
+                storage_transfer_syntax,
+                user_id,
+                audit_actor: Some(audit_actor),
+                cancel_token,
+            },
             summary,
-            storage_transfer_syntax,
-            user_id,
-            Some(audit_actor),
-            cancel_token,
         )
         .await;
     });
@@ -2207,13 +2209,14 @@ async fn events_stream(
 
     let mut rx = runtime.subscribe();
     let runtime_for_stream = Arc::clone(&runtime);
+    let state_for_stream = state.clone();
 
     let stream = stream! {
         loop {
             match rx.recv().await {
                 Ok(event) => {
                     if should_emit_stats(&event) {
-                        match render_stats_markup(&runtime_for_stream).await {
+                        match render_stats_markup(&state_for_stream, &runtime_for_stream).await {
                             Ok(markup) => {
                                 yield Ok::<Event, Infallible>(Event::default().event("stats").data(markup));
                             }
@@ -2270,12 +2273,45 @@ fn should_emit_stats(event: &PacsEvent) -> bool {
     )
 }
 
-async fn render_stats_markup(runtime: &AdminRuntime) -> Result<String, StatusCode> {
+fn render_loading_stats_markup() -> Result<String, StatusCode> {
+    StatsCardsTemplate {
+        cards: vec![
+            StatCardView {
+                eyebrow: "Studies",
+                value: "--".into(),
+                detail: "Loading indexed totals...".into(),
+            },
+            StatCardView {
+                eyebrow: "Instances",
+                value: "--".into(),
+                detail: "Loading instance counters...".into(),
+            },
+            StatCardView {
+                eyebrow: "Storage",
+                value: "--".into(),
+                detail: "Loading storage summary...".into(),
+            },
+            StatCardView {
+                eyebrow: "Associations",
+                value: "--".into(),
+                detail: "Loading active DIMSE sessions...".into(),
+            },
+        ],
+    }
+    .render()
+    .map_err(internal_render_error)
+}
+
+async fn render_stats_markup(
+    state: &AppState,
+    runtime: &AdminRuntime,
+) -> Result<String, StatusCode> {
     let stats = runtime
         .metadata_store()
         .get_statistics()
         .await
         .map_err(internal_store_error)?;
+    let remaining_disk_bytes = remaining_blob_store_bytes(state.blobs.as_ref());
 
     StatsCardsTemplate {
         cards: vec![
@@ -2292,7 +2328,7 @@ async fn render_stats_markup(runtime: &AdminRuntime) -> Result<String, StatusCod
             StatCardView {
                 eyebrow: "Storage",
                 value: format_bytes(stats.disk_usage_bytes),
-                detail: "Metadata + binary payload footprint".into(),
+                detail: storage_card_detail(remaining_disk_bytes),
             },
             StatCardView {
                 eyebrow: "Associations",
@@ -2303,6 +2339,42 @@ async fn render_stats_markup(runtime: &AdminRuntime) -> Result<String, StatusCod
     }
     .render()
     .map_err(internal_render_error)
+}
+
+fn storage_card_detail(remaining_disk_bytes: Option<i64>) -> String {
+    match remaining_disk_bytes {
+        Some(bytes) => format!(
+            "Indexed metadata footprint. {} free on storage volume",
+            format_bytes(bytes)
+        ),
+        None => "Indexed metadata footprint. Free space unavailable for this backend".into(),
+    }
+}
+
+fn remaining_blob_store_bytes(blob_store: &dyn BlobStore) -> Option<i64> {
+    let root = blob_store.local_filesystem_root()?;
+    filesystem_available_bytes(&root)
+}
+
+#[cfg(unix)]
+fn filesystem_available_bytes(path: &std::path::Path) -> Option<i64> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+
+    let path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // `statvfs` fills the provided struct on success for the supplied filesystem path.
+    let result = unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) };
+    if result != 0 {
+        return None;
+    }
+    let stats = unsafe { stats.assume_init() };
+    let bytes = (stats.f_bavail as u128).saturating_mul(stats.f_frsize as u128);
+    Some(bytes.min(i64::MAX as u128) as i64)
+}
+
+#[cfg(not(unix))]
+fn filesystem_available_bytes(_path: &std::path::Path) -> Option<i64> {
+    None
 }
 
 fn render_recent_activity_markup(entries: Vec<ActivityEntry>) -> Result<String, StatusCode> {
@@ -2432,17 +2504,28 @@ async fn render_import_panel_response(
     }
 }
 
-async fn run_local_import_job(
+struct LocalImportJobContext {
     runtime: Arc<AdminRuntime>,
     store: Arc<dyn MetadataStore>,
     blobs: Arc<dyn BlobStore>,
     plugins: Arc<PluginRegistry>,
-    summary: ImportScanSummary,
     storage_transfer_syntax: Option<String>,
     user_id: Option<String>,
     audit_actor: Option<ImportAuditActor>,
     cancel_token: tokio_util::sync::CancellationToken,
-) {
+}
+
+async fn run_local_import_job(job: LocalImportJobContext, summary: ImportScanSummary) {
+    let LocalImportJobContext {
+        runtime,
+        store,
+        blobs,
+        plugins,
+        storage_transfer_syntax,
+        user_id,
+        audit_actor,
+        cancel_token,
+    } = job;
     let mut progress = ImportProgress {
         completed: 0,
         total: summary.files.len(),
@@ -4699,7 +4782,7 @@ fn normalized_patient_name(value: &Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use std::{path::PathBuf, sync::Arc};
 
     use async_trait::async_trait;
     use axum::{
@@ -4719,7 +4802,9 @@ mod tests {
     use tower::ServiceExt;
 
     #[derive(Default)]
-    struct NoopMetadataStore;
+    struct NoopMetadataStore {
+        panic_on_stats: bool,
+    }
 
     #[async_trait]
     impl MetadataStore for NoopMetadataStore {
@@ -4763,6 +4848,10 @@ mod tests {
             Ok(())
         }
         async fn get_statistics(&self) -> PacsResult<PacsStatistics> {
+            assert!(
+                !self.panic_on_stats,
+                "dashboard page should not query statistics during initial render"
+            );
             Ok(PacsStatistics {
                 num_studies: 0,
                 num_series: 0,
@@ -4846,6 +4935,10 @@ mod tests {
     #[derive(Default)]
     struct NoopBlobStore;
 
+    struct LocalRootBlobStore {
+        root: PathBuf,
+    }
+
     struct TestAuthPlugin;
 
     #[async_trait]
@@ -4881,12 +4974,47 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl BlobStore for LocalRootBlobStore {
+        async fn put(&self, _key: &str, _data: Bytes) -> PacsResult<()> {
+            Ok(())
+        }
+        async fn get(&self, _key: &str) -> PacsResult<Bytes> {
+            unreachable!()
+        }
+        async fn delete(&self, _key: &str) -> PacsResult<()> {
+            Ok(())
+        }
+        async fn exists(&self, _key: &str) -> PacsResult<bool> {
+            Ok(false)
+        }
+        async fn presigned_url(&self, _key: &str, _ttl_secs: u32) -> PacsResult<String> {
+            Ok(String::new())
+        }
+        fn local_filesystem_root(&self) -> Option<PathBuf> {
+            Some(self.root.clone())
+        }
+    }
+
     fn admin_user(role: UserRole) -> AuthenticatedUser {
         AuthenticatedUser::new("1", "alice", role.as_str(), serde_json::json!({}))
     }
 
     fn test_admin_app(user: Option<AuthenticatedUser>, auth_enabled: bool) -> Router {
-        let store: Arc<dyn MetadataStore> = Arc::new(NoopMetadataStore);
+        test_admin_app_with_backends(
+            user,
+            auth_enabled,
+            Arc::new(NoopMetadataStore::default()),
+            Arc::new(NoopBlobStore),
+        )
+    }
+
+    fn test_admin_app_with_backends(
+        user: Option<AuthenticatedUser>,
+        auth_enabled: bool,
+        store: Arc<dyn MetadataStore>,
+        blobs: Arc<dyn BlobStore>,
+    ) -> Router {
         let mut registry = PluginRegistry::new();
         if auth_enabled {
             registry.register(Box::new(TestAuthPlugin)).unwrap();
@@ -4900,7 +5028,7 @@ mod tests {
             },
             server_settings: ServerSettings::default(),
             store: Arc::clone(&store),
-            blobs: Arc::new(NoopBlobStore),
+            blobs,
             plugins: Arc::new(registry),
         };
         let runtime = Arc::new(
@@ -5002,7 +5130,65 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
-        assert!(html.contains("id=\"stats-shell\""));
+        assert!(html.contains("class=\"stat-card\""));
+        assert!(html.contains("Storage"));
+    }
+
+    #[tokio::test]
+    async fn dashboard_page_loads_without_querying_statistics() {
+        let app = test_admin_app_with_backends(
+            Some(admin_user(UserRole::Admin)),
+            true,
+            Arc::new(NoopMetadataStore {
+                panic_on_stats: true,
+            }),
+            Arc::new(NoopBlobStore),
+        );
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains(r#"hx-get="/admin/stats""#));
+        assert!(html.contains("Loading storage summary"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stats_fragment_shows_remaining_space_for_local_blob_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = test_admin_app_with_backends(
+            Some(admin_user(UserRole::Admin)),
+            true,
+            Arc::new(NoopMetadataStore::default()),
+            Arc::new(LocalRootBlobStore {
+                root: dir.path().to_path_buf(),
+            }),
+        );
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/stats")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("free on storage volume"));
     }
 
     #[tokio::test]
@@ -5302,7 +5488,10 @@ mod tests {
     #[test]
     fn import_phase_label_is_stable() {
         assert_eq!(import_phase_label(ImportPhase::Importing), "importing");
-        assert_eq!(import_phase_label(ImportPhase::ScanComplete), "scan_complete");
+        assert_eq!(
+            import_phase_label(ImportPhase::ScanComplete),
+            "scan_complete"
+        );
     }
 
     #[test]

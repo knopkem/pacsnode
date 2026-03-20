@@ -11,7 +11,7 @@ use pacs_core::{
     SopInstanceUid, Study, StudyUid,
 };
 use pacs_dicom::{
-    extract_bulk_data_path, extract_frames, metadata_with_bulk_data_uris,
+    extract_bulk_data_path, extract_frames, extract_stored_frames, metadata_with_bulk_data_uris,
     render_frames_with_options, supports_retrieve_transfer_syntax, transcode_part10, BulkDataValue,
     RenderedFrameOptions, RenderedMediaType, RenderedRegion,
 };
@@ -189,10 +189,12 @@ pub async fn retrieve_instance(
 }
 
 /// `GET /wado/studies/:study_uid/series/:series_uid/instances/:instance_uid/frames/:frame_list`
-/// — retrieve one or more raw frames as native octet-stream parts.
+/// — retrieve one or more frames either as native octet-stream or, for supported
+/// compressed syntaxes, in the stored compressed representation when requested.
 pub async fn retrieve_frames(
     State(state): State<AppState>,
     user: Option<axum::Extension<AuthenticatedUser>>,
+    headers: HeaderMap,
     Path((study_uid, series_uid, instance_uid, frame_list)): Path<(String, String, String, String)>,
 ) -> Result<Response, ApiError> {
     let auth_user = user.as_ref().map(|extension| &extension.0);
@@ -202,10 +204,30 @@ pub async fn retrieve_frames(
     let instance =
         load_authorized_instance(&state, auth_user, &study_uid, &series_uid, &uid).await?;
     let blob = state.blobs.get(&instance.blob_key).await?;
-    let parts = extract_frames(blob, &frames)
-        .map_err(PacsError::from)
-        .map_err(ApiError)?;
-    multipart_response_with_type(parts, "application/octet-stream")
+    let response_kind =
+        parse_retrieve_frames_request(&headers, instance.transfer_syntax.as_deref())?;
+
+    match response_kind {
+        RetrieveFramesResponseKind::NativeOctetStream => {
+            let parts = extract_frames(blob, &frames)
+                .map_err(PacsError::from)
+                .map_err(ApiError)?;
+            multipart_response_with_type(parts, "application/octet-stream")
+        }
+        RetrieveFramesResponseKind::StoredCompressed {
+            part_content_type,
+            transfer_syntax,
+        } => {
+            let parts = extract_stored_frames(blob, &frames)
+                .map_err(PacsError::from)
+                .map_err(ApiError)?;
+            multipart_response_with_type_and_transfer_syntax(
+                parts,
+                part_content_type,
+                &transfer_syntax,
+            )
+        }
+    }
 }
 
 /// `GET /wado/studies/:study_uid/rendered` — render the first frame of the first
@@ -572,6 +594,15 @@ pub struct RenderedQuery {
 #[derive(Debug, Default, Clone)]
 struct RetrieveRequest {
     transfer_syntax: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RetrieveFramesResponseKind {
+    NativeOctetStream,
+    StoredCompressed {
+        part_content_type: &'static str,
+        transfer_syntax: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1092,6 +1123,135 @@ fn normalize_content_type(content_type: &str) -> String {
         .to_ascii_lowercase()
 }
 
+fn parse_retrieve_frames_request(
+    headers: &HeaderMap,
+    stored_transfer_syntax: Option<&str>,
+) -> Result<RetrieveFramesResponseKind, ApiError> {
+    let Some(raw_accept) = headers.get(header::ACCEPT) else {
+        return Ok(RetrieveFramesResponseKind::NativeOctetStream);
+    };
+    let accept = raw_accept.to_str().map_err(|_| {
+        ApiError(PacsError::NotAcceptable(
+            "Accept header contains invalid UTF-8".into(),
+        ))
+    })?;
+
+    if accept.trim().is_empty() {
+        return Ok(RetrieveFramesResponseKind::NativeOctetStream);
+    }
+
+    for candidate in accept
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        if let Some(kind) =
+            parse_retrieve_frames_accept_candidate(candidate, stored_transfer_syntax)?
+        {
+            return Ok(kind);
+        }
+    }
+
+    Err(ApiError(PacsError::NotAcceptable(
+        "only application/octet-stream and supported compressed frame retrieval are supported"
+            .into(),
+    )))
+}
+
+fn parse_retrieve_frames_accept_candidate(
+    candidate: &str,
+    stored_transfer_syntax: Option<&str>,
+) -> Result<Option<RetrieveFramesResponseKind>, ApiError> {
+    let mut parts = candidate.split(';').map(str::trim);
+    let media_type = parts.next().unwrap_or_default().to_ascii_lowercase();
+
+    if matches!(media_type.as_str(), "*/*" | "application/*") {
+        return Ok(Some(RetrieveFramesResponseKind::NativeOctetStream));
+    }
+    if media_type != "multipart/related" {
+        return Ok(None);
+    }
+
+    let mut related_type: Option<String> = None;
+    let mut transfer_syntax: Option<String> = None;
+    for part in parts {
+        if part.is_empty() {
+            continue;
+        }
+        let mut kv = part.splitn(2, '=');
+        let key = kv.next().unwrap_or_default().trim().to_ascii_lowercase();
+        let value = kv
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .trim_matches('"')
+            .to_owned();
+        match key.as_str() {
+            "type" => related_type = Some(normalize_content_type(&value)),
+            "transfer-syntax" => transfer_syntax = Some(value),
+            "q" => {}
+            _ => {}
+        }
+    }
+
+    match related_type
+        .as_deref()
+        .unwrap_or("application/octet-stream")
+    {
+        "application/octet-stream" => Ok(Some(RetrieveFramesResponseKind::NativeOctetStream)),
+        requested_part_content_type => {
+            let Some(stored_ts_uid) = stored_transfer_syntax else {
+                return Ok(None);
+            };
+            let Some(stored_part_content_type) =
+                stored_compressed_frame_content_type(stored_ts_uid)
+            else {
+                return Ok(None);
+            };
+            if requested_part_content_type != stored_part_content_type {
+                return Ok(None);
+            }
+            if transfer_syntax
+                .as_deref()
+                .map(|requested| requested == "*" || requested == stored_ts_uid)
+                .unwrap_or(true)
+            {
+                return Ok(Some(RetrieveFramesResponseKind::StoredCompressed {
+                    part_content_type: stored_part_content_type,
+                    transfer_syntax: stored_ts_uid.to_owned(),
+                }));
+            }
+            Ok(None)
+        }
+    }
+}
+
+fn stored_compressed_frame_content_type(ts_uid: &str) -> Option<&'static str> {
+    matches!(
+        ts_uid,
+        "1.2.840.10008.1.2.4.50" | "1.2.840.10008.1.2.4.57" | "1.2.840.10008.1.2.4.70"
+    )
+    .then_some("image/jpeg")
+    .or_else(|| (ts_uid == "1.2.840.10008.1.2.4.51").then_some("image/dicom+jpeg"))
+    .or_else(|| (ts_uid == "1.2.840.10008.1.2.5").then_some("image/dicom-rle"))
+    .or_else(|| {
+        matches!(ts_uid, "1.2.840.10008.1.2.4.80" | "1.2.840.10008.1.2.4.81").then_some("image/jls")
+    })
+    .or_else(|| {
+        matches!(ts_uid, "1.2.840.10008.1.2.4.90" | "1.2.840.10008.1.2.4.91").then_some("image/jp2")
+    })
+    .or_else(|| {
+        matches!(
+            ts_uid,
+            "3.2.840.10008.1.2.4.96"
+                | "1.2.840.10008.1.2.4.201"
+                | "1.2.840.10008.1.2.4.202"
+                | "1.2.840.10008.1.2.4.203"
+        )
+        .then_some("image/jphc")
+    })
+}
+
 fn parse_retrieve_request(headers: &HeaderMap) -> Result<RetrieveRequest, ApiError> {
     let Some(raw_accept) = headers.get(header::ACCEPT) else {
         return Ok(RetrieveRequest::default());
@@ -1206,10 +1366,37 @@ fn multipart_response_with_type(
     multipart_response_with_type_and_locations(parts, part_content_type, Vec::new())
 }
 
+fn multipart_response_with_type_and_transfer_syntax(
+    parts: Vec<Bytes>,
+    part_content_type: &str,
+    transfer_syntax: &str,
+) -> Result<Response, ApiError> {
+    multipart_response_with_type_and_locations_and_transfer_syntax(
+        parts,
+        part_content_type,
+        Vec::new(),
+        Some(transfer_syntax),
+    )
+}
+
 fn multipart_response_with_type_and_locations(
     parts: Vec<Bytes>,
     part_content_type: &str,
     content_locations: Vec<String>,
+) -> Result<Response, ApiError> {
+    multipart_response_with_type_and_locations_and_transfer_syntax(
+        parts,
+        part_content_type,
+        content_locations,
+        None,
+    )
+}
+
+fn multipart_response_with_type_and_locations_and_transfer_syntax(
+    parts: Vec<Bytes>,
+    part_content_type: &str,
+    content_locations: Vec<String>,
+    transfer_syntax: Option<&str>,
 ) -> Result<Response, ApiError> {
     let boundary = Uuid::new_v4().simple().to_string();
     let locations = (!content_locations.is_empty()).then_some(content_locations.as_slice());
@@ -1218,7 +1405,7 @@ fn multipart_response_with_type_and_locations(
         .status(StatusCode::OK)
         .header(
             header::CONTENT_TYPE,
-            format!("multipart/related; type=\"{part_content_type}\"; boundary={boundary}"),
+            multipart_content_type(boundary.as_str(), part_content_type, transfer_syntax),
         )
         .body(axum::body::Body::from(body))
         .map_err(|e| ApiError(PacsError::Internal(e.to_string())))
@@ -1230,6 +1417,19 @@ fn multipart_dicom_content_type(boundary: &str, transfer_syntax: Option<&str>) -
             "multipart/related; type=\"application/dicom\"; transfer-syntax={ts_uid}; boundary={boundary}"
         ),
         None => format!("multipart/related; type=\"application/dicom\"; boundary={boundary}"),
+    }
+}
+
+fn multipart_content_type(
+    boundary: &str,
+    part_content_type: &str,
+    transfer_syntax: Option<&str>,
+) -> String {
+    match transfer_syntax {
+        Some(ts_uid) => format!(
+            "multipart/related; type=\"{part_content_type}\"; transfer-syntax={ts_uid}; boundary={boundary}"
+        ),
+        None => format!("multipart/related; type=\"{part_content_type}\"; boundary={boundary}"),
     }
 }
 
@@ -1297,7 +1497,8 @@ mod tests {
     };
     use bytes::Bytes;
     use dicom_toolkit_data::{
-        DataSet, DicomReader, DicomWriter, Element, FileFormat, PixelData, Value,
+        encapsulated_pixel_data_from_frames, DataSet, DicomReader, DicomWriter, Element,
+        FileFormat, PixelData, Value,
     };
     use dicom_toolkit_dict::{tags, ts::transfer_syntaxes, Tag, Vr};
     use http_body_util::BodyExt;
@@ -1363,6 +1564,52 @@ mod tests {
             .write_file(&ff)
             .unwrap();
         Bytes::from(buf)
+    }
+
+    fn make_encapsulated_multiframe_dicom(transfer_syntax_uid: &str, frames: &[Vec<u8>]) -> Bytes {
+        let mut ds = DataSet::new();
+        ds.set_string(tags::STUDY_INSTANCE_UID, Vr::UI, "1.2.3");
+        ds.set_string(tags::SERIES_INSTANCE_UID, Vr::UI, "1.2.3.4");
+        ds.set_string(tags::SOP_INSTANCE_UID, Vr::UI, "1.2.3.4.5");
+        ds.set_string(tags::SOP_CLASS_UID, Vr::UI, "1.2.840.10008.5.1.4.1.1.2");
+        ds.set_u16(tags::ROWS, 1);
+        ds.set_u16(tags::COLUMNS, 2);
+        ds.set_u16(tags::SAMPLES_PER_PIXEL, 1);
+        ds.set_u16(tags::BITS_ALLOCATED, 8);
+        ds.set_u16(tags::BITS_STORED, 8);
+        ds.set_u16(tags::HIGH_BIT, 7);
+        ds.set_u16(tags::PIXEL_REPRESENTATION, 0);
+        ds.set_string(tags::PHOTOMETRIC_INTERPRETATION, Vr::CS, "MONOCHROME2");
+        let frame_count = frames.len().to_string();
+        ds.set_string(tags::NUMBER_OF_FRAMES, Vr::IS, &frame_count);
+        ds.insert(Element::new(
+            tags::PIXEL_DATA,
+            Vr::OB,
+            Value::PixelData(encapsulated_pixel_data_from_frames(frames).unwrap()),
+        ));
+
+        let mut ff = FileFormat::from_dataset("1.2.840.10008.5.1.4.1.1.2", "1.2.3.4.5", ds);
+        ff.meta.transfer_syntax_uid = transfer_syntax_uid.to_owned();
+
+        let mut buf = Vec::new();
+        DicomWriter::new(std::io::Cursor::new(&mut buf))
+            .write_file(&ff)
+            .unwrap();
+        Bytes::from(buf)
+    }
+
+    fn make_htj2k_multiframe_dicom() -> Bytes {
+        make_encapsulated_multiframe_dicom(
+            transfer_syntaxes::HIGH_THROUGHPUT_JPEG_2000_LOSSLESS_ONLY.uid,
+            &[vec![0xFF, 0x4F, 0x11, 0x22], vec![0xFF, 0x4F, 0x33, 0x44]],
+        )
+    }
+
+    fn make_jpegls_multiframe_dicom() -> Bytes {
+        make_encapsulated_multiframe_dicom(
+            transfer_syntaxes::JPEG_LS_LOSSLESS.uid,
+            &[vec![0xFF, 0xD8, 0xF7, 0x11], vec![0xFF, 0xD8, 0xF7, 0x22]],
+        )
     }
 
     fn make_nested_bulkdata_dicom() -> Bytes {
@@ -1431,6 +1678,36 @@ mod tests {
         let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
         let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
         (width, height)
+    }
+
+    #[test]
+    fn stored_compressed_frame_content_type_maps_supported_syntaxes() {
+        assert_eq!(
+            stored_compressed_frame_content_type(transfer_syntaxes::RLE_LOSSLESS.uid),
+            Some("image/dicom-rle")
+        );
+        assert_eq!(
+            stored_compressed_frame_content_type(transfer_syntaxes::JPEG_BASELINE.uid),
+            Some("image/jpeg")
+        );
+        assert_eq!(
+            stored_compressed_frame_content_type(transfer_syntaxes::JPEG_LS_LOSSLESS.uid),
+            Some("image/jls")
+        );
+        assert_eq!(
+            stored_compressed_frame_content_type(transfer_syntaxes::JPEG_2000_LOSSLESS.uid),
+            Some("image/jp2")
+        );
+        assert_eq!(
+            stored_compressed_frame_content_type(
+                transfer_syntaxes::HIGH_THROUGHPUT_JPEG_2000_LOSSLESS_ONLY.uid
+            ),
+            Some("image/jphc")
+        );
+        assert_eq!(
+            stored_compressed_frame_content_type(transfer_syntaxes::EXPLICIT_VR_LITTLE_ENDIAN.uid),
+            None
+        );
     }
 
     #[tokio::test]
@@ -1725,6 +2002,121 @@ mod tests {
         assert!(content_type.contains("application/octet-stream"));
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         assert!(body.windows(2).any(|window| window == [0x11, 0x22]));
+    }
+
+    #[tokio::test]
+    async fn test_retrieve_frames_returns_stored_htj2k_multipart_when_requested() {
+        let dicom = make_htj2k_multiframe_dicom();
+        let instance = make_instance_from_dicom(&dicom);
+
+        let mut store = MockMetaStore::new();
+        store
+            .expect_get_instance()
+            .once()
+            .returning(move |_| Ok(instance.clone()));
+
+        let mut blobs = MockBlobStr::new();
+        blobs
+            .expect_get()
+            .once()
+            .returning(move |_| Ok(dicom.clone()));
+
+        let app = build_router(make_test_state(store, blobs));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies/1.2.3/series/1.2.3.4/instances/1.2.3.4.5/frames/1")
+                    .header(
+                        header::ACCEPT,
+                        r#"multipart/related; type="image/jphc"; transfer-syntax="*""#,
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let content_type = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(content_type.contains("multipart/related"));
+        assert!(content_type.contains(r#"type="image/jphc""#));
+        assert!(
+            content_type.contains(transfer_syntaxes::HIGH_THROUGHPUT_JPEG_2000_LOSSLESS_ONLY.uid)
+        );
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert!(body
+            .windows(4)
+            .any(|window| window == [0xFF, 0x4F, 0x11, 0x22]));
+    }
+
+    #[tokio::test]
+    async fn test_retrieve_frames_returns_stored_jpegls_multipart_when_requested() {
+        let dicom = make_jpegls_multiframe_dicom();
+        let instance = make_instance_from_dicom(&dicom);
+
+        let mut store = MockMetaStore::new();
+        store
+            .expect_get_instance()
+            .once()
+            .returning(move |_| Ok(instance.clone()));
+
+        let mut blobs = MockBlobStr::new();
+        blobs
+            .expect_get()
+            .once()
+            .returning(move |_| Ok(dicom.clone()));
+
+        let app = build_router(make_test_state(store, blobs));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/wado/studies/1.2.3/series/1.2.3.4/instances/1.2.3.4.5/frames/1")
+                    .header(
+                        header::ACCEPT,
+                        r#"multipart/related; type="image/jls"; transfer-syntax="*""#,
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let content_type = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(content_type.contains("multipart/related"));
+        assert!(content_type.contains(r#"type="image/jls""#));
+        assert!(content_type.contains(transfer_syntaxes::JPEG_LS_LOSSLESS.uid));
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert!(body
+            .windows(4)
+            .any(|window| window == [0xFF, 0xD8, 0xF7, 0x11]));
+    }
+
+    #[test]
+    fn test_parse_retrieve_frames_request_falls_back_to_octet_stream_when_type_mismatches() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            header::ACCEPT,
+            axum::http::HeaderValue::from_static(concat!(
+                r#"multipart/related; type="image/jphc"; transfer-syntax="*","#,
+                r#"multipart/related; type="application/octet-stream"; transfer-syntax="*""#
+            )),
+        );
+
+        let kind =
+            parse_retrieve_frames_request(&headers, Some(transfer_syntaxes::JPEG_LS_LOSSLESS.uid))
+                .unwrap();
+        assert_eq!(kind, RetrieveFramesResponseKind::NativeOctetStream);
     }
 
     #[tokio::test]

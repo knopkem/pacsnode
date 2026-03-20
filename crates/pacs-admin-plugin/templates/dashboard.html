@@ -27,9 +27,9 @@
 </section>
 
 <div hx-ext="sse" sse-connect="{{ route_prefix }}/events">
-  <div id="stats-shell" data-stats-refresh-href="{{ route_prefix }}/stats" sse-swap="stats" hx-swap="outerHTML">
+  <section id="stats-shell" class="stats-grid" data-stats-refresh-href="{{ route_prefix }}/stats" hx-get="{{ route_prefix }}/stats" hx-trigger="load" sse-swap="stats" hx-swap="innerHTML">
     {{ stats_markup|safe }}
-  </div>
+  </section>
 
   <section class="panel stack-gap">
     <header class="panel-header">

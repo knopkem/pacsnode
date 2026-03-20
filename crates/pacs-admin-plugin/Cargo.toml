@@ -16,6 +16,7 @@ axum = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 futures-core = { workspace = true }
+libc = "0.2"
 pacs-core = { workspace = true }
 pacs-dicom = { workspace = true }
 pacs-dimse = { workspace = true }
@@ -33,3 +34,4 @@ walkdir = "2.5.0"
 [dev-dependencies]
 dicom-toolkit-data = { workspace = true }
 dicom-toolkit-dict = { workspace = true }
+tempfile = { workspace = true }

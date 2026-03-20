@@ -98,18 +98,10 @@ impl Default for ImportJobSnapshot {
     }
 }
 
+#[derive(Default)]
 struct ImportJobState {
     snapshot: ImportJobSnapshot,
     cancel_token: Option<CancellationToken>,
-}
-
-impl Default for ImportJobState {
-    fn default() -> Self {
-        Self {
-            snapshot: ImportJobSnapshot::default(),
-            cancel_token: None,
-        }
-    }
 }
 
 pub(crate) struct ImportRuntime {

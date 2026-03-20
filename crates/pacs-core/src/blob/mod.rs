@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use async_trait::async_trait;
 use bytes::Bytes;
 
@@ -35,6 +37,14 @@ pub trait BlobStore: Send + Sync {
 
     /// Returns a presigned URL valid for `ttl_secs` seconds.
     async fn presigned_url(&self, key: &str, ttl_secs: u32) -> PacsResult<String>;
+
+    /// Returns the local filesystem root for backends that store blobs on disk.
+    ///
+    /// Backends without a stable local path (for example S3-compatible object
+    /// storage) return `None`.
+    fn local_filesystem_root(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 #[cfg(test)]

@@ -78,6 +78,15 @@ pub fn extract_frames(data: Bytes, frame_numbers: &[u32]) -> Result<Vec<Bytes>, 
     extract_frames_from_file(&file, frame_numbers)
 }
 
+/// Extracts one or more DICOM frames in their stored representation.
+///
+/// Native pixel data is returned unchanged per frame. Encapsulated pixel data is
+/// returned as the stored compressed frame payload without decoding.
+pub fn extract_stored_frames(data: Bytes, frame_numbers: &[u32]) -> Result<Vec<Bytes>, DicomError> {
+    let file = read_file(data)?;
+    extract_stored_frames_from_file(&file, frame_numbers)
+}
+
 /// Renders one or more DICOM frames as PNG images.
 ///
 /// Frame numbers are **1-based**, matching DICOMweb WADO-RS semantics.
@@ -552,6 +561,35 @@ fn extract_frames_from_file(
                     )
                     .map(Bytes::from)
                     .map_err(|e| DicomError::Toolkit(e.to_string()))
+                })
+                .collect()
+        }
+    }
+}
+
+fn extract_stored_frames_from_file(
+    file: &FileFormat,
+    frame_numbers: &[u32],
+) -> Result<Vec<Bytes>, DicomError> {
+    let frame_indices = validate_frame_numbers(total_frames(file), frame_numbers)?;
+    let pixel_data = pixel_data(&file.dataset)?;
+
+    match pixel_data {
+        PixelData::Native { bytes } => raw_native_frames(file, bytes, &frame_indices),
+        PixelData::Encapsulated { .. } => {
+            let compressed_frames = encapsulated_frames(pixel_data, total_frames(file))
+                .map_err(|e| DicomError::Toolkit(e.to_string()))?;
+
+            frame_indices
+                .into_iter()
+                .map(|frame_index| {
+                    compressed_frames
+                        .get(frame_index as usize)
+                        .ok_or(DicomError::InvalidFrame {
+                            requested: frame_index + 1,
+                            available: total_frames(file),
+                        })
+                        .map(|frame| Bytes::copy_from_slice(frame))
                 })
                 .collect()
         }
@@ -1340,6 +1378,43 @@ mod tests {
         Bytes::from(buf)
     }
 
+    fn make_htj2k_multiframe_dicom() -> Bytes {
+        let mut ds = DataSet::new();
+        ds.set_string(tags::STUDY_INSTANCE_UID, Vr::UI, "1.2.3");
+        ds.set_string(tags::SERIES_INSTANCE_UID, Vr::UI, "1.2.3.4");
+        ds.set_string(tags::SOP_INSTANCE_UID, Vr::UI, "1.2.3.4.202");
+        ds.set_string(tags::SOP_CLASS_UID, Vr::UI, "1.2.840.10008.5.1.4.1.1.2");
+        ds.set_u16(tags::ROWS, 1);
+        ds.set_u16(tags::COLUMNS, 2);
+        ds.set_u16(tags::SAMPLES_PER_PIXEL, 1);
+        ds.set_u16(tags::BITS_ALLOCATED, 8);
+        ds.set_u16(tags::BITS_STORED, 8);
+        ds.set_u16(tags::HIGH_BIT, 7);
+        ds.set_u16(tags::PIXEL_REPRESENTATION, 0);
+        ds.set_string(tags::PHOTOMETRIC_INTERPRETATION, Vr::CS, "MONOCHROME2");
+        ds.set_string(tags::NUMBER_OF_FRAMES, Vr::IS, "2");
+        ds.insert(Element::new(
+            tags::PIXEL_DATA,
+            Vr::OB,
+            Value::PixelData(
+                encapsulated_pixel_data_from_frames(&[
+                    vec![0xFF, 0x4F, 0xAA],
+                    vec![0xFF, 0x4F, 0xBB],
+                ])
+                .unwrap(),
+            ),
+        ));
+
+        let mut ff = FileFormat::from_dataset("1.2.840.10008.5.1.4.1.1.2", "1.2.3.4.202", ds);
+        ff.meta.transfer_syntax_uid = transfer_syntaxes::HIGH_THROUGHPUT_JPEG_2000.uid.to_owned();
+
+        let mut buf = Vec::new();
+        DicomWriter::new(Cursor::new(&mut buf))
+            .write_file(&ff)
+            .unwrap();
+        Bytes::from(buf)
+    }
+
     fn make_nested_bulkdata_dicom() -> Bytes {
         let mut ds = DataSet::new();
         ds.set_string(tags::STUDY_INSTANCE_UID, Vr::UI, "1.2.3");
@@ -1393,6 +1468,14 @@ mod tests {
                 available: 2
             }
         ));
+    }
+
+    #[test]
+    fn extract_stored_frames_returns_encapsulated_payloads_without_decoding() {
+        let frames = extract_stored_frames(make_htj2k_multiframe_dicom(), &[1, 2]).unwrap();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0], Bytes::from_static(&[0xFF, 0x4F, 0xAA]));
+        assert_eq!(frames[1], Bytes::from_static(&[0xFF, 0x4F, 0xBB]));
     }
 
     #[test]

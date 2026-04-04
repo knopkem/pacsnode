@@ -29,6 +29,7 @@ use pacs_core::{
 };
 #[cfg(feature = "filesystem")]
 use pacs_fs_storage::{self as _, FS_BLOB_STORE_PLUGIN_ID};
+use pacs_pacsleaf_viewer_plugin::PACSLEAF_VIEWER_PLUGIN_ID;
 use pacs_plugin::{PluginRegistry, ServerInfo};
 #[cfg(feature = "sqlite")]
 use pacs_sqlite_store::{self as _, SQLITE_METADATA_STORE_PLUGIN_ID};
@@ -36,6 +37,7 @@ use pacs_sqlite_store::{self as _, SQLITE_METADATA_STORE_PLUGIN_ID};
 use pacs_storage::{self as _, S3_BLOB_STORE_PLUGIN_ID};
 #[cfg(feature = "postgres")]
 use pacs_store::{self as _, PG_METADATA_STORE_PLUGIN_ID};
+use pacs_viewer_plugin::OHIF_VIEWER_PLUGIN_ID;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -47,6 +49,7 @@ use pacs_admin_plugin as _;
 use pacs_audit_plugin as _;
 use pacs_auth_plugin as _;
 use pacs_metrics_plugin as _;
+use pacs_pacsleaf_viewer_plugin as _;
 use pacs_viewer_plugin as _;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -973,9 +976,18 @@ fn print_startup_message(cfg: &AppConfig, enabled_plugins: &[String]) {
     println!();
     println!("📍 Available routes:");
 
-    // Check for viewer plugin
-    if enabled_plugins.contains(&"ohif-viewer".to_string()) {
-        println!("   Viewer: http://localhost:{}/", cfg.server.http_port);
+    if enabled_plugins.contains(&PACSLEAF_VIEWER_PLUGIN_ID.to_string()) {
+        println!(
+            "   pacsleaf: http://localhost:{}/viewer",
+            cfg.server.http_port
+        );
+    }
+
+    if enabled_plugins.contains(&OHIF_VIEWER_PLUGIN_ID.to_string()) {
+        println!(
+            "   OHIF:   http://localhost:{}/ohif",
+            cfg.server.http_port
+        );
     }
 
     // Check for admin plugin

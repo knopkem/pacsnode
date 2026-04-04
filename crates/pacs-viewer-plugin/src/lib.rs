@@ -1,7 +1,7 @@
 //! pacsnode OHIF/static viewer plugin.
 //!
 //! Serves a static web viewer build such as OHIF under a configurable route
-//! prefix and redirects `/` to that viewer entry point when enabled.
+//! prefix and can redirect `/` to that viewer entry point when enabled.
 
 use std::{
     fs as stdfs,
@@ -94,7 +94,7 @@ fn default_static_dir() -> String {
 }
 
 fn default_route_prefix() -> String {
-    "/viewer".into()
+    "/ohif".into()
 }
 
 fn default_index_file() -> String {
@@ -102,7 +102,7 @@ fn default_index_file() -> String {
 }
 
 fn default_redirect_root() -> bool {
-    true
+    false
 }
 
 fn default_fallback_file() -> String {
@@ -1225,10 +1225,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn root_redirects_to_viewer_prefix() {
+    async fn root_can_redirect_to_ohif_prefix() {
         let dir = TestViewerDir::new();
         dir.write("index.html", "<html>viewer</html>");
-        let plugin = init_plugin(&dir).await;
+        let mut plugin = OhifViewerPlugin::default();
+        plugin
+            .init(&plugin_context(serde_json::json!({
+                "static_dir": dir.root(),
+                "redirect_root": true,
+            })))
+            .await
+            .unwrap();
         let app = plugin.routes().with_state(app_state());
 
         let response = app
@@ -1239,7 +1246,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
         assert_eq!(
             response.headers().get(header::LOCATION).unwrap(),
-            "/viewer/"
+            "/ohif/"
         );
     }
 
@@ -1276,7 +1283,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/viewer/")
+                    .uri("/ohif/")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1308,7 +1315,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/viewer/studies/1.2.840.10008")
+                    .uri("/ohif/studies/1.2.840.10008")
                     .header(header::ACCEPT, "text/html")
                     .body(Body::empty())
                     .unwrap(),
@@ -1334,7 +1341,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/viewer/missing.js")
+                    .uri("/ohif/missing.js")
                     .header(header::ACCEPT, "*/*")
                     .body(Body::empty())
                     .unwrap(),
@@ -1413,7 +1420,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/viewer/app-config.js")
+                    .uri("/ohif/app-config.js")
                     .header(header::ACCEPT, "*/*")
                     .body(Body::empty())
                     .unwrap(),
@@ -1428,7 +1435,7 @@ mod tests {
         );
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
-        assert!(body.contains(r#""routerBasename": "/viewer""#));
+        assert!(body.contains(r#""routerBasename": "/ohif""#));
         assert!(body.contains(r#""wadoUriRoot": "/wado""#));
         assert!(body.contains(r#""qidoRoot": "/wado""#));
         assert!(body.contains(r#""wadoRoot": "/wado""#));
@@ -1473,7 +1480,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
-        assert!(body.contains(r#""routerBasename": "/viewer""#));
+        assert!(body.contains(r#""routerBasename": "/ohif""#));
     }
 
     #[tokio::test]
@@ -1498,7 +1505,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/viewer/app-config.js")
+                    .uri("/ohif/app-config.js")
                     .header(header::ACCEPT, "*/*")
                     .body(Body::empty())
                     .unwrap(),
@@ -1535,7 +1542,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/viewer/")
+                    .uri("/ohif/")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1545,11 +1552,11 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
-        assert!(body.contains(r#"href="/viewer/manifest.json""#));
-        assert!(body.contains(r#"href="/viewer/assets/favicon.ico""#));
-        assert!(body.contains(r#"href="/viewer/app.bundle.css""#));
-        assert!(body.contains(r#"src="/viewer/app-config.js""#));
-        assert!(body.contains(r#"src="/viewer/app.bundle.js""#));
+        assert!(body.contains(r#"href="/ohif/manifest.json""#));
+        assert!(body.contains(r#"href="/ohif/assets/favicon.ico""#));
+        assert!(body.contains(r#"href="/ohif/app.bundle.css""#));
+        assert!(body.contains(r#"src="/ohif/app-config.js""#));
+        assert!(body.contains(r#"src="/ohif/app.bundle.js""#));
     }
 
     #[tokio::test]
@@ -1560,7 +1567,7 @@ mod tests {
             r#"<html>
 <body>
   <a href="/dicom-web/studies">api</a>
-  <script src="/viewer/app.bundle.js"></script>
+  <script src="/ohif/app.bundle.js"></script>
 </body>
 </html>"#,
         );
@@ -1570,7 +1577,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/viewer/")
+                    .uri("/ohif/")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1581,7 +1588,7 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert!(body.contains(r#"href="/dicom-web/studies""#));
-        assert!(body.contains(r#"src="/viewer/app.bundle.js""#));
-        assert!(!body.contains(r#"src="/viewer/viewer/app.bundle.js""#));
+        assert!(body.contains(r#"src="/ohif/app.bundle.js""#));
+        assert!(!body.contains(r#"src="/ohif/ohif/app.bundle.js""#));
     }
 }

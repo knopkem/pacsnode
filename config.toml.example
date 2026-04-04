@@ -109,6 +109,7 @@ buffer_size = 10000
 #   - "admin-dashboard"
 #   - "prometheus-metrics"
 #   - "ohif-viewer"
+#   - "pacsleaf-viewer"
 
 [plugins]
 enabled = []
@@ -185,3 +186,16 @@ enabled = []
 # If basic-auth and ohif-viewer are both enabled, add "/" and "/viewer" to
 # [plugins.basic-auth].public_paths so the viewer shell can load before it makes
 # authenticated API requests. The viewer's API calls still require login.
+#
+# Example pacsleaf viewer shell config:
+# [plugins.pacsleaf-viewer]
+# static_dir = "./web/pacsleaf-viewer/dist"
+# route_prefix = "/pacsleaf"
+# redirect_root = false
+# index_file = "index.html"
+# fallback_file = "index.html"
+# generate_app_config = true
+# provision_embedded_bundle = true
+#
+# pacsleaf ships as a separate static bundle so it can coexist with the OHIF
+# plugin while you iterate on a custom worklist + viewer shell.

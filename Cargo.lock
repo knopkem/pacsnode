@@ -2335,6 +2335,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "pacs-pacsleaf-viewer-plugin"
+version = "0.2.1"
+dependencies = [
+ "async-trait",
+ "axum",
+ "pacs-plugin",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "walkdir",
+ "zip",
+]
+
+[[package]]
 name = "pacs-plugin"
 version = "0.2.1"
 dependencies = [
@@ -2371,6 +2389,7 @@ dependencies = [
  "pacs-dimse",
  "pacs-fs-storage",
  "pacs-metrics-plugin",
+ "pacs-pacsleaf-viewer-plugin",
  "pacs-plugin",
  "pacs-sqlite-store",
  "pacs-storage",

@@ -16,6 +16,7 @@ members = [
     "crates/pacs-viewer-plugin",
     "crates/pacs-api",
     "crates/pacs-server",
+    "crates/pacs-pacsleaf-viewer-plugin",
 ]
 
 [workspace.package]
@@ -41,6 +42,7 @@ pacs-storage = { path = "crates/pacs-storage" }
 pacs-dimse   = { path = "crates/pacs-dimse" }
 pacs-metrics-plugin = { path = "crates/pacs-metrics-plugin" }
 pacs-viewer-plugin = { path = "crates/pacs-viewer-plugin" }
+pacs-pacsleaf-viewer-plugin = { path = "crates/pacs-pacsleaf-viewer-plugin" }
 pacs-api     = { path = "crates/pacs-api" }
 
 # ── dicom-toolkit-rs (published crates.io release) ─────────────────────────────

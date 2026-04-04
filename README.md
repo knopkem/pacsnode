@@ -56,8 +56,10 @@ cargo build --release
 
 If you omit `--output`, pacsnode prints the generated `config.toml` to stdout.
 
-The generated config enables the bundled OHIF viewer, and the default binary
-extracts that viewer into `./web/viewer/` automatically on first start.
+The generated config enables the bundled pacsleaf viewer by default at
+`http://localhost:8042/viewer` and also keeps the bundled OHIF viewer enabled at
+`http://localhost:8042/ohif`. The default binary extracts the embedded pacsleaf
+bundle into `./web/pacsleaf-viewer/dist/` automatically on first start.
 
 ### Running in standalone mode
 
@@ -65,7 +67,7 @@ extracts that viewer into `./web/viewer/` automatically on first start.
 ./target/release/pacsnode
 ```
 
-Open the admin dashboard at **http://localhost:8042/admin** and the OHIF viewer at **http://localhost:8042/viewer**.
+Open the admin dashboard at **http://localhost:8042/admin**, the default pacsleaf viewer at **http://localhost:8042/viewer**, and the bundled OHIF viewer at **http://localhost:8042/ohif**.
 
 ---
 
@@ -145,7 +147,7 @@ curl http://localhost:8042/health
 # {"status":"ok"}
 ```
 
-Open the admin dashboard at **http://localhost:8042/admin** and the OHIF viewer at **http://localhost:8042/viewer**. Log in with the credentials you just created.
+Open the admin dashboard at **http://localhost:8042/admin**, the default pacsleaf viewer at **http://localhost:8042/viewer**, and the bundled OHIF viewer at **http://localhost:8042/ohif**. Log in with the credentials you just created.
 
 **Services at a glance:**
 
@@ -153,7 +155,8 @@ Open the admin dashboard at **http://localhost:8042/admin** and the OHIF viewer 
 |---------|------|-----|-------------|
 | pacsnode REST/DICOMweb | `8042` | `http://localhost:8042` | STOW-RS, QIDO-RS, WADO-RS, REST API |
 | Admin dashboard | `8042` | `http://localhost:8042/admin` | User, node, and audit management |
-| OHIF viewer | `8042` | `http://localhost:8042/viewer` | Web DICOM viewer |
+| pacsleaf viewer | `8042` | `http://localhost:8042/viewer` | Default study browser + viewer shell |
+| OHIF viewer | `8042` | `http://localhost:8042/ohif` | Secondary bundled OHIF viewer |
 | pacsnode DIMSE | `4242` | — | C-STORE, C-FIND, C-MOVE, C-GET, C-ECHO |
 | MinIO S3 API | `9000` | — | Pixel data object storage |
 | MinIO web console | `9001` | `http://localhost:9001` | Browse stored DICOM files (login: see `.env`) |
@@ -284,7 +287,8 @@ Common plugin IDs:
 | `audit-logger` | Append-only audit trail; auto-enabled by default for secured deployments |
 | `admin-dashboard` | Admin web UI for users, password policy, nodes, settings, and audit review |
 | `prometheus-metrics` | `/metrics` endpoint with HTTP and PACS counters |
-| `ohif-viewer` | Static OHIF viewer hosting |
+| `pacsleaf-viewer` | Default pacsleaf React study browser + viewer shell hosting |
+| `ohif-viewer` | Secondary static OHIF viewer hosting |
 
 For full setup examples, see [DOCS/auth-tutorial.md](DOCS/auth-tutorial.md).
 

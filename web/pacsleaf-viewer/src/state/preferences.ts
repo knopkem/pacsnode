@@ -3,6 +3,7 @@ import { createJSONStorage, persist } from 'zustand/middleware'
 
 import { getRuntimeConfig } from '../lib/runtime-config'
 import type { RenderingMode, StreamingQuality } from '../lib/runtime-config'
+import type { ClientEngine } from '../lib/engines/types'
 
 const runtimeConfig = getRuntimeConfig()
 
@@ -41,6 +42,7 @@ export const viewerPreferenceDefaults = {
   preferredRenderingMode: runtimeConfig.rendering.defaultMode as RenderingMode,
   streamingQuality: runtimeConfig.streaming.defaultQuality as StreamingQuality,
   viewportLayout: 'single' as const,
+  clientEngine: 'auto' as ClientEngine,
 }
 
 interface ViewerPreferencesState {
@@ -49,11 +51,13 @@ interface ViewerPreferencesState {
   preferredRenderingMode: RenderingMode
   streamingQuality: StreamingQuality
   viewportLayout: 'single' | 'quad'
+  clientEngine: ClientEngine
   setDefaultStudyLimit: (value: number) => void
   setAutoSelectFirstSeries: (value: boolean) => void
   setPreferredRenderingMode: (value: RenderingMode) => void
   setStreamingQuality: (value: StreamingQuality) => void
   setViewportLayout: (value: 'single' | 'quad') => void
+  setClientEngine: (value: ClientEngine) => void
   reset: () => void
 }
 
@@ -69,6 +73,7 @@ export const useViewerPreferencesStore = create<ViewerPreferencesState>()(
         setPreferredRenderingMode: (value) => set({ preferredRenderingMode: value }),
         setStreamingQuality: (value) => set({ streamingQuality: value }),
         setViewportLayout: (value) => set({ viewportLayout: value }),
+        setClientEngine: (value) => set({ clientEngine: value }),
         reset: () => set(viewerPreferenceDefaults),
     }),
     {

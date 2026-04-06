@@ -1,6 +1,7 @@
 import { RotateCcw } from 'lucide-react'
 
 import { Toggle } from '../components/ui/Toggle'
+import { hasWebGPUSupport } from '../lib/engines/detect'
 import { useViewerPreferencesStore } from '../state/preferences'
 
 export function SettingsPage() {
@@ -9,12 +10,16 @@ export function SettingsPage() {
   const preferredRenderingMode = useViewerPreferencesStore((s) => s.preferredRenderingMode)
   const streamingQuality = useViewerPreferencesStore((s) => s.streamingQuality)
   const viewportLayout = useViewerPreferencesStore((s) => s.viewportLayout)
+  const clientEngine = useViewerPreferencesStore((s) => s.clientEngine)
   const setDefaultStudyLimit = useViewerPreferencesStore((s) => s.setDefaultStudyLimit)
   const setAutoSelectFirstSeries = useViewerPreferencesStore((s) => s.setAutoSelectFirstSeries)
   const setPreferredRenderingMode = useViewerPreferencesStore((s) => s.setPreferredRenderingMode)
   const setStreamingQuality = useViewerPreferencesStore((s) => s.setStreamingQuality)
   const setViewportLayout = useViewerPreferencesStore((s) => s.setViewportLayout)
+  const setClientEngine = useViewerPreferencesStore((s) => s.setClientEngine)
   const reset = useViewerPreferencesStore((s) => s.reset)
+
+  const webGPUAvailable = hasWebGPUSupport()
 
   return (
     <div className="mx-auto max-w-2xl space-y-6 px-4 py-6">
@@ -73,6 +78,38 @@ export function SettingsPage() {
       <section className="space-y-3">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Rendering</h2>
         <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label className="text-xs text-slate-400" htmlFor="clientEngine">
+              Client rendering engine
+            </label>
+            <select
+              id="clientEngine"
+              className="select-field mt-1"
+              value={clientEngine}
+              onChange={(e) => {
+                const value = e.target.value
+                if (value === 'auto' || value === 'dicomview' || value === 'cornerstone') {
+                  setClientEngine(value)
+                }
+              }}
+            >
+              <option value="auto">Auto (Recommended)</option>
+              <option value="dicomview">Dicomview (WebGPU)</option>
+              <option value="cornerstone">Cornerstone3D (WebGL2)</option>
+            </select>
+            <p className="mt-1 text-[11px] text-slate-500">
+              {clientEngine === 'auto'
+                ? 'Uses dicomview for MPR views, cornerstone for stack.'
+                : clientEngine === 'dicomview'
+                  ? 'Rust/WASM engine for all viewports. No annotation support yet.'
+                  : 'Full annotation and measurement support.'}
+            </p>
+            {clientEngine === 'dicomview' && !webGPUAvailable ? (
+              <p className="mt-1 text-[11px] text-amber-300">
+                ⚠ Your browser does not support WebGPU. The viewer will fall back to cornerstone3D.
+              </p>
+            ) : null}
+          </div>
           <div>
             <label className="text-xs text-slate-400" htmlFor="renderMode">
               Rendering mode

@@ -10,6 +10,7 @@ import { useLocation, useParams } from 'react-router-dom'
 
 import { useStudyQuery, useStudySeriesQuery } from '../lib/dicomweb/query-hooks'
 import type { StudySummary } from '../lib/dicomweb/types'
+import { isEngineFallback, resolveEngine } from '../lib/engines/detect'
 import { formatCount, formatDicomDate } from '../lib/format'
 import { resolveStreamerUrl, useViewerPreferencesStore } from '../state/preferences'
 
@@ -37,6 +38,16 @@ const StreamingViewport = lazy(async () => {
   return { default: module.StreamingViewport }
 })
 
+const DicomviewVolumeViewportGrid = lazy(async () => {
+  const module = await import('../components/viewer/DicomviewVolumeViewportGrid')
+  return { default: module.DicomviewVolumeViewportGrid }
+})
+
+const DicomviewStackViewport = lazy(async () => {
+  const module = await import('../components/viewer/DicomviewStackViewport')
+  return { default: module.DicomviewStackViewport }
+})
+
 export function ViewerPage() {
   const { studyUid } = useParams<{ studyUid: string }>()
   const location = useLocation()
@@ -53,8 +64,15 @@ export function ViewerPage() {
   const streamingQuality = useViewerPreferencesStore((state) => state.streamingQuality)
   const viewportLayout = useViewerPreferencesStore((state) => state.viewportLayout)
   const setViewportLayout = useViewerPreferencesStore((state) => state.setViewportLayout)
+  const clientEngine = useViewerPreferencesStore((state) => state.clientEngine)
 
   const streamerUrl = useMemo(() => resolveStreamerUrl(), [])
+
+  const resolvedEngine = useMemo(
+    () => resolveEngine(clientEngine, viewportLayout),
+    [clientEngine, viewportLayout],
+  )
+  const engineFallback = isEngineFallback(clientEngine, resolvedEngine)
 
   const studyQuery = useStudyQuery(studyUid, initialStudy)
   const seriesQuery = useStudySeriesQuery(studyUid)
@@ -207,6 +225,14 @@ export function ViewerPage() {
           </div>
         ) : null}
 
+        {/* Engine fallback banner */}
+        {engineFallback && effectiveRenderingMode === 'client' ? (
+          <div className="flex items-center gap-2 border-b border-amber-800/40 bg-amber-900/20 px-3 py-1.5 text-xs text-amber-200">
+            <AlertTriangle className="h-3 w-3 shrink-0" />
+            <span>WebGPU not available — using cornerstone3D</span>
+          </div>
+        ) : null}
+
         {/* Viewport */}
         <div className="relative flex-1 overflow-hidden bg-black">
           {effectiveRenderingMode === 'client' && selectedSeries ? (
@@ -218,16 +244,31 @@ export function ViewerPage() {
                 </div>
               }
             >
-              {viewportLayout === 'quad' ? (
+              {resolvedEngine === 'dicomview' ? (
+                viewportLayout === 'quad' ? (
+                  <DicomviewVolumeViewportGrid
+                    key={`${selectedSeries.seriesUid}-dv-quad`}
+                    studyUid={studyUid}
+                    seriesUid={selectedSeries.seriesUid}
+                    modality={selectedSeries.modality}
+                  />
+                ) : (
+                  <DicomviewStackViewport
+                    key={`${selectedSeries.seriesUid}-dv-stack`}
+                    studyUid={studyUid}
+                    seriesUid={selectedSeries.seriesUid}
+                  />
+                )
+              ) : viewportLayout === 'quad' ? (
                 <VolumeViewportGrid
-                  key={`${selectedSeries.seriesUid}-quad`}
+                  key={`${selectedSeries.seriesUid}-cs-quad`}
                   studyUid={studyUid}
                   seriesUid={selectedSeries.seriesUid}
                   modality={selectedSeries.modality}
                 />
               ) : (
                 <StackViewport
-                  key={selectedSeries.seriesUid}
+                  key={`${selectedSeries.seriesUid}-cs-stack`}
                   studyUid={studyUid}
                   seriesUid={selectedSeries.seriesUid}
                 />

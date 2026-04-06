@@ -2,18 +2,19 @@ import { AlertTriangle, Loader2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
 import {
-  mountStackViewport as mountCornerstoneStackViewport,
-  type StackPrimaryTool,
-  type StackViewportSnapshot,
-} from '../../lib/cornerstone'
+  mountDicomviewStack,
+  type DicomviewStackController,
+  type DicomviewStackSnapshot,
+} from '../../lib/engines/dicomview/stack'
+import type { StackPrimaryTool } from '../../lib/engines/types'
 import { type ToolDefinition, ViewportToolbar } from './ViewportToolbar'
 
-type StackViewportState = StackViewportSnapshot & {
+type StackViewportState = DicomviewStackSnapshot & {
   message?: string
   status: 'loading' | 'ready' | 'error'
 }
 
-interface StackViewportProps {
+interface DicomviewStackViewportProps {
   studyUid: string
   seriesUid: string
 }
@@ -28,35 +29,33 @@ const STACK_TOOLS: ToolDefinition[] = [
   { label: 'Ellipse', tool: 'ellipticalRoi' },
 ]
 
-export function StackViewport({ studyUid, seriesUid }: StackViewportProps) {
-  const elementRef = useRef<HTMLDivElement | null>(null)
-  const renderingEngineIdRef = useRef(`pacsleaf-rendering-engine-${crypto.randomUUID()}`)
-  const viewportIdRef = useRef(`pacsleaf-stack-viewport-${crypto.randomUUID()}`)
-  const controllerRef = useRef<Awaited<ReturnType<typeof mountCornerstoneStackViewport>> | null>(null)
+export function DicomviewStackViewport({
+  studyUid,
+  seriesUid,
+}: DicomviewStackViewportProps) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const controllerRef = useRef<DicomviewStackController | null>(null)
   const [state, setState] = useState<StackViewportState>({
     activeTool: 'windowLevel',
     currentImageIndex: 0,
     imageCount: 0,
-    measurementCount: 0,
     message: undefined,
     status: 'loading',
   })
 
   useEffect(() => {
-    const element = elementRef.current
-    if (!element) return undefined
+    const canvas = canvasRef.current
+    if (!canvas) return undefined
 
     const abortController = new AbortController()
     let disposed = false
     let unsubscribe = () => {}
     let cleanup = () => {}
 
-    void mountCornerstoneStackViewport({
-      element,
+    void mountDicomviewStack({
+      canvas,
       studyUid,
       seriesUid,
-      renderingEngineId: renderingEngineIdRef.current,
-      viewportId: viewportIdRef.current,
       signal: abortController.signal,
     })
       .then((controller) => {
@@ -96,7 +95,11 @@ export function StackViewport({ studyUid, seriesUid }: StackViewportProps) {
 
   return (
     <div className="absolute inset-0 bg-black">
-      <div ref={elementRef} className="absolute inset-0" />
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-0"
+        style={{ width: '100%', height: '100%', display: 'block' }}
+      />
 
       <ViewportToolbar
         tools={STACK_TOOLS}
@@ -106,6 +109,7 @@ export function StackViewport({ studyUid, seriesUid }: StackViewportProps) {
         }
         onReset={() => controllerRef.current?.reset()}
         ready={ready}
+        annotationsDisabled
         rightContent={
           state.imageCount > 0 ? (
             <span className="text-[10px] text-slate-400 tabular-nums">

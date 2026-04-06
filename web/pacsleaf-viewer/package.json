@@ -13,6 +13,7 @@
     "@cornerstonejs/core": "^4.20.4",
     "@cornerstonejs/dicom-image-loader": "^4.20.4",
     "@cornerstonejs/tools": "^4.20.4",
+    "@knopkem/dicomview": "^0.2.5",
     "@tanstack/react-query": "^5.96.2",
     "clsx": "^2.1.1",
     "dicom-parser": "^1.8.21",

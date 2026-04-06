@@ -6,7 +6,7 @@ export default defineConfig({
   base: '/viewer/',
   plugins: [react(), viteCommonjs()],
   optimizeDeps: {
-    exclude: ['@cornerstonejs/dicom-image-loader'],
+    exclude: ['@cornerstonejs/dicom-image-loader', '@knopkem/dicomview'],
     include: ['dicom-parser'],
   },
   worker: {
@@ -15,5 +15,6 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: true,
+    target: 'esnext',
   },
 })
